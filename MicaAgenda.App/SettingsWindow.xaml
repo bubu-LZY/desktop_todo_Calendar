@@ -123,7 +123,7 @@
                             <CheckBox x:Name="ReportSendFeishuBox" Content="飞书" VerticalAlignment="Center" Margin="0,0,16,0" />
                             <CheckBox x:Name="ReportSendWeComBox" Content="企业微信" VerticalAlignment="Center" />
                         </StackPanel>
-                        <TextBlock Text="自定义 webhook（可选，按企微 text 格式推送；可接 Server 酱 / PushPlus 等转发到个人微信）"
+                        <TextBlock Text="自定义 webhook（可选；自动识别飞书并用卡片推送，其他地址按企微 text 格式推送）"
                                    Style="{StaticResource FieldLabel}" Margin="0,0,0,4" />
                         <TextBox x:Name="ReportCustomWebhookBox" Style="{StaticResource InputBox}" Margin="0,0,0,10" />
                         <StackPanel Orientation="Horizontal">

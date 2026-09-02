@@ -40,6 +40,52 @@ public sealed class WebhookSender : IDisposable
         return PostJsonAsync(webhook, payload);
     }
 
+    /// <summary>
+    /// 发送自定义 webhook。自动识别飞书地址并使用卡片格式，
+    /// 其他地址继续按企业微信 text 格式发送，兼容 Server 酱 / PushPlus 等中转服务。
+    /// </summary>
+    public Task SendCustomTextAsync(string webhook, string text, string markdown)
+    {
+        if (IsFeishuWebhook(webhook))
+        {
+            return SendFeishuCardAsync(webhook, "任务完成情况", markdown);
+        }
+
+        return SendWeComTextAsync(webhook, text);
+    }
+
+    /// <summary>发送飞书交互式卡片消息。</summary>
+    public Task SendFeishuCardAsync(string webhook, string title, string markdown)
+    {
+        var payload = new
+        {
+            msg_type = "interactive",
+            card = new
+            {
+                config = new { wide_screen_mode = true },
+                header = new
+                {
+                    title = new { tag = "plain_text", content = Truncate(title, 40) },
+                    template = "blue"
+                },
+                elements = new object[]
+                {
+                    new
+                    {
+                        tag = "div",
+                        text = new
+                        {
+                            tag = "lark_md",
+                            content = Truncate(markdown, 18000)
+                        }
+                    }
+                }
+            }
+        };
+
+        return PostJsonAsync(webhook, payload);
+    }
+
     private async Task PostJsonAsync(string url, object payload)
     {
         if (string.IsNullOrWhiteSpace(url))
@@ -160,6 +206,17 @@ public sealed class WebhookSender : IDisposable
 
     private static string Trim(string value, int max) =>
         string.IsNullOrEmpty(value) || value.Length <= max ? value : value[..max];
+
+    private static bool IsFeishuWebhook(string webhook)
+    {
+        if (!Uri.TryCreate(webhook, UriKind.Absolute, out var uri))
+        {
+            return false;
+        }
+
+        return uri.Host.EndsWith("feishu.cn", StringComparison.OrdinalIgnoreCase)
+               || uri.Host.EndsWith("larksuite.com", StringComparison.OrdinalIgnoreCase);
+    }
 
     public void Dispose() => _httpClient.Dispose();
 }

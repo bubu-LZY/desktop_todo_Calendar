@@ -230,7 +230,7 @@ public sealed class ReportService : IDisposable
         if (config.ReportSendToFeishu && !string.IsNullOrWhiteSpace(config.FeishuWebhook))
         {
             var hook = config.FeishuWebhook.Trim();
-            channels.Add(new Channel("飞书", (text, _) => _sender.SendFeishuTextAsync(hook, text)));
+            channels.Add(new Channel("飞书", (_, markdown) => _sender.SendFeishuCardAsync(hook, "任务完成情况", markdown)));
         }
 
         if (config.ReportSendToWeCom && !string.IsNullOrWhiteSpace(config.WeComWebhook))
@@ -242,7 +242,7 @@ public sealed class ReportService : IDisposable
         if (!string.IsNullOrWhiteSpace(config.ReportCustomWebhook))
         {
             var hook = config.ReportCustomWebhook.Trim();
-            channels.Add(new Channel("自定义 webhook", (text, _) => _sender.SendWeComTextAsync(hook, text)));
+            channels.Add(new Channel("自定义 webhook", (text, markdown) => _sender.SendCustomTextAsync(hook, text, markdown)));
         }
 
         return channels;

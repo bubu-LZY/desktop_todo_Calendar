@@ -58,7 +58,7 @@ public sealed class AppConfig
     public bool ReportSendToWeCom { get; set; }
 
     /// <summary>
-    /// 额外的自定义 webhook（按企业微信 text 格式 POST 一条 JSON）。
+    /// 额外的自定义 webhook（飞书地址自动使用卡片；其他地址按企业微信 text 格式推送）。
     /// 用于接 Server 酱 / PushPlus 这类把消息转发到个人微信的中转服务。
     /// </summary>
     public string ReportCustomWebhook { get; set; } = string.Empty;
