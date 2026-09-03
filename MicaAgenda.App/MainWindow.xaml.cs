@@ -100,8 +100,8 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
-        FileLog.Write($"[STARTUP] MainWindow ctor - v3.1.0 - exe={Environment.ProcessPath ?? "unknown"}");
-        Title = "MicaAgenda v3.1.5";
+        FileLog.Write($"[STARTUP] MainWindow ctor - v3.1.6 - exe={Environment.ProcessPath ?? "unknown"}");
+        Title = "MicaAgenda v3.1.6";
 
         // 窗口初始化前同步加载配置，确保桌面嵌入/锁定在首帧即生效
         _config = _configStore.Load();
@@ -511,6 +511,13 @@ public partial class MainWindow : Window
         {
             DesktopEmbedService.EmbedToDesktop(this);
         }
+    }
+
+    /// <summary>其它实例启动时，把本窗口唤回前台。</summary>
+    public void BringToFront()
+    {
+        ShowWindow();
+        Activate();
     }
 
     /// <summary>打开设置面板。</summary>

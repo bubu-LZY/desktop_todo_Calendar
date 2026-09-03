@@ -2,7 +2,7 @@
 ; 编译命令: ISCC.exe setup.iss
 
 #define MyAppName "desktop_todo_Calendar"
-#define MyAppVersion "3.1.5"
+#define MyAppVersion "3.1.6"
 #define MyAppPublisher "MicaAgenda"
 #define MyAppExeName "MicaAgenda.App.exe"
 

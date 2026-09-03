@@ -210,13 +210,13 @@ public partial class SettingsWindow : Window
         ApiHint.Text = $"Agent 调用示例：curl -H \"X-Auth-Token: <token>\" {baseUrl}/api/tasks?range=today";
     }
 
-    private void CopyToken_Click(object sender, RoutedEventArgs e)
+    private async void CopyToken_Click(object sender, RoutedEventArgs e)
     {
         if (!string.IsNullOrWhiteSpace(ApiTokenBox.Text))
         {
             try
             {
-                Helpers.ClipboardHelper.SetText(ApiTokenBox.Text);
+                await Helpers.ClipboardHelper.SetTextAsync(ApiTokenBox.Text);
                 Helpers.ToastHelper.Show("Token 已复制", this);
             }
             catch (Exception ex)
@@ -351,11 +351,11 @@ public partial class SettingsWindow : Window
         }
     }
 
-    private void CopySkillDoc_Click(object sender, RoutedEventArgs e)
+    private async void CopySkillDoc_Click(object sender, RoutedEventArgs e)
     {
         try
         {
-            Helpers.ClipboardHelper.SetText(McpDocsProvider.BuildSkillDoc(McpEndpointBox.Text.Trim(), _config.ApiToken));
+            await Helpers.ClipboardHelper.SetTextAsync(McpDocsProvider.BuildSkillDoc(McpEndpointBox.Text.Trim(), _config.ApiToken));
             Helpers.ToastHelper.Show("Skill 文档已复制", this);
         }
         catch (Exception ex)
@@ -364,11 +364,11 @@ public partial class SettingsWindow : Window
         }
     }
 
-    private void CopyMcpConfig_Click(object sender, RoutedEventArgs e)
+    private async void CopyMcpConfig_Click(object sender, RoutedEventArgs e)
     {
         try
         {
-            Helpers.ClipboardHelper.SetText(McpDocsProvider.BuildMcpConfigJson(McpEndpointBox.Text.Trim(), _config.ApiToken));
+            await Helpers.ClipboardHelper.SetTextAsync(McpDocsProvider.BuildMcpConfigJson(McpEndpointBox.Text.Trim(), _config.ApiToken));
             Helpers.ToastHelper.Show("MCP 配置已复制", this);
         }
         catch (Exception ex)

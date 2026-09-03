@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 
@@ -7,10 +8,115 @@ namespace MicaAgenda.App;
 
 public partial class App : Application
 {
+    private const string SingleInstanceMutexName = @"Local\MicaAgenda.DesktopTodoCalendar.SingleInstance";
+    private const string ShowWindowEventName = @"Local\MicaAgenda.DesktopTodoCalendar.ShowWindow";
+
+    private MainWindow? _mainWindow;
+    private Mutex? _singleInstanceMutex;
+    private EventWaitHandle? _showWindowEvent;
+    private bool _ownsMutex;
+    private volatile bool _shuttingDown;
+
     public App()
     {
         EnsureWindirForWpf();
         SubscribeGlobalExceptionHandlers();
+    }
+
+    protected override void OnStartup(StartupEventArgs e)
+    {
+        base.OnStartup(e);
+
+        _singleInstanceMutex = new Mutex(initiallyOwned: true, SingleInstanceMutexName, out bool createdNew);
+        _ownsMutex = createdNew;
+
+        if (!createdNew)
+        {
+            // 已有实例在运行：通知它把窗口唤到前台，然后退出当前实例
+            NotifyExistingInstance();
+            Shutdown();
+            return;
+        }
+
+        // 第一个实例：创建信号事件，后台监听其它实例的“显示窗口”请求
+        _showWindowEvent = new EventWaitHandle(false, EventResetMode.AutoReset, ShowWindowEventName);
+        _ = Task.Run(WaitForShowSignal);
+
+        _mainWindow = new MainWindow();
+        MainWindow = _mainWindow;
+        _mainWindow.Show();
+    }
+
+    protected override void OnExit(ExitEventArgs e)
+    {
+        _shuttingDown = true;
+
+        try { _showWindowEvent?.Set(); } catch { }
+        try { _showWindowEvent?.Dispose(); } catch { }
+        _showWindowEvent = null;
+
+        if (_ownsMutex && _singleInstanceMutex is not null)
+        {
+            try { _singleInstanceMutex.ReleaseMutex(); } catch { }
+        }
+        try { _singleInstanceMutex?.Dispose(); } catch { }
+        _singleInstanceMutex = null;
+
+        base.OnExit(e);
+    }
+
+    private static void NotifyExistingInstance()
+    {
+        // 第一个实例创建事件与获取互斥锁之间有一个极小的窗口期，重试几次以覆盖它
+        for (int i = 0; i < 5; i++)
+        {
+            if (EventWaitHandle.TryOpenExisting(ShowWindowEventName, out var showEvent))
+            {
+                using (showEvent)
+                {
+                    showEvent.Set();
+                }
+                return;
+            }
+
+            Thread.Sleep(100);
+        }
+    }
+
+    private void WaitForShowSignal()
+    {
+        while (!_shuttingDown && _showWindowEvent is not null)
+        {
+            try
+            {
+                if (!_showWindowEvent.WaitOne(500))
+                {
+                    continue;
+                }
+
+                if (_shuttingDown)
+                {
+                    return;
+                }
+
+                Dispatcher.BeginInvoke(() =>
+                {
+                    try
+                    {
+                        _mainWindow?.BringToFront();
+                    }
+                    catch (Exception ex)
+                    {
+                        LogError(ex, "SingleInstance.BringToFront");
+                    }
+                });
+            }
+            catch
+            {
+                // 事件被释放或其它异常时退出监听
+                return;
+            }
+        }
     }
 
     private void SubscribeGlobalExceptionHandlers()
