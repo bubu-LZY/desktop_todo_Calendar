@@ -1,0 +1,1665 @@
+<Window x:Class="MicaAgenda.App.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:conv="clr-namespace:MicaAgenda.App.Converters"
+        xmlns:vm="clr-namespace:MicaAgenda.App.ViewModels"
+        xmlns:scm="clr-namespace:System.ComponentModel;assembly=WindowsBase"
+        Title=""
+        Width="980"
+        Height="680"
+        MinWidth="120"
+        MinHeight="100"
+        WindowStyle="None"
+        ResizeMode="CanResize"
+        AllowsTransparency="True"
+        Background="Transparent"
+        SnapsToDevicePixels="True"
+        UseLayoutRounding="True"
+        WindowStartupLocation="CenterScreen"
+        Loaded="Window_Loaded"
+        Closing="Window_Closing"
+        SizeChanged="Window_SizeChanged"
+        SourceInitialized="Window_SourceInitialized"
+        Deactivated="Window_Deactivated"
+        PreviewKeyDown="Window_PreviewKeyDown"
+        DpiChanged="Window_DpiChanged">
+    <Window.Resources>
+        <conv:EnumEqualsToVisibilityConverter x:Key="EnumVisibility" />
+        <conv:BoolToVisibilityConverter x:Key="BoolVisibility" />
+        <conv:InverseBoolToVisibilityConverter x:Key="InverseBoolVisibility" />
+        <conv:BoolToCompletionLabelConverter x:Key="CompletionLabel" />
+        <SolidColorBrush x:Key="TaskBackgroundBrush" Color="#BAE9F7EF" />
+        <SolidColorBrush x:Key="ImportantTaskBackgroundBrush" Color="#FECACA" />
+        <SolidColorBrush x:Key="ImportantTaskBorderBrush" Color="#EF4444" />
+        <SolidColorBrush x:Key="ImportantTaskTextBrush" Color="#B91C1C" />
+        <SolidColorBrush x:Key="HolidayBreakBrush" Color="#FEE2E2" />
+        <SolidColorBrush x:Key="HolidayWorkBrush" Color="#DBEAFE" />
+        <SolidColorBrush x:Key="HolidayTextBrush" Color="#991B1B" />
+        <SolidColorBrush x:Key="HolidayWorkTextBrush" Color="#1D4ED8" />
+        <SolidColorBrush x:Key="DayCellBackgroundBrush" Color="#AFFFFFFF" />
+        <SolidColorBrush x:Key="DayCellOutMonthBackgroundBrush" Color="#6FFFFFFF" />
+        <SolidColorBrush x:Key="TodayCellBackgroundBrush" Color="#BFDCEBFE" />
+        <SolidColorBrush x:Key="TodayCellBorderBrush" Color="#993B82F6" />
+        <!-- 选中态：使用高饱和强调蓝，与"非本月日期"的灰色明确区分 -->
+        <SolidColorBrush x:Key="SelectedCellBackgroundBrush" Color="#662563EB" />
+        <SolidColorBrush x:Key="SelectedCellBorderBrush" Color="#FF2563EB" />
+        <SolidColorBrush x:Key="SelectedYearCellBackgroundBrush" Color="#CC2563EB" />
+        <SolidColorBrush x:Key="TodayPanelBackgroundBrush" Color="#99FFFFFF" />
+        <SolidColorBrush x:Key="TodayPanelBorderBrush" Color="#33000000" />
+        <SolidColorBrush x:Key="YearMonthBackgroundBrush" Color="#96FFFFFF" />
+        <SolidColorBrush x:Key="YearCellBackgroundBrush" Color="#55FFFFFF" />
+        <SolidColorBrush x:Key="PrimaryTextBrush" Color="#111827" />
+        <SolidColorBrush x:Key="MutedTextBrush" Color="#6B7280" />
+        <SolidColorBrush x:Key="CellBorderBrush" Color="#18000000" />
+        <SolidColorBrush x:Key="TaskBorderBrush" Color="#33000000" />
+        <SolidColorBrush x:Key="InlineInputBackgroundBrush" Color="#DFFFFFFF" />
+        <SolidColorBrush x:Key="ToolbarControlBackgroundBrush" Color="#AFFFFFFF" />
+        <SolidColorBrush x:Key="ToolbarControlBorderBrush" Color="#22000000" />
+        <SolidColorBrush x:Key="ToolbarControlHoverBrush" Color="#DFFFFFFF" />
+        <SolidColorBrush x:Key="ToolbarControlPressedBrush" Color="#CFE5E7EB" />
+        <SolidColorBrush x:Key="ToolbarTrackBrush" Color="#66FFFFFF" />
+        <SolidColorBrush x:Key="ToolbarThumbBrush" Color="#E5FFFFFF" />
+        <!-- 本周任务完成情况 三组卡片：内层背景比外层略深，营造"陷下去"的层次感 -->
+        <SolidColorBrush x:Key="WeekGroupBackgroundBrush" Color="#1AFFFFFF" />
+        <SolidColorBrush x:Key="WeekGroupBorderBrush" Color="#14000000" />
+        <SolidColorBrush x:Key="WeekGroupHoverBrush" Color="#33FFFFFF" />
+        <!-- WeekTaskRow 单行条目悬停高亮；比 WeekGroupHoverBrush 略深，给单行 vs 整组以区分 -->
+        <SolidColorBrush x:Key="WeekTaskRowHoverBrush" Color="#26000000" />
+        <SolidColorBrush x:Key="WeekDoneCheckBrush" Color="#157347" />
+        <SolidColorBrush x:Key="WindowEdgeBrush" Color="#28000000" />
+
+        <!-- 任务列表滚动条样式 - 细竖条，主题色 -->
+        <Style x:Key="TaskListScrollViewer" TargetType="ScrollViewer">
+            <!-- Hidden = 滚动条不显示（也不占位置），但滚轮/程序滚动照常可用 -->
+            <Setter Property="VerticalScrollBarVisibility" Value="Hidden" />
+            <Setter Property="HorizontalScrollBarVisibility" Value="Disabled" />
+            <EventSetter Event="PreviewMouseWheel" Handler="TaskListScrollViewer_PreviewMouseWheel" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ScrollViewer">
+                        <Grid>
+                            <ScrollContentPresenter />
+                            <Track x:Name="PART_VerticalTrack"
+                                   Grid.Column="1"
+                                   IsDirectionReversed="True"
+                                   Visibility="{TemplateBinding ComputedVerticalScrollBarVisibility}">
+                                <Track.Thumb>
+                                    <Thumb>
+                                        <Thumb.Template>
+                                            <ControlTemplate TargetType="Thumb">
+                                                <Border Background="#60000000"
+                                                        CornerRadius="3"
+                                                        Width="6"
+                                                        Margin="0,2,0,2" />
+                                            </ControlTemplate>
+                                        </Thumb.Template>
+                                    </Thumb>
+                                </Track.Thumb>
+                            </Track>
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="PART_VerticalTrack" Property="Visibility" Value="Visible" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- 月份时间轴滚动条：细竖条，可拖动 / 点击翻页 -->
+        <Style x:Key="ThinThumbStyle" TargetType="Thumb">
+            <Setter Property="Width" Value="6" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Thumb">
+                        <Border Width="6"
+                                CornerRadius="3"
+                                Margin="0,2"
+                                Background="#52000000" />
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="ThinPageButtonStyle" TargetType="RepeatButton">
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="RepeatButton">
+                        <Border Background="Transparent" />
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="MonthScrollBarStyle" TargetType="ScrollBar">
+            <Setter Property="Width" Value="12" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ScrollBar">
+                        <Track x:Name="PART_Track"
+                               IsDirectionReversed="True"
+                               ViewportSize="{TemplateBinding ViewportSize}"
+                               Maximum="{TemplateBinding Maximum}"
+                               Value="{TemplateBinding Value}"
+                               Orientation="Vertical">
+                            <Track.DecreaseRepeatButton>
+                                <RepeatButton Command="ScrollBar.PageUpCommand" Style="{StaticResource ThinPageButtonStyle}" />
+                            </Track.DecreaseRepeatButton>
+                            <Track.Thumb>
+                                <Thumb Style="{StaticResource ThinThumbStyle}" />
+                            </Track.Thumb>
+                            <Track.IncreaseRepeatButton>
+                                <RepeatButton Command="ScrollBar.PageDownCommand" Style="{StaticResource ThinPageButtonStyle}" />
+                            </Track.IncreaseRepeatButton>
+                        </Track>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="MonthScrollViewerStyle" TargetType="ScrollViewer">
+            <!-- Hidden = 滚动条不显示（也不占位置），但滚轮/程序滚动照常可用 -->
+            <Setter Property="VerticalScrollBarVisibility" Value="Hidden" />
+            <Setter Property="HorizontalScrollBarVisibility" Value="Disabled" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ScrollViewer">
+                        <Grid>
+                            <ScrollContentPresenter />
+                            <Grid HorizontalAlignment="Right" Width="12" Margin="0,4,0,4" Background="Transparent">
+                                <!-- 细竖线（主题色，半透明）作为滚动条轨道背景 -->
+                                <Rectangle Width="2"
+                                            HorizontalAlignment="Center"
+                                            RadiusX="1"
+                                            RadiusY="1"
+                                            Fill="{DynamicResource WindowEdgeBrush}"
+                                            Opacity="0.55" />
+                                <ScrollBar x:Name="PART_VerticalScrollBar"
+                                           Width="12"
+                                           Background="Transparent"
+                                           Style="{StaticResource MonthScrollBarStyle}"
+                                           Visibility="{TemplateBinding ComputedVerticalScrollBarVisibility}" />
+                            </Grid>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="IconButton" TargetType="Button">
+            <Setter Property="MinWidth" Value="30" />
+            <Setter Property="Height" Value="26" />
+            <Setter Property="Padding" Value="8,2" />
+            <Setter Property="Margin" Value="2,0" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="BorderBrush" Value="{DynamicResource ToolbarControlBorderBrush}" />
+            <Setter Property="Background" Value="{DynamicResource ToolbarControlBackgroundBrush}" />
+            <Setter Property="Foreground" Value="{DynamicResource PrimaryTextBrush}" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type Button}">
+                        <Border x:Name="ButtonChrome"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="2">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"
+                                              Margin="{TemplateBinding Padding}"
+                                              RecognizesAccessKey="True" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="ButtonChrome" Property="Background" Value="{DynamicResource ToolbarControlHoverBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="ButtonChrome" Property="Background" Value="{DynamicResource ToolbarControlPressedBrush}" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="SegmentButton" TargetType="Button" BasedOn="{StaticResource IconButton}">
+            <Setter Property="FontWeight" Value="SemiBold" />
+        </Style>
+
+        <Style x:Key="CloseButton" TargetType="Button" BasedOn="{StaticResource IconButton}">
+            <Setter Property="Width" Value="28" />
+            <Setter Property="MinWidth" Value="28" />
+            <Setter Property="Height" Value="28" />
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="Margin" Value="2,0" />
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="FontWeight" Value="Normal" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type Button}">
+                        <Border x:Name="ButtonChrome"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="14">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"
+                                              Margin="{TemplateBinding Padding}"
+                                              RecognizesAccessKey="True" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="ButtonChrome" Property="Background" Value="{DynamicResource ToolbarControlHoverBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="ButtonChrome" Property="Background" Value="{DynamicResource ToolbarControlPressedBrush}" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="ToolbarText" TargetType="TextBlock">
+            <Setter Property="VerticalAlignment" Value="Center" />
+            <Setter Property="Margin" Value="8,0,4,0" />
+            <Setter Property="Foreground" Value="{DynamicResource MutedTextBrush}" />
+        </Style>
+
+        <Style x:Key="ToolbarComboBox" TargetType="ComboBox">
+            <Setter Property="Height" Value="28" />
+            <Setter Property="Padding" Value="8,2" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+            <Setter Property="Foreground" Value="{DynamicResource PrimaryTextBrush}" />
+            <Setter Property="Background" Value="{DynamicResource ToolbarControlBackgroundBrush}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource ToolbarControlBorderBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="SnapsToDevicePixels" Value="True" />
+            <Setter Property="ItemContainerStyle">
+                <Setter.Value>
+                    <Style TargetType="{x:Type ComboBoxItem}">
+                        <Setter Property="Foreground" Value="{DynamicResource PrimaryTextBrush}" />
+                        <Setter Property="Background" Value="{DynamicResource ToolbarControlBackgroundBrush}" />
+                        <Setter Property="BorderBrush" Value="Transparent" />
+                        <Setter Property="BorderThickness" Value="0" />
+                        <Setter Property="Padding" Value="8,4" />
+                        <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                        <Setter Property="Template">
+                            <Setter.Value>
+                                <ControlTemplate TargetType="{x:Type ComboBoxItem}">
+                                    <Border x:Name="ItemChrome"
+                                            Background="{TemplateBinding Background}"
+                                            BorderBrush="{TemplateBinding BorderBrush}"
+                                            BorderThickness="{TemplateBinding BorderThickness}"
+                                            CornerRadius="2"
+                                            Padding="{TemplateBinding Padding}">
+                                        <ContentPresenter VerticalAlignment="Center"
+                                                          HorizontalAlignment="Left" />
+                                    </Border>
+                                    <ControlTemplate.Triggers>
+                                        <Trigger Property="IsHighlighted" Value="True">
+                                            <Setter TargetName="ItemChrome" Property="Background" Value="{DynamicResource ToolbarControlHoverBrush}" />
+                                        </Trigger>
+                                        <Trigger Property="IsSelected" Value="True">
+                                            <Setter TargetName="ItemChrome" Property="Background" Value="{DynamicResource ToolbarControlPressedBrush}" />
+                                        </Trigger>
+                                    </ControlTemplate.Triggers>
+                                </ControlTemplate>
+                            </Setter.Value>
+                        </Setter>
+                    </Style>
+                </Setter.Value>
+            </Setter>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type ComboBox}">
+                        <Grid>
+                            <ToggleButton x:Name="ToggleButton"
+                                          Focusable="False"
+                                          IsChecked="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}"
+                                          ClickMode="Press">
+                                <ToggleButton.Template>
+                                    <ControlTemplate TargetType="{x:Type ToggleButton}">
+                                        <Border x:Name="ComboChrome"
+                                                Background="{DynamicResource ToolbarControlBackgroundBrush}"
+                                                BorderBrush="{DynamicResource ToolbarControlBorderBrush}"
+                                                BorderThickness="{TemplateBinding BorderThickness}"
+                                                CornerRadius="2">
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="18" />
+                                                </Grid.ColumnDefinitions>
+                                                <TextBlock Margin="8,0,2,0"
+                                                           HorizontalAlignment="Left"
+                                                           VerticalAlignment="Center"
+                                                           FontWeight="Normal"
+                                                           Foreground="{DynamicResource PrimaryTextBrush}"
+                                                           Text="{Binding SelectedItem.Content, RelativeSource={RelativeSource AncestorType={x:Type ComboBox}}}"
+                                                           TextTrimming="CharacterEllipsis" />
+                                                <Path Grid.Column="1"
+                                                      Width="7"
+                                                      Height="4"
+                                                      HorizontalAlignment="Center"
+                                                      VerticalAlignment="Center"
+                                                      Fill="{DynamicResource PrimaryTextBrush}"
+                                                      Data="M 0 0 L 7 0 L 3.5 4 Z" />
+                                            </Grid>
+                                        </Border>
+                                        <ControlTemplate.Triggers>
+                                            <Trigger Property="IsMouseOver" Value="True">
+                                                <Setter TargetName="ComboChrome" Property="Background" Value="{DynamicResource ToolbarControlHoverBrush}" />
+                                            </Trigger>
+                                            <Trigger Property="IsChecked" Value="True">
+                                                <Setter TargetName="ComboChrome" Property="Background" Value="{DynamicResource ToolbarControlPressedBrush}" />
+                                            </Trigger>
+                                        </ControlTemplate.Triggers>
+                                    </ControlTemplate>
+                                </ToggleButton.Template>
+                            </ToggleButton>
+                            <Popup x:Name="PART_Popup"
+                                   AllowsTransparency="True"
+                                   Focusable="False"
+                                   IsOpen="{Binding IsDropDownOpen, RelativeSource={RelativeSource TemplatedParent}}"
+                                   Placement="Bottom"
+                                   PopupAnimation="Fade">
+                                <Border Background="{DynamicResource ToolbarControlBackgroundBrush}"
+                                        BorderBrush="{DynamicResource ToolbarControlBorderBrush}"
+                                        BorderThickness="1"
+                                        CornerRadius="2"
+                                        MinWidth="{Binding ActualWidth, RelativeSource={RelativeSource TemplatedParent}}"
+                                        MaxHeight="{TemplateBinding MaxDropDownHeight}">
+                                    <ScrollViewer CanContentScroll="True"
+                                                  VerticalScrollBarVisibility="Hidden"
+                                                  HorizontalScrollBarVisibility="Disabled">
+                                        <ItemsPresenter />
+                                    </ScrollViewer>
+                                </Border>
+                            </Popup>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="ToolbarSlider" TargetType="Slider">
+            <Setter Property="Height" Value="28" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+            <!-- 点击轨道任意位置直接跳到该值，而不是只按 LargeChange 整段跳变 -->
+            <Setter Property="IsMoveToPointEnabled" Value="True" />
+            <Setter Property="Foreground" Value="{DynamicResource ToolbarThumbBrush}" />
+            <Setter Property="Background" Value="{DynamicResource ToolbarTrackBrush}" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type Slider}">
+                        <Grid Height="{TemplateBinding Height}">
+                            <Track x:Name="PART_Track" VerticalAlignment="Center" Height="20">
+                                <Track.DecreaseRepeatButton>
+                                    <RepeatButton Command="Slider.DecreaseLarge" Focusable="False">
+                                        <RepeatButton.Template>
+                                            <ControlTemplate TargetType="{x:Type RepeatButton}">
+                                                <Border Height="3"
+                                                        CornerRadius="2"
+                                                        Background="{DynamicResource ToolbarTrackBrush}" />
+                                            </ControlTemplate>
+                                        </RepeatButton.Template>
+                                    </RepeatButton>
+                                </Track.DecreaseRepeatButton>
+                                <Track.Thumb>
+                                    <Thumb Width="10"
+                                           Height="22"
+                                           Cursor="Hand">
+                                        <Thumb.Template>
+                                            <ControlTemplate TargetType="{x:Type Thumb}">
+                                                <Border CornerRadius="2"
+                                                        Background="{DynamicResource ToolbarThumbBrush}"
+                                                        BorderBrush="{DynamicResource ToolbarControlBorderBrush}"
+                                                        BorderThickness="1" />
+                                            </ControlTemplate>
+                                        </Thumb.Template>
+                                    </Thumb>
+                                </Track.Thumb>
+                                <Track.IncreaseRepeatButton>
+                                    <RepeatButton Command="Slider.IncreaseLarge" Focusable="False">
+                                        <RepeatButton.Template>
+                                            <ControlTemplate TargetType="{x:Type RepeatButton}">
+                                                <Border Height="3"
+                                                        CornerRadius="2"
+                                                        Background="{DynamicResource ToolbarTrackBrush}" />
+                                            </ControlTemplate>
+                                        </RepeatButton.Template>
+                                    </RepeatButton>
+                                </Track.IncreaseRepeatButton>
+                            </Track>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="ToolbarCheckBox" TargetType="CheckBox">
+            <Setter Property="Margin" Value="8,0" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+            <Setter Property="Foreground" Value="{DynamicResource PrimaryTextBrush}" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type CheckBox}">
+                        <StackPanel Orientation="Horizontal"
+                                    VerticalAlignment="Center">
+                            <Border x:Name="Box"
+                                    Width="14"
+                                    Height="14"
+                                    CornerRadius="2"
+                                    Background="{DynamicResource ToolbarControlBackgroundBrush}"
+                                    BorderBrush="{DynamicResource ToolbarControlBorderBrush}"
+                                    BorderThickness="1"
+                                    Margin="0,0,4,0">
+                                <Path x:Name="CheckMark"
+                                      Data="M 3 7 L 6 10 L 11 3"
+                                      Stroke="{DynamicResource PrimaryTextBrush}"
+                                      StrokeThickness="1.8"
+                                      StrokeStartLineCap="Round"
+                                      StrokeEndLineCap="Round"
+                                      Visibility="Collapsed" />
+                            </Border>
+                            <ContentPresenter VerticalAlignment="Center" />
+                        </StackPanel>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="CheckMark" Property="Visibility" Value="Visible" />
+                            </Trigger>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Box" Property="Background" Value="{DynamicResource ToolbarControlHoverBrush}" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- 任务悬浮提示：显示创建时间 / 完成时间 / 未完成天数 / 逾期天数 / 完成用时 -->
+        <Style x:Key="TaskToolTipStyle" TargetType="ToolTip">
+            <Setter Property="MaxWidth" Value="330" />
+            <Setter Property="Padding" Value="8,6" />
+            <Setter Property="FontSize" Value="11.5" />
+            <Setter Property="Foreground" Value="#111827" />
+        </Style>
+
+        <Style x:Key="TaskTextStyle" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="{DynamicResource PrimaryTextBrush}" />
+            <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+            <Setter Property="FontSize" Value="9" />
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding IsImportant}" Value="True">
+                    <Setter Property="Foreground" Value="{DynamicResource ImportantTaskTextBrush}" />
+                    <Setter Property="FontWeight" Value="SemiBold" />
+                </DataTrigger>
+                <DataTrigger Binding="{Binding IsCompleted}" Value="True">
+                    <Setter Property="Opacity" Value="0.45" />
+                    <Setter Property="TextDecorations" Value="Strikethrough" />
+                    <Setter Property="FontWeight" Value="SemiBold" />
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+
+        <Style x:Key="TaskPillStyle" TargetType="Border">
+            <Setter Property="Background" Value="{DynamicResource TaskBackgroundBrush}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource TaskBorderBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="4" />
+            <Setter Property="Margin" Value="0,1" />
+            <Setter Property="Padding" Value="3,0" />
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding IsImportant}" Value="True">
+                    <Setter Property="Background" Value="{DynamicResource ImportantTaskBackgroundBrush}" />
+                    <Setter Property="BorderBrush" Value="{DynamicResource ImportantTaskBorderBrush}" />
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+
+        <DataTemplate x:Key="TaskTemplate" DataType="{x:Type vm:TaskItemViewModel}">
+            <Border Style="{StaticResource TaskPillStyle}"
+                    ToolTipService.ShowDuration="20000"
+                    MouseLeftButtonDown="Task_MouseLeftButtonDown">
+                <Border.ToolTip>
+                    <ToolTip Style="{StaticResource TaskToolTipStyle}" Content="{Binding TooltipText}" />
+                </Border.ToolTip>
+                <Border.ContextMenu>
+                    <ContextMenu DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}">
+                        <MenuItem Header="标记为已完成" Click="CompleteTask_Click" />
+                        <MenuItem Header="标记为未完成" Click="IncompleteTask_Click" />
+                        <Separator />
+                        <MenuItem Header="标为重要"
+                                  Click="ImportantTask_Click"
+                                  Visibility="{Binding IsImportant, Converter={StaticResource InverseBoolVisibility}}" />
+                        <MenuItem Header="取消重要"
+                                  Click="UnimportantTask_Click"
+                                  Visibility="{Binding IsImportant, Converter={StaticResource BoolVisibility}}" />
+                        <Separator />
+                        <MenuItem Header="编辑" Click="EditTask_Click" />
+                        <MenuItem Header="删除" Click="DeleteTask_Click" />
+                    </ContextMenu>
+                </Border.ContextMenu>
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <!-- 左侧：完成标记 + 重要标记 + 标题 -->
+                    <StackPanel Grid.Column="0"
+                                Orientation="Horizontal"
+                                Visibility="{Binding IsEditing, Converter={StaticResource InverseBoolVisibility}}">
+                        <TextBlock Text="✓"
+                                   Margin="0,0,4,0"
+                                   Foreground="#157347"
+                                   FontWeight="Bold"
+                                   VerticalAlignment="Center"
+                                   Visibility="{Binding IsCompleted, Converter={StaticResource BoolVisibility}}" />
+                        <TextBlock Text="★"
+                                   Margin="0,0,3,0"
+                                   Foreground="{DynamicResource ImportantTaskTextBrush}"
+                                   FontWeight="Bold"
+                                   VerticalAlignment="Center"
+                                   Visibility="{Binding IsImportant, Converter={StaticResource BoolVisibility}}" />
+                        <TextBlock Text="{Binding Title}"
+                                   Style="{StaticResource TaskTextStyle}" />
+                    </StackPanel>
+                    <!-- 右侧：复选框，固定显示，用于快速标记完成 -->
+                    <CheckBox Grid.Column="1"
+                              IsChecked="{Binding IsCompleted, Mode=OneWay}"
+                              Checked="TaskCheckBox_Changed"
+                              Unchecked="TaskCheckBox_Changed"
+                              Margin="4,0,0,0"
+                              VerticalAlignment="Center"
+                              Cursor="Hand" />
+                    <!-- 编辑模式下的 TextBox -->
+                    <TextBox Grid.ColumnSpan="2"
+                             Tag="{Binding Id}"
+                             Text="{Binding EditTitle, UpdateSourceTrigger=PropertyChanged}"
+                             Visibility="{Binding IsEditing, Converter={StaticResource BoolVisibility}}"
+                             Background="{DynamicResource InlineInputBackgroundBrush}"
+                             BorderBrush="{DynamicResource TaskBorderBrush}"
+                             BorderThickness="1"
+                             Padding="3,1"
+                             FontSize="10"
+                             KeyDown="TaskEditTextBox_KeyDown"
+                             LostFocus="TaskEditTextBox_LostFocus" />
+                </Grid>
+            </Border>
+        </DataTemplate>
+
+        <DataTemplate x:Key="HolidayTemplate">
+            <Border CornerRadius="4"
+                    Margin="3,0,0,0"
+                    Padding="4,0"
+                    Height="18">
+                <Border.Style>
+                    <Style TargetType="Border">
+                        <Setter Property="Background" Value="{DynamicResource HolidayBreakBrush}" />
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding IsMakeupWorkday}" Value="True">
+                                <Setter Property="Background" Value="{DynamicResource HolidayWorkBrush}" />
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </Border.Style>
+                <TextBlock Text="{Binding BadgeText}"
+                           FontSize="11"
+                           VerticalAlignment="Center"
+                           TextTrimming="CharacterEllipsis">
+                    <TextBlock.Style>
+                        <Style TargetType="TextBlock">
+                            <Setter Property="Foreground" Value="{DynamicResource HolidayTextBrush}" />
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding IsMakeupWorkday}" Value="True">
+                                    <Setter Property="Foreground" Value="{DynamicResource HolidayWorkTextBrush}" />
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </TextBlock.Style>
+                </TextBlock>
+            </Border>
+        </DataTemplate>
+
+        <DataTemplate x:Key="DayCellTemplate" DataType="{x:Type vm:DayCellViewModel}">
+            <!-- 注意：BorderBrush / BorderThickness 必须放在 Style Setter 里。
+                 若写成元素本地值，其优先级高于 Style 触发器，会导致今日/选中态的边框高亮失效。 -->
+            <Border CornerRadius="6"
+                    Height="{Binding DataContext.CurrentDayCellHeight, RelativeSource={RelativeSource AncestorType=Window}}"
+                    Margin="1"
+                    Padding="4"
+                    PreviewMouseLeftButtonDown="DayCell_PreviewMouseLeftButtonDown">
+                <Border.Style>
+                    <Style TargetType="Border">
+                        <Setter Property="Background" Value="{DynamicResource DayCellBackgroundBrush}" />
+                        <Setter Property="BorderBrush" Value="{DynamicResource CellBorderBrush}" />
+                        <Setter Property="BorderThickness" Value="0.5" />
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding IsInCurrentMonth}" Value="False">
+                                <Setter Property="Opacity" Value="0.46" />
+                                <Setter Property="Background" Value="{DynamicResource DayCellOutMonthBackgroundBrush}" />
+                            </DataTrigger>
+                            <DataTrigger Binding="{Binding IsToday}" Value="True">
+                                <Setter Property="Opacity" Value="1" />
+                                <Setter Property="Background" Value="{DynamicResource TodayCellBackgroundBrush}" />
+                                <Setter Property="BorderBrush" Value="{DynamicResource TodayCellBorderBrush}" />
+                                <Setter Property="BorderThickness" Value="1.2" />
+                            </DataTrigger>
+                            <!-- 选中态放在最后：同优先级下后来者覆盖，确保选中优先于今日/非本月 -->
+                            <DataTrigger Binding="{Binding IsSelected}" Value="True">
+                                <Setter Property="Opacity" Value="1" />
+                                <Setter Property="Background" Value="{DynamicResource SelectedCellBackgroundBrush}" />
+                                <Setter Property="BorderBrush" Value="{DynamicResource SelectedCellBorderBrush}" />
+                                <Setter Property="BorderThickness" Value="1.6" />
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </Border.Style>
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+                    <DockPanel>
+                        <!-- 任务数量显示（右上角） -->
+                        <TextBlock DockPanel.Dock="Right"
+                                   Text="{Binding TaskCount}"
+                                   FontSize="10"
+                                   Foreground="{DynamicResource MutedTextBrush}"
+                                   VerticalAlignment="Center"
+                                   Margin="4,0,0,0"
+                                   Visibility="{Binding HasTasks, Converter={StaticResource BoolVisibility}}" />
+                        <ItemsControl DockPanel.Dock="Right"
+                                      ItemsSource="{Binding Holidays}"
+                                      ItemTemplate="{StaticResource HolidayTemplate}"
+                                      Visibility="{Binding Holidays.Count, Converter={StaticResource BoolVisibility}}">
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <StackPanel Orientation="Horizontal" />
+                                </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                        </ItemsControl>
+                        <TextBlock Text="{Binding DayNumber}"
+                                   FontWeight="SemiBold"
+                                   Foreground="{DynamicResource PrimaryTextBrush}"
+                                   FontSize="12" />
+                    </DockPanel>
+                    <!-- 任务列表支持滑动 -->
+                    <ScrollViewer Grid.Row="1"
+                                  Margin="0,3,0,0"
+                                  Style="{StaticResource TaskListScrollViewer}">
+                        <ItemsControl ItemsSource="{Binding Tasks}"
+                                      ItemTemplate="{StaticResource TaskTemplate}" />
+                    </ScrollViewer>
+                    <TextBox Grid.Row="2"
+                             Tag="{Binding Date}"
+                             Text="{Binding DraftTitle, UpdateSourceTrigger=PropertyChanged}"
+                             Visibility="{Binding IsAddingTask, Converter={StaticResource BoolVisibility}}"
+                             MinHeight="20"
+                             Margin="0,3,0,0"
+                             Padding="3,1"
+                             BorderThickness="1"
+                             BorderBrush="{DynamicResource TaskBorderBrush}"
+                             Background="{DynamicResource InlineInputBackgroundBrush}"
+                             FontSize="11"
+                             KeyDown="InlineTaskTextBox_KeyDown"
+                             LostFocus="InlineTaskTextBox_LostFocus" />
+                    <!-- 选中格子后右上角显示加号按钮 -->
+                    <Button Grid.Row="0"
+                            Grid.Column="1"
+                            Content="+"
+                            FontSize="16"
+                            FontWeight="Bold"
+                            Width="24"
+                            Height="24"
+                            Padding="0"
+                            Margin="0,0,0,0"
+                            HorizontalAlignment="Right"
+                            VerticalAlignment="Top"
+                            Cursor="Hand"
+                            BorderThickness="0"
+                            Background="Transparent"
+                            Foreground="{DynamicResource PrimaryTextBrush}"
+                            Click="AddTaskOnSelectedCell_Click"
+                            Visibility="{Binding IsSelected, Converter={StaticResource BoolVisibility}}">
+                        <Button.Style>
+                            <Style TargetType="Button">
+                                <Setter Property="Template">
+                                    <Setter.Value>
+                                        <ControlTemplate TargetType="Button">
+                                            <Border x:Name="border"
+                                                    Background="{TemplateBinding Background}"
+                                                    CornerRadius="4"
+                                                    Padding="{TemplateBinding Padding}">
+                                                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                            </Border>
+                                            <ControlTemplate.Triggers>
+                                                <Trigger Property="IsMouseOver" Value="True">
+                                                    <Setter TargetName="border" Property="Background" Value="{DynamicResource TaskBackgroundBrush}" />
+                                                </Trigger>
+                                            </ControlTemplate.Triggers>
+                                        </ControlTemplate>
+                                    </Setter.Value>
+                                </Setter>
+                            </Style>
+                        </Button.Style>
+                    </Button>
+                </Grid>
+            </Border>
+        </DataTemplate>
+
+        <DataTemplate x:Key="YearMonthTemplate" DataType="{x:Type vm:MonthSummaryViewModel}">
+            <Border Background="{DynamicResource YearMonthBackgroundBrush}"
+                    BorderBrush="#22000000"
+                    BorderThickness="1"
+                    CornerRadius="7"
+                    Height="{Binding DataContext.YearMonthHeight, RelativeSource={RelativeSource AncestorType=Window}}"
+                    Margin="4"
+                    Padding="6">
+                <DockPanel LastChildFill="True">
+                    <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,4">
+                        <TextBlock Text="{Binding Title}" FontSize="14" FontWeight="Bold" Foreground="{DynamicResource PrimaryTextBrush}" />
+                        <TextBlock Text="{Binding TaskCount, StringFormat={}  {0}项}"
+                                   Foreground="{DynamicResource MutedTextBrush}"
+                                   VerticalAlignment="Center"
+                                   Margin="6,1,0,0" />
+                    </StackPanel>
+                    <ItemsControl ItemsSource="{Binding Days}">
+                        <ItemsControl.ItemsPanel>
+                            <ItemsPanelTemplate>
+                                <UniformGrid Columns="7" />
+                            </ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate DataType="{x:Type vm:DayCellViewModel}">
+                                <Border Height="{Binding DataContext.YearCellHeight, RelativeSource={RelativeSource AncestorType=Window}}"
+                                        Margin="1"
+                                        Padding="3"
+                                        CornerRadius="4"
+                                        PreviewMouseLeftButtonDown="DayCell_PreviewMouseLeftButtonDown">
+                                    <Border.Style>
+                                        <Style TargetType="Border">
+                                            <Setter Property="Background" Value="{DynamicResource YearCellBackgroundBrush}" />
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding IsInCurrentMonth}" Value="False">
+                                                    <Setter Property="Opacity" Value="0.25" />
+                                                </DataTrigger>
+                                                <DataTrigger Binding="{Binding IsToday}" Value="True">
+                                                    <Setter Property="Opacity" Value="1" />
+                                                    <Setter Property="BorderThickness" Value="1" />
+                                                    <Setter Property="Background" Value="{DynamicResource TodayCellBackgroundBrush}" />
+                                                    <Setter Property="BorderBrush" Value="{DynamicResource TodayCellBorderBrush}" />
+                                                </DataTrigger>
+                                                <DataTrigger Binding="{Binding IsSelected}" Value="True">
+                                                    <Setter Property="Opacity" Value="1" />
+                                                    <Setter Property="Background" Value="{DynamicResource SelectedCellBackgroundBrush}" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </Border.Style>
+                                    <Grid>
+                                        <TextBlock Text="{Binding DayNumber}" FontSize="11" Foreground="{DynamicResource PrimaryTextBrush}" />
+                                        <StackPanel Orientation="Horizontal"
+                                                    HorizontalAlignment="Right"
+                                                    VerticalAlignment="Bottom">
+                                            <TextBlock Text="{Binding FirstHolidayBadge}"
+                                                       FontSize="9"
+                                                       FontWeight="Bold"
+                                                       Foreground="{DynamicResource HolidayTextBrush}"
+                                                       Margin="0,0,3,0"
+                                                       Visibility="{Binding HasHolidays, Converter={StaticResource BoolVisibility}}" />
+                                            <Ellipse Width="6"
+                                                     Height="6"
+                                                     Fill="#22C55E"
+                                                     Visibility="{Binding Tasks.Count, Converter={StaticResource BoolVisibility}}" />
+                                        </StackPanel>
+                                    </Grid>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </DockPanel>
+                </Border>
+            </DataTemplate>
+
+            <DataTemplate x:Key="MonthBlockTemplate" DataType="{x:Type vm:MonthBlockViewModel}">
+                <StackPanel Margin="0,0,0,10">
+                    <TextBlock Text="{Binding Title}"
+                               FontSize="16"
+                               FontWeight="Bold"
+                               Foreground="{DynamicResource PrimaryTextBrush}"
+                               Margin="6,4,0,6" />
+                    <UniformGrid Columns="7" Margin="4,0,4,2">
+                        <TextBlock Text="日" HorizontalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" />
+                        <TextBlock Text="一" HorizontalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" />
+                        <TextBlock Text="二" HorizontalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" />
+                        <TextBlock Text="三" HorizontalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" />
+                        <TextBlock Text="四" HorizontalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" />
+                        <TextBlock Text="五" HorizontalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" />
+                        <TextBlock Text="六" HorizontalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" />
+                    </UniformGrid>
+                    <ItemsControl ItemsSource="{Binding Days}" ItemTemplate="{StaticResource DayCellTemplate}">
+                        <ItemsControl.ItemsPanel>
+                            <ItemsPanelTemplate>
+                                <UniformGrid Columns="7" />
+                            </ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+                    </ItemsControl>
+                </StackPanel>
+            </DataTemplate>
+
+        <!-- ===== 今日任务面板 ===== -->
+
+        <Style x:Key="TodayTaskTextStyle" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="{DynamicResource PrimaryTextBrush}" />
+            <Setter Property="TextWrapping" Value="Wrap" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+            <Setter Property="FontSize" Value="11.5" />
+            <Setter Property="LineHeight" Value="15" />
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding IsImportant}" Value="True">
+                    <Setter Property="Foreground" Value="{DynamicResource ImportantTaskTextBrush}" />
+                    <Setter Property="FontWeight" Value="SemiBold" />
+                </DataTrigger>
+                <DataTrigger Binding="{Binding IsCompleted}" Value="True">
+                    <Setter Property="Opacity" Value="0.5" />
+                    <Setter Property="FontWeight" Value="SemiBold" />
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+
+        <!-- 今日任务条目：标题自动换行，完整展示，不截断 -->
+        <DataTemplate x:Key="TodayTaskItemTemplate" DataType="{x:Type vm:TaskItemViewModel}">
+            <Border Margin="0,0,0,4"
+                    Padding="5,4"
+                    CornerRadius="5"
+                    BorderThickness="1"
+                    ToolTipService.ShowDuration="20000"
+                    MouseLeftButtonDown="Task_MouseLeftButtonDown">
+                <Border.ToolTip>
+                    <ToolTip Style="{StaticResource TaskToolTipStyle}" Content="{Binding TooltipText}" />
+                </Border.ToolTip>
+                <Border.Style>
+                    <Style TargetType="Border">
+                        <Setter Property="Background" Value="{DynamicResource TaskBackgroundBrush}" />
+                        <Setter Property="BorderBrush" Value="{DynamicResource TaskBorderBrush}" />
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding IsImportant}" Value="True">
+                                <Setter Property="Background" Value="{DynamicResource ImportantTaskBackgroundBrush}" />
+                                <Setter Property="BorderBrush" Value="{DynamicResource ImportantTaskBorderBrush}" />
+                            </DataTrigger>
+                            <DataTrigger Binding="{Binding IsCompleted}" Value="True">
+                                <Setter Property="Opacity" Value="0.62" />
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </Border.Style>
+                <Border.ContextMenu>
+                    <ContextMenu DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}">
+                        <MenuItem Header="标记为已完成" Click="CompleteTask_Click" />
+                        <MenuItem Header="标记为未完成" Click="IncompleteTask_Click" />
+                        <Separator />
+                        <MenuItem Header="标为重要"
+                                  Click="ImportantTask_Click"
+                                  Visibility="{Binding IsImportant, Converter={StaticResource InverseBoolVisibility}}" />
+                        <MenuItem Header="取消重要"
+                                  Click="UnimportantTask_Click"
+                                  Visibility="{Binding IsImportant, Converter={StaticResource BoolVisibility}}" />
+                        <Separator />
+                        <MenuItem Header="编辑" Click="EditTask_Click" />
+                        <MenuItem Header="删除" Click="DeleteTask_Click" />
+                    </ContextMenu>
+                </Border.ContextMenu>
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <CheckBox Grid.Column="0"
+                              IsChecked="{Binding IsCompleted, Mode=OneWay}"
+                              Checked="TaskCheckBox_Changed"
+                              Unchecked="TaskCheckBox_Changed"
+                              VerticalAlignment="Top"
+                              Margin="0,0,5,0"
+                              Cursor="Hand" />
+                    <!-- 标题 + 时间徽标（未完成 N 天 / 逾期 N 天 / 用时 X） -->
+                    <StackPanel Grid.Column="1"
+                                Visibility="{Binding IsEditing, Converter={StaticResource InverseBoolVisibility}}">
+                        <TextBlock Text="{Binding Title}"
+                                   Style="{StaticResource TodayTaskTextStyle}" />
+                        <TextBlock Text="{Binding TimeBadge}"
+                                   FontSize="9.5"
+                                   Foreground="{DynamicResource MutedTextBrush}"
+                                   Margin="0,1,0,0" />
+                    </StackPanel>
+                    <TextBox Grid.Column="1"
+                             Text="{Binding EditTitle, UpdateSourceTrigger=PropertyChanged}"
+                             Visibility="{Binding IsEditing, Converter={StaticResource BoolVisibility}}"
+                             AcceptsReturn="True"
+                             TextWrapping="Wrap"
+                             Padding="3,2"
+                             FontSize="11.5"
+                             BorderThickness="1"
+                             BorderBrush="{DynamicResource TaskBorderBrush}"
+                             Background="{DynamicResource InlineInputBackgroundBrush}"
+                             KeyDown="TaskEditTextBox_KeyDown"
+                             LostFocus="TaskEditTextBox_LostFocus" />
+                </Grid>
+            </Border>
+        </DataTemplate>
+
+        <!-- ===== 右侧面板（今日任务 + 本周任务完成情况） ===== -->
+
+        <!-- 日期任务分组头模板（保留备用：当前改用显式集合 + 内联标题，未再引用） -->
+        <DataTemplate x:Key="DateGroupHeaderTemplate">
+            <DockPanel Margin="0,6,0,2" LastChildFill="True">
+                <TextBlock DockPanel.Dock="Right"
+                           Text="{Binding ItemCount, StringFormat={}({0})}"
+                           FontSize="10.5"
+                           Foreground="{DynamicResource MutedTextBrush}"
+                           VerticalAlignment="Center" />
+                <TextBlock Text="{Binding Name, Converter={StaticResource CompletionLabel}}"
+                           FontSize="10.5"
+                           FontWeight="SemiBold"
+                           Foreground="{DynamicResource MutedTextBrush}"
+                           VerticalAlignment="Center" />
+            </DockPanel>
+        </DataTemplate>
+
+
+
+        <!-- 本周任务三子项的图标按钮样式：紧凑、悬停高亮，删除用红 / 打勾用绿 / 取消打勾用橙 -->
+        <Style x:Key="WeekSectionIconButton" TargetType="Button">
+            <Setter Property="Width" Value="20" />
+            <Setter Property="Height" Value="18" />
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="Margin" Value="2,0,0,0" />
+            <Setter Property="FontSize" Value="11" />
+            <Setter Property="FontWeight" Value="Bold" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Background" Value="Transparent" />
+        </Style>
+        <!-- 本周任务条目：日期 + 标题 + 状态，单行紧凑 -->
+        <!-- ⚠️ WeekTaskRow 样式必须在本 DataTemplate 之前定义：WPF StaticResource 不支持前向引用，
+             在 DataTemplate 之后定义的同名 Style 不会被找到，会导致整个右侧本周任务列表渲染失败。
+             历史上这里出过 XamlParseException（资源未找到）让 UI 一片空白，必须避开。 -->
+        <Style x:Key="WeekTaskRow" TargetType="Border">
+            <Setter Property="Margin" Value="0,0,0,2" />
+            <Setter Property="Padding" Value="4,3" />
+            <Setter Property="CornerRadius" Value="5" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="{DynamicResource WeekTaskRowHoverBrush}" />
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+
+        <DataTemplate x:Key="WeekTaskItemTemplate" DataType="{x:Type vm:TaskItemViewModel}">
+            <Border Style="{StaticResource WeekTaskRow}"
+                    MouseLeftButtonDown="WeekTaskRow_MouseLeftButtonDown"
+                    ToolTipService.ShowDuration="20000">
+                <Border.ToolTip>
+                    <ToolTip Style="{StaticResource TaskToolTipStyle}" Content="{Binding TooltipText}" />
+                </Border.ToolTip>
+                <Border.ContextMenu>
+                    <ContextMenu DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}">
+                        <MenuItem Header="标记为已完成" Click="CompleteTask_Click" />
+                        <MenuItem Header="标记为未完成" Click="IncompleteTask_Click" />
+                        <Separator />
+                        <MenuItem Header="标为重要"
+                                  Click="ImportantTask_Click"
+                                  Visibility="{Binding IsImportant, Converter={StaticResource InverseBoolVisibility}}" />
+                        <MenuItem Header="取消重要"
+                                  Click="UnimportantTask_Click"
+                                  Visibility="{Binding IsImportant, Converter={StaticResource BoolVisibility}}" />
+                        <Separator />
+                        <MenuItem Header="删除" Click="DeleteTask_Click" />
+                    </ContextMenu>
+                </Border.ContextMenu>
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="20" />
+                        <ColumnDefinition Width="34" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <CheckBox Grid.Column="0"
+                              IsChecked="{Binding IsCompleted, Mode=OneWay}"
+                              Click="WeekTaskCheck_Click"
+                              VerticalAlignment="Center"
+                              HorizontalAlignment="Center"
+                              Margin="0,0,2,0"
+                              ToolTip="点击切换完成状态" />
+                    <TextBlock Grid.Column="1"
+                               Text="{Binding Date, StringFormat={}{0:M/d}}"
+                               FontSize="10.5"
+                               Foreground="{DynamicResource MutedTextBrush}"
+                               VerticalAlignment="Center">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock">
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsCompleted}" Value="True">
+                                        <Setter Property="Opacity" Value="0.5" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
+                    <!-- 标题 + 时间徽标（逾期 N 天 / 未完成 N 天 / 用时 X） -->
+                    <StackPanel Grid.Column="2"
+                                VerticalAlignment="Center"
+                                Margin="2,0,4,0">
+                        <TextBlock Text="{Binding Title}"
+                                   FontSize="11"
+                                   TextTrimming="CharacterEllipsis">
+                            <TextBlock.Style>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="Foreground" Value="{DynamicResource PrimaryTextBrush}" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding IsImportant}" Value="True">
+                                            <Setter Property="Foreground" Value="{DynamicResource ImportantTaskTextBrush}" />
+                                            <Setter Property="FontWeight" Value="SemiBold" />
+                                        </DataTrigger>
+                                        <DataTrigger Binding="{Binding IsCompleted}" Value="True">
+                                            <Setter Property="Opacity" Value="0.45" />
+                                            <Setter Property="TextDecorations" Value="Strikethrough" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBlock.Style>
+                        </TextBlock>
+                        <TextBlock Text="{Binding TimeBadge}"
+                                   FontSize="9"
+                                   Foreground="{DynamicResource MutedTextBrush}" />
+                    </StackPanel>
+                    <TextBlock Grid.Column="3"
+                               Text="✓"
+                               FontSize="11"
+                               FontWeight="Bold"
+                               Foreground="{DynamicResource WeekDoneCheckBrush}"
+                               VerticalAlignment="Center"
+                               Visibility="{Binding IsCompleted, Converter={StaticResource BoolVisibility}}" />
+                </Grid>
+            </Border>
+        </DataTemplate>
+
+        <!-- 逾期未完成条目：与 WeekTaskItemTemplate 结构一致，但日期与标题全部用红色 -->
+        <DataTemplate x:Key="WeekOverdueTaskItemTemplate" DataType="{x:Type vm:TaskItemViewModel}">
+            <Border Style="{StaticResource WeekTaskRow}"
+                    MouseLeftButtonDown="WeekTaskRow_MouseLeftButtonDown"
+                    ToolTipService.ShowDuration="20000">
+                <Border.ToolTip>
+                    <ToolTip Style="{StaticResource TaskToolTipStyle}" Content="{Binding TooltipText}" />
+                </Border.ToolTip>
+                <Border.ContextMenu>
+                    <ContextMenu DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}">
+                        <MenuItem Header="标记为已完成" Click="CompleteTask_Click" />
+                        <MenuItem Header="标记为未完成" Click="IncompleteTask_Click" />
+                        <Separator />
+                        <MenuItem Header="标为重要"
+                                  Click="ImportantTask_Click"
+                                  Visibility="{Binding IsImportant, Converter={StaticResource InverseBoolVisibility}}" />
+                        <MenuItem Header="取消重要"
+                                  Click="UnimportantTask_Click"
+                                  Visibility="{Binding IsImportant, Converter={StaticResource BoolVisibility}}" />
+                        <Separator />
+                        <MenuItem Header="删除" Click="DeleteTask_Click" />
+                    </ContextMenu>
+                </Border.ContextMenu>
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="20" />
+                        <ColumnDefinition Width="34" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <CheckBox Grid.Column="0"
+                              IsChecked="{Binding IsCompleted, Mode=OneWay}"
+                              Click="WeekTaskCheck_Click"
+                              VerticalAlignment="Center"
+                              HorizontalAlignment="Center"
+                              Margin="0,0,2,0"
+                              ToolTip="点击切换完成状态" />
+                    <TextBlock Grid.Column="1"
+                               Text="{Binding Date, StringFormat={}{0:M/d}}"
+                               FontSize="10.5"
+                               FontWeight="SemiBold"
+                               Foreground="{DynamicResource ImportantTaskTextBrush}"
+                               VerticalAlignment="Center" />
+                    <!-- 逾期行：标题红色 + 时间徽标 -->
+                    <StackPanel Grid.Column="2"
+                                VerticalAlignment="Center"
+                                Margin="2,0,4,0">
+                        <TextBlock Text="{Binding Title}"
+                                   FontSize="11"
+                                   TextTrimming="CharacterEllipsis"
+                                   Foreground="{DynamicResource ImportantTaskTextBrush}" />
+                        <TextBlock Text="{Binding TimeBadge}"
+                                   FontSize="9"
+                                   Foreground="{DynamicResource ImportantTaskTextBrush}" />
+                    </StackPanel>
+                    <TextBlock Grid.Column="3"
+                               Text="逾期"
+                               FontSize="10"
+                               Foreground="{DynamicResource ImportantTaskTextBrush}"
+                               VerticalAlignment="Center" />
+                </Grid>
+            </Border>
+        </DataTemplate>
+
+        <!-- 本周三个分组的通用列表（标题 + 计数 + 紧凑条目列表）
+             视觉与演示页对齐：圆角 7、内层比外层稍深的浅灰玻璃，鼠标悬停时整张卡片轻微高亮 -->
+        <Style x:Key="WeekGroupSection" TargetType="Border">
+            <Setter Property="Margin" Value="0,7,0,0" />
+            <Setter Property="Padding" Value="7,6" />
+            <Setter Property="CornerRadius" Value="7" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="BorderBrush" Value="{DynamicResource WeekGroupBorderBrush}" />
+            <Setter Property="Background" Value="{DynamicResource WeekGroupBackgroundBrush}" />
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="{DynamicResource WeekGroupHoverBrush}" />
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+
+        <!-- 右侧面板主体：上 = 选中日期的任务（按完成情况分组），下 = 本周任务完成情况（三组） -->
+        <DataTemplate x:Key="RightPanelTemplate">
+            <Border CornerRadius="8"
+                    Padding="8,7"
+                    BorderThickness="1"
+                    Background="{DynamicResource TodayPanelBackgroundBrush}"
+                    BorderBrush="{DynamicResource TodayPanelBorderBrush}">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+
+                    <!-- ===== 顶部：日期任务面板（标题 + + 按钮 + 快速添加） ===== -->
+                    <DockPanel Grid.Row="0" Margin="0,0,0,4">
+                        <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+                            <!-- 一键清空当前日期的所有任务（按 visible 控制：只有当日任务非空时才显示，
+                                 避免在空状态多一个无用的清空按钮） -->
+                            <Button x:Name="ClearPanelDateButton"
+                                    Content="清空"
+                                    FontSize="10"
+                                    Padding="6,2"
+                                    Margin="4,0,0,0"
+                                    Cursor="Hand"
+                                    BorderThickness="1"
+                                    Background="Transparent"
+                                    BorderBrush="{DynamicResource MutedTextBrush}"
+                                    Foreground="{DynamicResource MutedTextBrush}"
+                                    ToolTip="删除这一天的所有任务（不可撤销）"
+                                    Click="ClearPanelDate_Click"
+                                    Visibility="{Binding HasTodayTasks, Converter={StaticResource BoolVisibility}}" />
+                            <Button Content="+"
+                                    Width="22" Height="22"
+                                    FontSize="15" FontWeight="Bold"
+                                    Padding="0" Margin="4,0,0,0"
+                                    Cursor="Hand" BorderThickness="0"
+                                    Background="Transparent"
+                                    Foreground="{DynamicResource PrimaryTextBrush}"
+                                    Click="AddTodayTask_Click" />
+                        </StackPanel>
+                        <StackPanel VerticalAlignment="Center">
+                            <TextBlock Text="{Binding PanelHeader}"
+                                       FontSize="13" FontWeight="Bold"
+                                       Foreground="{DynamicResource PrimaryTextBrush}" />
+                            <TextBlock Text="{Binding TodayTaskSummary}"
+                                       FontSize="10.5"
+                                       Foreground="{DynamicResource MutedTextBrush}"
+                                       Margin="0,2,0,0" />
+                        </StackPanel>
+                    </DockPanel>
+                    <TextBox Grid.Row="1"
+                             Tag="TodayTaskDraftBox"
+                             Text="{Binding TodayTaskDraft, UpdateSourceTrigger=PropertyChanged}"
+                             Visibility="{Binding IsAddingTodayTask, Converter={StaticResource BoolVisibility}}"
+                             Margin="0,0,0,4"
+                             Padding="4,3"
+                             FontSize="11.5"
+                             BorderThickness="1"
+                             BorderBrush="{DynamicResource TaskBorderBrush}"
+                             Background="{DynamicResource InlineInputBackgroundBrush}"
+                             KeyDown="TodayTaskTextBox_KeyDown"
+                             LostFocus="TodayTaskTextBox_LostFocus" />
+
+                    <!-- ===== 底部：本周任务完成情况（始终基于今天所在的那一周） + 上面日期任务分组列表 ===== -->
+                    <ScrollViewer Grid.Row="2"
+                                  VerticalScrollBarVisibility="Hidden"
+                                  HorizontalScrollBarVisibility="Disabled"
+                                  PreviewMouseWheel="TodayPanelScrollViewer_PreviewMouseWheel">
+                        <StackPanel>
+                            <!-- 选中日期的任务：未完成 / 已完成两段（由 ViewModel 直接搬运，不依赖 WPF 分组重排） -->
+                            <StackPanel>
+                                <StackPanel Visibility="{Binding HasTodayOpen, Converter={StaticResource BoolVisibility}}">
+                                    <TextBlock Text="{Binding TodayTaskPending, StringFormat=未完成 ({0})}"
+                                               FontSize="10.5"
+                                               FontWeight="SemiBold"
+                                               Foreground="{DynamicResource MutedTextBrush}"
+                                               Margin="0,4,0,2" />
+                                    <ItemsControl ItemsSource="{Binding TodayOpenTasks}"
+                                                  ItemTemplate="{StaticResource TodayTaskItemTemplate}" />
+                                </StackPanel>
+                                <StackPanel Margin="0,6,0,0"
+                                            Visibility="{Binding HasTodayCompleted, Converter={StaticResource BoolVisibility}}">
+                                    <TextBlock Text="已完成"
+                                               FontSize="10.5"
+                                               FontWeight="SemiBold"
+                                               Foreground="{DynamicResource MutedTextBrush}"
+                                               Margin="0,2,0,2" />
+                                    <ItemsControl ItemsSource="{Binding TodayCompletedTasks}"
+                                                  ItemTemplate="{StaticResource TodayTaskItemTemplate}" />
+                                </StackPanel>
+                            </StackPanel>
+                            <TextBlock Text="还没有任务，点右上角 + 添加一条"
+                                       FontSize="11"
+                                       Foreground="{DynamicResource MutedTextBrush}"
+                                       TextWrapping="Wrap"
+                                       TextAlignment="Center"
+                                       Margin="2,6,2,4"
+                                       Visibility="{Binding HasTodayTasks, Converter={StaticResource InverseBoolVisibility}}" />
+
+                            <!-- ===== 本周任务完成情况 ===== -->
+                            <Border Margin="0,10,0,0"
+                                    Padding="8,7"
+                                    CornerRadius="9"
+                                    BorderThickness="1"
+                                    Background="{DynamicResource TodayPanelBackgroundBrush}"
+                                    BorderBrush="{DynamicResource TodayPanelBorderBrush}">
+                                <StackPanel>
+                                    <!-- 标题一行 -->
+                                    <TextBlock Text="本周任务完成情况"
+                                               FontSize="12"
+                                               FontWeight="Bold"
+                                               Foreground="{DynamicResource PrimaryTextBrush}"
+                                               Margin="0,0,0,0" />
+                                    <TextBlock Text="{Binding WeekSummary}"
+                                               FontSize="10.5"
+                                               Foreground="{DynamicResource MutedTextBrush}"
+                                               Margin="0,2,0,0"
+                                               TextWrapping="Wrap" />
+
+                                    <!-- ① 逾期未完成（排最前，文字全红；右侧 3 个图标：删除 / 打勾） -->
+                                    <Border Style="{StaticResource WeekGroupSection}">
+                                        <StackPanel>
+                                            <DockPanel>
+                                                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+                                                    <Button x:Name="ClearOverdueButton" Style="{StaticResource WeekSectionIconButton}"
+                                                            Content="✕"
+                                                            Foreground="#B91C1C"
+                                                            ToolTip="一键删除全部逾期未完成的任务"
+                                                            Click="ClearOverdueTasks_Click" />
+                                                    <Button x:Name="MarkOverdueCompletedButton" Style="{StaticResource WeekSectionIconButton}"
+                                                            Content="✓"
+                                                            Foreground="#157347"
+                                                            ToolTip="一键把所有逾期任务标记为已完成"
+                                                            Click="MarkOverdueCompleted_Click" />
+                                                    <TextBlock Margin="6,0,0,0"
+                                                               Text="{Binding WeekOverdueCount, StringFormat=({0})}"
+                                                               FontSize="10.5"
+                                                               Foreground="{DynamicResource ImportantTaskTextBrush}"
+                                                               VerticalAlignment="Center" />
+                                                </StackPanel>
+                                                <TextBlock Text="逾期未完成"
+                                                           FontSize="10.5" FontWeight="SemiBold"
+                                                           Foreground="{DynamicResource ImportantTaskTextBrush}"
+                                                           VerticalAlignment="Center" />
+                                            </DockPanel>
+                                            <ItemsControl ItemsSource="{Binding WeekOverdueTasks}"
+                                                          ItemTemplate="{StaticResource WeekOverdueTaskItemTemplate}" />
+                                            <TextBlock Text="所有过期未完成的任务（含历史欠账）"
+                                                       FontSize="10.5"
+                                                       Foreground="{DynamicResource MutedTextBrush}"
+                                                       Margin="2,2,0,0"
+                                                       Visibility="{Binding HasWeekOverdue, Converter={StaticResource InverseBoolVisibility}}" />
+                                        </StackPanel>
+                                    </Border>
+
+                                    <!-- ② 未完成（右侧 3 个图标：删除 / 打勾） -->
+                                    <Border Style="{StaticResource WeekGroupSection}">
+                                        <StackPanel>
+                                            <DockPanel>
+                                                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+                                                    <Button x:Name="ClearOpenButton" Style="{StaticResource WeekSectionIconButton}"
+                                                            Content="✕"
+                                                            Foreground="#B91C1C"
+                                                            ToolTip="一键删除全部本周未完成的任务"
+                                                            Click="ClearOpenTasks_Click" />
+                                                    <Button x:Name="MarkOpenCompletedButton" Style="{StaticResource WeekSectionIconButton}"
+                                                            Content="✓"
+                                                            Foreground="#157347"
+                                                            ToolTip="一键把所有本周未完成任务标记为已完成"
+                                                            Click="MarkOpenCompleted_Click" />
+                                                    <TextBlock Margin="6,0,0,0"
+                                                               Text="{Binding WeekOpenCount, StringFormat=({0})}"
+                                                               FontSize="10.5"
+                                                               Foreground="{DynamicResource MutedTextBrush}"
+                                                               VerticalAlignment="Center" />
+                                                </StackPanel>
+                                                <TextBlock Text="未完成"
+                                                           FontSize="10.5" FontWeight="SemiBold"
+                                                           Foreground="{DynamicResource PrimaryTextBrush}"
+                                                           VerticalAlignment="Center" />
+                                            </DockPanel>
+                                            <ItemsControl ItemsSource="{Binding WeekOpenTasks}"
+                                                          ItemTemplate="{StaticResource WeekTaskItemTemplate}" />
+                                            <TextBlock Text="本周内待办的任务"
+                                                       FontSize="10.5"
+                                                       Foreground="{DynamicResource MutedTextBrush}"
+                                                       Margin="2,2,0,0"
+                                                       Visibility="{Binding HasWeekOpen, Converter={StaticResource InverseBoolVisibility}}" />
+                                        </StackPanel>
+                                    </Border>
+
+                                    <!-- ③ 已完成（右侧 3 个图标：删除 / 取消打勾） -->
+                                    <Border Style="{StaticResource WeekGroupSection}">
+                                        <StackPanel>
+                                            <DockPanel>
+                                                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+                                                    <Button x:Name="ClearCompletedButton" Style="{StaticResource WeekSectionIconButton}"
+                                                            Content="✕"
+                                                            Foreground="#B91C1C"
+                                                            ToolTip="一键删除全部本周已完成的任务"
+                                                            Click="ClearCompletedTasks_Click" />
+                                                    <Button x:Name="MarkCompletedIncompleteButton" Style="{StaticResource WeekSectionIconButton}"
+                                                            Content="↺"
+                                                            Foreground="#2563EB"
+                                                            ToolTip="一键把本周已完成任务还原为未完成"
+                                                            Click="MarkCompletedIncomplete_Click" />
+                                                    <TextBlock Margin="6,0,0,0"
+                                                               Text="{Binding WeekCompletedCount, StringFormat=({0})}"
+                                                               FontSize="10.5"
+                                                               Foreground="{DynamicResource MutedTextBrush}"
+                                                               VerticalAlignment="Center" />
+                                                </StackPanel>
+                                                <TextBlock Text="已完成"
+                                                           FontSize="10.5" FontWeight="SemiBold"
+                                                           Foreground="{DynamicResource PrimaryTextBrush}"
+                                                           VerticalAlignment="Center" />
+                                            </DockPanel>
+                                            <ItemsControl ItemsSource="{Binding WeekCompletedTasks}"
+                                                          ItemTemplate="{StaticResource WeekTaskItemTemplate}" />
+                                            <TextBlock Text="本周内已完成的任务"
+                                                       FontSize="10.5"
+                                                       Foreground="{DynamicResource MutedTextBrush}"
+                                                       Margin="2,2,0,0"
+                                                       Visibility="{Binding HasWeekCompleted, Converter={StaticResource InverseBoolVisibility}}" />
+                                        </StackPanel>
+                                    </Border>
+                                </StackPanel>
+                            </Border>
+                        </StackPanel>
+                    </ScrollViewer>
+                </Grid>
+            </Border>
+        </DataTemplate>
+
+    </Window.Resources>
+
+    <Border x:Name="Shell"
+            CornerRadius="22"
+            BorderThickness="1"
+            BorderBrush="{DynamicResource WindowEdgeBrush}"
+            Background="#D8FFFFFF"
+            Padding="8"
+            VerticalAlignment="Stretch"
+            ClipToBounds="True"
+            SnapsToDevicePixels="True"
+            SizeChanged="Shell_SizeChanged"
+            MouseLeftButtonDown="Shell_MouseLeftButtonDown"
+            MouseMove="Shell_MouseMove"
+            MouseEnter="Shell_MouseEnter"
+            MouseLeave="Shell_MouseLeave">
+        <Grid>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+
+        <DockPanel x:Name="ToolbarPanel"
+                   Grid.Row="0"
+                   Margin="0,0,0,6"
+                   LastChildFill="True"
+                   MouseLeftButtonDown="TitleBar_MouseLeftButtonDown">
+                <StackPanel Orientation="Horizontal" DockPanel.Dock="Right" VerticalAlignment="Center">
+                    <!-- 设置按钮：矢量齿轮图标（不用 ⚙ 字符，该字符在部分字体下会退化成彩色 emoji） -->
+                    <Button Style="{StaticResource SegmentButton}" Click="Settings_Click" Margin="0,0,2,0" Padding="7,3">
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                            <Viewbox Width="13" Height="13" Stretch="Uniform" Margin="0,0,4,0">
+                                <Path Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                                      StrokeThickness="1.7"
+                                      StrokeStartLineCap="Round"
+                                      StrokeEndLineCap="Round">
+                                    <Path.Data>
+                                        <!-- 24x24 网格：外缘 8 齿 + 主体圆 + 中心孔 -->
+                                        <GeometryGroup>
+                                            <LineGeometry StartPoint="12,4.6" EndPoint="12,1.8" />
+                                            <LineGeometry StartPoint="12,19.4" EndPoint="12,22.2" />
+                                            <LineGeometry StartPoint="4.6,12" EndPoint="1.8,12" />
+                                            <LineGeometry StartPoint="19.4,12" EndPoint="22.2,12" />
+                                            <LineGeometry StartPoint="6.77,6.77" EndPoint="4.79,4.79" />
+                                            <LineGeometry StartPoint="17.23,6.77" EndPoint="19.21,4.79" />
+                                            <LineGeometry StartPoint="17.23,17.23" EndPoint="19.21,19.21" />
+                                            <LineGeometry StartPoint="6.77,17.23" EndPoint="4.79,19.21" />
+                                            <EllipseGeometry Center="12,12" RadiusX="7.4" RadiusY="7.4" />
+                                            <EllipseGeometry Center="12,12" RadiusX="2.8" RadiusY="2.8" />
+                                        </GeometryGroup>
+                                    </Path.Data>
+                                </Path>
+                            </Viewbox>
+                            <TextBlock Text="设置" VerticalAlignment="Center" />
+                        </StackPanel>
+                    </Button>
+                    <Button x:Name="CloseButton" Content="×" Style="{StaticResource CloseButton}" Click="Close_Click" />
+                </StackPanel>
+                <StackPanel Orientation="Vertical" DockPanel.Dock="Left" VerticalAlignment="Center" Margin="0,0,0,0">
+                    <!-- 第一行：时间/星期，今日任务量，本周任务量 -->
+                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,0,4">
+                        <TextBlock Text="{Binding TodayDisplay}"
+                                   FontSize="14"
+                                   FontWeight="SemiBold"
+                                   Foreground="{DynamicResource PrimaryTextBrush}"
+                                   VerticalAlignment="Center" />
+                        <TextBlock Text="{Binding TodayTaskCount}"
+                                   FontSize="12"
+                                   Foreground="{DynamicResource MutedTextBrush}"
+                                   VerticalAlignment="Center"
+                                   Margin="12,0,0,0" />
+                        <TextBlock Text="{Binding ThisWeekTaskCount}"
+                                   FontSize="12"
+                                   Foreground="{DynamicResource MutedTextBrush}"
+                                   VerticalAlignment="Center"
+                                   Margin="8,0,0,0" />
+                    </StackPanel>
+                    <!-- 第二行：视图切换、背景、透明度、开机自启 -->
+                    <StackPanel x:Name="ViewControlsPanel" Orientation="Horizontal" VerticalAlignment="Center">
+                        <Button Content="今天" Style="{StaticResource SegmentButton}" Margin="0,0,8,0" Click="Today_Click" />
+                        <Button Content="月视图" Style="{StaticResource SegmentButton}" Margin="0,0,2,0" Click="MonthView_Click" />
+                        <Button Content="周视图" Style="{StaticResource SegmentButton}" Margin="0,0,2,0" Click="WeekView_Click" />
+                        <Button Content="年视图" Style="{StaticResource SegmentButton}" Click="YearView_Click" />
+                        <TextBlock Text="背景" Style="{StaticResource ToolbarText}" />
+                        <ComboBox x:Name="BackgroundModeBox"
+                                  Width="104"
+                                  Style="{StaticResource ToolbarComboBox}"
+                                  SelectionChanged="BackgroundModeBox_SelectionChanged">
+                            <ComboBoxItem Content="毛玻璃" Tag="Glass" />
+                            <ComboBoxItem Content="透明" Tag="Transparent" />
+                            <ComboBoxItem Content="纯色" Tag="Solid" />
+                            <ComboBoxItem Content="无背景" Tag="None" />
+                            <ComboBoxItem Content="白雾玻璃" Tag="FrostedWhite" />
+                            <ComboBoxItem Content="灰雾玻璃" Tag="FrostedGray" />
+                            <ComboBoxItem Content="暗色磨砂" Tag="FrostedDark" />
+                            <ComboBoxItem Content="蓝色亚克力" Tag="AcrylicBlue" />
+                            <ComboBoxItem Content="薄荷玻璃" Tag="AcrylicMint" />
+                            <ComboBoxItem Content="纸感浅白" Tag="PaperLight" />
+                            <ComboBoxItem Content="石墨深色" Tag="Graphite" />
+                        </ComboBox>
+                        <TextBlock Text="透明度" Style="{StaticResource ToolbarText}" />
+                        <Slider x:Name="OpacitySlider"
+                                Width="86"
+                                Minimum="0.02"
+                                Maximum="1"
+                                Style="{StaticResource ToolbarSlider}"
+                                ValueChanged="OpacitySlider_ValueChanged" />
+                        <CheckBox x:Name="LockScrollBox"
+                                  Content="锁定滚动"
+                                  Style="{StaticResource ToolbarCheckBox}"
+                                  Checked="LockScrollBox_Changed"
+                                  Unchecked="LockScrollBox_Changed" />
+                    </StackPanel>
+                </StackPanel>
+            </DockPanel>
+
+            <Grid Grid.Row="1">
+                <Grid x:Name="CalendarBody">
+                    <Grid x:Name="NormalViewHost">
+                        <!-- 月视图：左侧连续月份时间轴 + 右侧今日任务 -->
+                        <Grid Visibility="{Binding Settings.ViewMode, Converter={StaticResource EnumVisibility}, ConverterParameter=Month}">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="212" />
+                    </Grid.ColumnDefinitions>
+                    <!-- 这里刻意不用 UI 虚拟化：每个月份块内部就是 42 个日期格子（每格还带右键菜单），
+                         块级虚拟化会把"一次性建好"变成"每次滚动都拆掉重建一个块"，实测滚动明显变卡，
+                         而且逻辑滚动（按项）粒度太粗，拖动时一跳就是一整个月。
+                         内存改由「时间轴窗口上限 + 远端裁剪」来兜底（见 MainViewModel.TrimTimeline）。 -->
+                    <ScrollViewer x:Name="MonthScrollViewer"
+                              Grid.Column="0"
+                              Margin="0,0,0,0"
+                              Style="{StaticResource MonthScrollViewerStyle}"
+                              VerticalScrollBarVisibility="Hidden"
+                              HorizontalScrollBarVisibility="Disabled"
+                              CanContentScroll="False"
+                              ScrollChanged="MonthScrollViewer_ScrollChanged"
+                              PreviewMouseWheel="MonthScrollViewer_PreviewMouseWheel"
+                              PreviewMouseDown="MonthScrollViewer_PreviewMouseDown"
+                              PreviewMouseUp="MonthScrollViewer_PreviewMouseUp"
+                              RequestBringIntoView="MonthScrollViewer_RequestBringIntoView">
+                    <ItemsControl x:Name="MonthItemsControl"
+                                  ItemsSource="{Binding TimelineMonths}"
+                                  ItemTemplate="{StaticResource MonthBlockTemplate}">
+                        <ItemsControl.ItemsPanel>
+                            <ItemsPanelTemplate>
+                                <StackPanel />
+                            </ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+                    </ItemsControl>
+                </ScrollViewer>
+                    <ContentControl Grid.Column="1"
+                                    Margin="8,0,0,0"
+                                    Content="{Binding}"
+                                    ContentTemplate="{StaticResource RightPanelTemplate}" />
+                </Grid>
+
+                <!-- 周视图：星期标题 + 日期格子 + 下方今日任务 -->
+                <Grid Visibility="{Binding Settings.ViewMode, Converter={StaticResource EnumVisibility}, ConverterParameter=Week}">
+                    <!-- 周视图高度由窗口尺寸控制：顶部日期格保持 Auto，底部任务面板占满剩余空间。 -->
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+                    <!-- 星期标题 -->
+                    <UniformGrid Grid.Row="0" Columns="7" Margin="1,0">
+                        <TextBlock Text="日" HorizontalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" FontSize="11" FontWeight="SemiBold" Padding="0,0,0,2" />
+                        <TextBlock Text="一" HorizontalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" FontSize="11" FontWeight="SemiBold" Padding="0,0,0,2" />
+                        <TextBlock Text="二" HorizontalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" FontSize="11" FontWeight="SemiBold" Padding="0,0,0,2" />
+                        <TextBlock Text="三" HorizontalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" FontSize="11" FontWeight="SemiBold" Padding="0,0,0,2" />
+                        <TextBlock Text="四" HorizontalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" FontSize="11" FontWeight="SemiBold" Padding="0,0,0,2" />
+                        <TextBlock Text="五" HorizontalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" FontSize="11" FontWeight="SemiBold" Padding="0,0,0,2" />
+                        <TextBlock Text="六" HorizontalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" FontSize="11" FontWeight="SemiBold" Padding="0,0,0,2" />
+                    </UniformGrid>
+                    <!-- 日期格子 -->
+                    <ItemsControl Grid.Row="1" ItemsSource="{Binding VisibleDays}"
+                                  ItemTemplate="{StaticResource DayCellTemplate}">
+                        <ItemsControl.ItemsPanel>
+                            <ItemsPanelTemplate>
+                                <UniformGrid Columns="7" />
+                            </ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+                    </ItemsControl>
+                    <!-- 今日任务 + 本周任务完成情况：直接占满剩余高度，拉伸窗口时跟随变大。 -->
+                    <ContentControl Grid.Row="2"
+                                    Margin="0,8,0,0"
+                                    MinHeight="160"
+                                    Content="{Binding}"
+                                    ContentTemplate="{StaticResource RightPanelTemplate}" />
+                </Grid>
+
+                <!-- 年视图：左侧 12 个月 + 右侧今日任务 -->
+                <Grid Visibility="{Binding Settings.ViewMode, Converter={StaticResource EnumVisibility}, ConverterParameter=Year}">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="212" />
+                    </Grid.ColumnDefinitions>
+                    <ScrollViewer x:Name="YearScrollViewer"
+                              Grid.Column="0"
+                              Style="{StaticResource TaskListScrollViewer}"
+                              Margin="0,0,0,22"
+                              PreviewMouseWheel="YearScrollViewer_PreviewMouseWheel">
+                    <ItemsControl x:Name="YearItemsControl" ItemsSource="{Binding YearMonths}" ItemTemplate="{StaticResource YearMonthTemplate}">
+                        <ItemsControl.ItemsPanel>
+                            <ItemsPanelTemplate>
+                                <UniformGrid Columns="3" />
+                            </ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+                    </ItemsControl>
+                </ScrollViewer>
+                    <ContentControl Grid.Column="1"
+                                    Margin="8,0,0,22"
+                                    Content="{Binding}"
+                                    ContentTemplate="{StaticResource RightPanelTemplate}" />
+                    </Grid>
+                </Grid>
+                    <ContentControl x:Name="NarrowTaskOnlyView"
+                                    Visibility="Collapsed"
+                                    HorizontalAlignment="Stretch"
+                                    VerticalAlignment="Stretch"
+                                    Content="{Binding}"
+                                    ContentTemplate="{StaticResource RightPanelTemplate}" />
+            </Grid>
+            </Grid>
+            <Thumb x:Name="ResizeGrip"
+                   Grid.RowSpan="2"
+                   Width="26"
+                   Height="26"
+                   HorizontalAlignment="Right"
+                   VerticalAlignment="Bottom"
+                   Margin="0,0,1,1"
+                   Cursor="SizeNWSE"
+                   DragStarted="ResizeGrip_DragStarted"
+                   DragDelta="ResizeGrip_DragDelta"
+                   DragCompleted="ResizeGrip_DragCompleted"
+                   Panel.ZIndex="1000">
+                <Thumb.Template>
+                    <ControlTemplate TargetType="{x:Type Thumb}">
+                        <Canvas Background="Transparent"
+                                Width="26"
+                                Height="26">
+                            <Line X1="13" Y1="23" X2="23" Y2="13" Stroke="{DynamicResource MutedTextBrush}" StrokeThickness="1.2" />
+                            <Line X1="18" Y1="23" X2="23" Y2="18" Stroke="{DynamicResource MutedTextBrush}" StrokeThickness="1.2" />
+                            <Line X1="8" Y1="23" X2="23" Y2="8" Stroke="{DynamicResource MutedTextBrush}" StrokeThickness="1.2" />
+                        </Canvas>
+                    </ControlTemplate>
+                </Thumb.Template>
+            </Thumb>
+        </Grid>
+    </Border>
+</Window>
