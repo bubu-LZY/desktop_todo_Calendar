@@ -1,0 +1,35 @@
+bin/
+obj/
+publish/
+output/
+installer/
+release/
+dist/
+*.user
+*.suo
+.vs/
+TestResults/
+*.log
+
+# 本地临时工作目录（打包/发布中间产物）
+.workbuddy/
+.workbuddy-scratch/
+
+# Build artifacts
+MicaAgenda.Publish/
+
+# Legacy source zips
+MicaAgenda-Source-*.zip
+desktop_todo_Calendar-Source-*.zip
+
+# Test data
+MicaAgenda.UiTestAppData/
+MicaAgenda.UiSmokeAppData/
+MicaAgenda.ScreenshotAppData.*/
+
+# Legacy name artifacts
+DesktopCalendar.Publish/
+DesktopCalendar-v*.zip
+DesktopCalendar.UiTestAppData/
+DesktopCalendar.UiSmokeAppData/
+DesktopCalendar.ScreenshotAppData.*/
