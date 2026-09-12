@@ -101,7 +101,7 @@ dotnet test MicaAgenda.Tests -c Release
 dotnet build MicaAgenda.sln -c Release
 
 # 跨平台宿主：MicaAgenda.Desktop（Avalonia）
-dotnet publish MicaAgenda.Desktop -r win-x64 --self-contained true -c Release -o installer/publish
+dotnet publish MicaAgenda.Desktop -r win-x64 --self-contained true -c Release -o pkg
 ```
 
 ### 构建安装程序

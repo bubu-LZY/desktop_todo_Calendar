@@ -36,9 +36,9 @@ Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: 
 Name: "autostart"; Description: "开机自启动"; GroupDescription: "附加任务:"
 
 [Files]
-; 复制整个 publish 目录：自包含发布仍需要旁边的原生依赖 DLL
+; 复制整个 pkg 目录（dotnet publish -o pkg 的产物）：自包含发布仍需要旁边的原生依赖 DLL
 ; (Avalonia 的 libSkiaSharp / libHarfBuzzSharp 等)，否则干净机器上启动即崩溃。
-Source: "installer\publish\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs
+Source: "pkg\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs
 ; GPL-3.0 合规：安装目录必须随附许可证
 Source: "LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 
