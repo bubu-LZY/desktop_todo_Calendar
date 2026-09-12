@@ -48,10 +48,25 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
 
-          choco install innosetup --no-progress -y
+          # 定位 ISCC.exe：Program Files / Program Files (x86) / chocolatey 三处都找。
+          # 注意 PowerShell 里 $env:ProgramFiles(x86) 是非法解析（$env:ProgramFiles + 字面量 (x86)），
+          # 必须写成 ${env:ProgramFiles(x86)}，否则 32 位安装目录永远搜不到 → CI 报 ISCC not found。
+          function Find-Iscc {
+            $roots = @($env:ProgramFiles, ${env:ProgramFiles(x86)}, 'C:\ProgramData\chocolatey')
+            foreach ($root in $roots) {
+              if (-not $root -or -not (Test-Path -LiteralPath $root)) { continue }
+              $hit = Get-ChildItem -LiteralPath $root -Filter 'ISCC.exe' -Recurse -ErrorAction SilentlyContinue |
+                      Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName
+              if ($hit) { return $hit }
+            }
+            return $null
+          }
 
-          $iscc = Get-ChildItem "$env:ProgramFiles(x86)\Inno Setup*\ISCC.exe", "$env:ProgramFiles\Inno Setup*\ISCC.exe" -ErrorAction SilentlyContinue |
-                  Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName
+          $iscc = Find-Iscc
+          if (-not $iscc) {
+            choco install innosetup --no-progress -y --force
+            $iscc = Find-Iscc
+          }
           if (-not $iscc) { throw 'ISCC.exe not found' }
           Write-Output "ISCC: $iscc"
 
