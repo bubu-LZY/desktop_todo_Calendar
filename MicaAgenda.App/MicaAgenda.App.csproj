@@ -10,6 +10,8 @@
     <ApplicationIcon>Assets\app.ico</ApplicationIcon>
     <!-- PerMonitorV2 让 WPF 在多 DPI 屏之间正确缩放，不会过度放大导致窗口超出屏幕 -->
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <!-- 允许在非 Windows 上 restore（CI 还原整个 sln 时需要；此工程不会在非 Windows 上构建） -->
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
   </PropertyGroup>
 
   <ItemGroup>

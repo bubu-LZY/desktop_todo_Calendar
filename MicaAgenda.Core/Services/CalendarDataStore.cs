@@ -80,7 +80,7 @@ public sealed class CalendarDataStore
                 await JsonSerializer.SerializeAsync(stream, data, JsonOptions);
             }
 
-            File.Move(temporaryPath, _path, overwrite: true);
+            MoveWithRetry(temporaryPath, _path);
         }
         finally
         {
@@ -97,6 +97,28 @@ public sealed class CalendarDataStore
             }
 
             _saveGate.Release();
+        }
+    }
+
+    /// <summary>
+    /// 原子替换目标文件，遇到瞬时文件锁（杀毒 / 索引器 / 并发读短暂占用）时退避重试。
+    /// Windows 的 File.Move(overwrite:true) 底层是 MoveFileEx，目标被占用会抛
+    /// UnauthorizedAccessException/IOException；不重试会让保存（含自动保存）偶发失败。
+    /// </summary>
+    private static void MoveWithRetry(string source, string destination)
+    {
+        const int maxAttempts = 6;
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                File.Move(source, destination, overwrite: true);
+                return;
+            }
+            catch (Exception ex) when ((ex is IOException or UnauthorizedAccessException) && attempt < maxAttempts)
+            {
+                Thread.Sleep(20 * attempt);
+            }
         }
     }
 
