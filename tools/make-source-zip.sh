@@ -23,9 +23,13 @@ zip -r -q "$OUT" . \
 echo "源码包大小："
 ls -la "$OUT"
 
-echo "隐私与合规抽查（应无输出，且必须含 LICENSE）："
-unzip -l "$OUT" | grep -Ei '/(bin|obj|publish|installer|dist|release|assets|\.git)/|\.log$|Source-.*\.zip$' && {
-  echo "ERROR: 源码包仍含应排除的内容"; exit 1;
-} || true
-unzip -l "$OUT" | grep -i 'LICENSE' >/dev/null || { echo "ERROR: 源码包缺少 LICENSE"; exit 1; }
-echo "OK"
+echo "隐私与合规抽查："
+# 只看归档内的条目名；用 ^ 锚定「顶层」目录，避免误伤源代码里的 MicaAgenda.App/Assets 等
+BAD=$(unzip -Z1 "$OUT" | grep -E '(^|/)(bin|obj)/|^(publish|installer|dist|release|release-assets|assets|\.git|TestResults)/|\.log$|Source-[0-9.]+\.zip$' || true)
+if [ -n "$BAD" ]; then
+  echo "ERROR: 源码包仍含应排除的内容："
+  echo "$BAD" | head -20
+  exit 1
+fi
+unzip -Z1 "$OUT" | grep -q 'LICENSE' || { echo "ERROR: 源码包缺少 LICENSE"; exit 1; }
+echo "OK（$(unzip -Z1 "$OUT" | wc -l) 个条目，含 LICENSE）"
