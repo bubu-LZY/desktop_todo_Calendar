@@ -99,8 +99,10 @@ cd desktop_todo_Calendar
 dotnet test MicaAgenda.Tests/MicaAgenda.Tests.csproj
 dotnet build MicaAgenda.sln -c Release
 
-dotnet publish MicaAgenda.App -r win-x64 --self-contained true -o publish -c Release
+dotnet publish MicaAgenda.App -r win-x64 --self-contained true -o installer\publish -c Release
 ```
+
+> 发布目录必须是 `installer\publish`：`setup.iss` 就是从那里取文件的。
 
 ### 构建安装程序
 
@@ -110,12 +112,22 @@ dotnet publish MicaAgenda.App -r win-x64 --self-contained true -o publish -c Rel
 & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" setup.iss
 ```
 
+产物为 `installer\desktop_todo_Calendar-Setup-<版本号>.exe`。
+版本号默认取 `setup.iss` 里的 `MyAppVersion`，也可以在命令行覆盖：
+
+```powershell
+& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DMyAppVersion=3.1.8 setup.iss
+```
+
+推 `v*` 标签（或手动触发 `Build & Release (Windows)` workflow）时，CI 会自动跑上面的测试、
+发布与打包，并把安装包发布到 Releases —— 本地不装 .NET SDK / Inno Setup 也能出包。
+
 ## MCP 集成
 
 `desktop_todo_Calendar` 内置 MCP Server，默认端点：
 
 ```text
-http://localhost:17802/mcp
+http://localhost:17804/mcp
 ```
 
 传输方式：Streamable HTTP + JSON-RPC 2.0。
@@ -141,7 +153,7 @@ Claude Desktop / Cursor 可添加：
   "mcpServers": {
     "desktop_todo_Calendar": {
       "type": "streamable-http",
-      "url": "http://localhost:17802/mcp",
+      "url": "http://localhost:17804/mcp",
       "headers": {
         "Authorization": "Bearer YOUR_TOKEN_HERE"
       }
@@ -167,10 +179,10 @@ Claude Desktop / Cursor 可添加：
 
 ## HTTP API
 
-内置 HTTP API，默认端口 `17801`，仅监听 localhost。
+内置 HTTP API，默认端口 `17803`，仅监听 localhost。
 
 ```text
-http://localhost:17801
+http://localhost:17803
 ```
 
 支持任务查询、新增、编辑、删除、完成/取消完成、批量操作。详见 [API.md](API.md)。

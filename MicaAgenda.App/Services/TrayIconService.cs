@@ -4,7 +4,9 @@ using System.Windows.Forms;
 namespace MicaAgenda.App.Services;
 
 /// <summary>
-/// 系统托盘图标：关闭窗口后常驻托盘，可重新显示、打开设置、退出。
+/// 系统托盘图标：关闭窗口后常驻托盘，可重新显示、收起、打开设置、退出。
+/// 窗口右上角的「×」已经一律隐藏（见 MainWindow.UpdateCloseButtonVisibility），
+/// 所以「隐藏到托盘」和「退出」都由这里提供入口。
 /// </summary>
 public sealed class TrayIconService : IDisposable
 {
@@ -12,12 +14,14 @@ public sealed class TrayIconService : IDisposable
     private readonly Action _showWindow;
     private readonly Action _openSettings;
     private readonly Action _exit;
+    private readonly Action _hideWindow;
 
-    public TrayIconService(Action showWindow, Action openSettings, Action exit)
+    public TrayIconService(Action showWindow, Action openSettings, Action exit, Action hideWindow)
     {
         _showWindow = showWindow;
         _openSettings = openSettings;
         _exit = exit;
+        _hideWindow = hideWindow;
 
         _notifyIcon = new NotifyIcon
         {
@@ -33,6 +37,7 @@ public sealed class TrayIconService : IDisposable
     {
         var menu = new ContextMenuStrip();
         menu.Items.Add("显示日历", null, (_, _) => _showWindow());
+        menu.Items.Add("隐藏到托盘", null, (_, _) => _hideWindow());
         menu.Items.Add("设置", null, (_, _) => _openSettings());
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("退出", null, (_, _) => _exit());

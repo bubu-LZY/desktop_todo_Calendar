@@ -112,7 +112,8 @@ public partial class MainWindow : Window
         _trayIcon = new TrayIconService(
             showWindow: ShowWindow,
             openSettings: OpenSettings,
-            exit: ExitApplication);
+            exit: ExitApplication,
+            hideWindow: Hide);
 
         _clockTimer = new DispatcherTimer
         {
@@ -335,14 +336,18 @@ public partial class MainWindow : Window
             OnDataChangedFromApi);
     }
 
-    /// <summary>设置窗口「立即同步」按钮的入口，返回同步结果文本。</summary>
-    private async Task<string> SyncMindMapNowAsync()
+    /// <summary>
+    /// 设置窗口「立即同步」按钮的入口，返回同步结果文本。
+    /// 传入面板里当前填写的地址 / Token：用户常常还没点保存就先点「立即同步」验证，
+    /// 只按已保存配置走会拿到旧值（甚至提示"未开启同步"）。
+    /// </summary>
+    private async Task<string> SyncMindMapNowAsync(string baseUrl, string token)
     {
         if (_mindMapSyncService is null)
         {
             StartMindMapSyncService();
         }
-        return await (_mindMapSyncService?.SyncNowAsync() ?? Task.FromResult("同步服务不可用"));
+        return await (_mindMapSyncService?.SyncNowAsync(baseUrl, token) ?? Task.FromResult("同步服务不可用"));
     }
 
     /// <summary>
@@ -624,10 +629,16 @@ public partial class MainWindow : Window
     }
 
     /// <summary>设置面板保存后回调，重新应用运行中服务。</summary>
-    private void OnSettingsApplied(AppConfig config)
+    private void OnSettingsApplied(AppConfig config, AppConfig previous)
     {
-        var oldEmbed = _config.EmbedDesktop;
-        var oldLock = _config.LockWindow;
+        // 必须用"保存前"的快照来比对：设置窗口与本类共用同一个 AppConfig 实例，
+        // 保存时已经就地改写过，拿 _config 当旧值只会永远等于新值 ——
+        // 于是下面这些"保存后立即生效"的分支从不执行，只能重启程序才生效。
+        var oldEmbed = previous.EmbedDesktop;
+        var oldLock = previous.LockWindow;
+        var oldSyncEnabled = previous.SyncMyMindMapEnabled;
+        var oldSyncUrl = previous.MindMapBaseUrl;
+        var oldSyncToken = previous.MyMindMapToken;
         _config = config;
 
         RunGuarded(UpdateCloseButtonVisibility, "OnSettingsApplied.UpdateCloseButton");
@@ -716,6 +727,35 @@ public partial class MainWindow : Window
                 }
             }, "OnSettingsApplied.Lock");
         }
+
+        // 刚开启同步（或改了地址 / Token）时立刻同步一次。否则要等定时器下一轮，
+        // 用户会觉得"勾了没反应"：定时器首跑只在程序启动 20 秒后触发，改设置并不会重排它。
+        if (_config.SyncMyMindMapEnabled
+            && (!oldSyncEnabled
+                || !string.Equals(oldSyncUrl, _config.MindMapBaseUrl, StringComparison.Ordinal)
+                || !string.Equals(oldSyncToken, _config.MyMindMapToken, StringComparison.Ordinal)))
+        {
+            _ = SyncMindMapSoonAsync();
+        }
+    }
+
+    /// <summary>设置保存后稍等一下再同步，留出设置窗口关闭与界面刷新的时间。</summary>
+    private async Task SyncMindMapSoonAsync()
+    {
+        try
+        {
+            await Task.Delay(1200);
+            var result = await SyncMindMapNowAsync(_config.MindMapBaseUrl, _config.MyMindMapToken);
+            if (result.Contains("同步完成", StringComparison.Ordinal))
+            {
+                // 从后台线程回调，切回 UI 线程再提示
+                _ = Dispatcher.InvokeAsync(() => ShowToast(result));
+            }
+        }
+        catch (Exception ex)
+        {
+            App.LogError(ex, "OnSettingsApplied.SyncMindMapSoon");
+        }
     }
 
     /// <summary>执行一段可能抛异常的逻辑并兜底记录日志，避免设置相关的异常中断调用链。</summary>
@@ -738,10 +778,14 @@ public partial class MainWindow : Window
         Close();
     }
 
-    /// <summary>更新 CloseButton 可见性（锁定位置时隐藏×按钮）。</summary>
+    /// <summary>
+    /// 右上角的「×」在任何状态下都不显示。这是个长期挂在桌面上的小挂件，
+    /// 误点关闭会让人以为程序退出了；旧版只在勾了"锁定位置"时才隐藏，用户要求一律去掉。
+    /// 需要收起窗口走托盘菜单的「隐藏到托盘」，退出走托盘菜单的「退出」。
+    /// </summary>
     private void UpdateCloseButtonVisibility()
     {
-        CloseButton.Visibility = _config.LockWindow ? Visibility.Collapsed : Visibility.Visible;
+        CloseButton.Visibility = Visibility.Collapsed;
     }
 
     private void Window_SizeChanged(object sender, SizeChangedEventArgs e)

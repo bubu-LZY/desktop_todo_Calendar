@@ -4,9 +4,9 @@
 
 ## MCP 接口（供外部 AI 客户端连接）
 
-内置 MCP Server（Model Context Protocol，Streamable HTTP 传输），默认端口 `17802`。
+内置 MCP Server（Model Context Protocol，Streamable HTTP 传输），默认端口 `17804`。
 
-- **端点**：`http://localhost:17802/mcp`
+- **端点**：`http://localhost:17804/mcp`
 - **鉴权**：与 HTTP API 共用同一个 Token（`Authorization: Bearer <token>`）
 - 支持 Claude Desktop / Cursor 等支持 MCP 的客户端直接连接。
 
@@ -30,7 +30,7 @@
 {
   "mcpServers": {
     "micaagenda": {
-      "url": "http://localhost:17802/mcp",
+      "url": "http://localhost:17804/mcp",
       "headers": {
         "Authorization": "Bearer <token>"
       }
@@ -47,7 +47,7 @@
 
 ## HTTP API
 
-内置 HTTP 服务，默认端口 `17801`，仅监听本机（`localhost` / `127.0.0.1`）。
+内置 HTTP 服务，默认端口 `17803`，仅监听本机（`localhost` / `127.0.0.1`）。
 供其他 Agent 通过 HTTP 调用，管理日历任务。
 
 ## 鉴权
@@ -68,7 +68,7 @@ Authorization: Bearer <token>
 
 ## 接口一览
 
-基础地址：`http://localhost:17801`
+基础地址：`http://localhost:17803`
 
 ### 1. 健康检查
 ```
@@ -133,7 +133,7 @@ PUT /api/tasks
 
 ```bash
 TOKEN="<你的token>"
-BASE="http://localhost:17801"
+BASE="http://localhost:17803"
 
 # 查今日
 curl -H "X-Auth-Token: $TOKEN" "$BASE/api/tasks?range=today"
@@ -208,9 +208,9 @@ curl -X POST -d '' -H "X-Auth-Token: $TOKEN" "$BASE/api/tasks/<id>/complete"
 
 - `EmbedDesktop`（默认 true）：嵌入壁纸层，位于桌面图标下方，Win+D 不消失。
 - `LockWindow`（默认 true）：锁定位置，禁止拖动/缩放。
-- `ApiPort`：API 端口（默认 17801）。
+- `ApiPort`：API 端口（默认 17803）。
 - `ApiToken`：API Token（留空首次运行自动生成）。
 - `McpEnabled`（默认 true）：是否开放 MCP 接口。
-- `McpPort`：MCP 端口（默认 17802）。
+- `McpPort`：MCP 端口（默认 17804）。
 
 > 以上所有配置均可直接在应用内「⚙ 设置」面板修改，无需手改 JSON 文件。关闭窗口会隐藏到系统托盘（不退出），托盘图标可重新打开、打开设置或退出。
