@@ -77,11 +77,11 @@ https://bubu-lzy.github.io/desktop_todo_Calendar/
 
 从 [Releases](https://github.com/bubu-LZY/desktop_todo_Calendar/releases) 下载最新版本：
 
-- `desktop_todo_Calendar-Setup-3.1.7.exe`
+- `desktop_todo_Calendar-Setup-3.1.8.exe`
 
 ### 源码 / 便携包
 
-- `desktop_todo_Calendar-Source-3.1.7.zip`
+- `desktop_todo_Calendar-Source-3.1.8.zip`
 
 发布包为 `win-x64` 自包含版本，无需额外安装 .NET 运行时。
 

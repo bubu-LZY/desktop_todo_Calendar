@@ -102,8 +102,8 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
-        FileLog.Write($"[STARTUP] MainWindow ctor - v3.1.7 - exe={Environment.ProcessPath ?? "unknown"}");
-        Title = "MicaAgenda v3.1.7";
+        FileLog.Write($"[STARTUP] MainWindow ctor - v3.1.8 - exe={Environment.ProcessPath ?? "unknown"}");
+        Title = "MicaAgenda v3.1.8";
 
         // 窗口初始化前同步加载配置，确保桌面嵌入/锁定在首帧即生效
         _config = _configStore.Load();
