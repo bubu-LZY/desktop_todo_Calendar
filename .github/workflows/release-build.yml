@@ -103,8 +103,8 @@ jobs:
         run: |
           VER="${GITHUB_REF_NAME#v}"
           awk -v hdr="## v${VER}" '
-            $0==hdr {p=1}
-            p && /^## v/ && $0!=hdr {exit}
+            index($0,hdr)==1 {p=1}
+            p && /^## v/ && index($0,hdr)!=1 {exit}
             p {print}
           ' CHANGELOG.md > release-notes.md
           [ -s release-notes.md ] || echo "# ${GITHUB_REF_NAME}" > release-notes.md
