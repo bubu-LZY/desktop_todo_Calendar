@@ -2,9 +2,12 @@
 ; 编译命令: ISCC.exe setup.iss
 
 #define MyAppName "desktop_todo_Calendar"
-#define MyAppVersion "3.1.7"
+; 允许 CI 用 /DMyAppVersion=... 覆盖；本地直接编译时用兜底值
+#ifndef MyAppVersion
+  #define MyAppVersion "3.2.0"
+#endif
 #define MyAppPublisher "MicaAgenda"
-#define MyAppExeName "MicaAgenda.App.exe"
+#define MyAppExeName "MicaAgenda.Desktop.exe"
 
 [Setup]
 AppId={{B8A7F2E1-9C4D-4A2B-8E5F-3D6C1A9B7E20}
@@ -32,10 +35,11 @@ Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: 
 Name: "autostart"; Description: "开机自启动"; GroupDescription: "附加任务:"
 
 [Files]
-; 复制整个 release 目录：单文件自包含 exe 仍需要旁边的 WPF 原生依赖 DLL
-; (wpfgfx_cor3 / D3DCompiler_47_cor3 / PenImc_cor3 / PresentationNative_cor3 / vcruntime140_cor3)
-; 否则在干净机器上 WPF 启动即崩溃，表现为"安装后打不开"。
+; 复制整个 publish 目录：自包含发布仍需要旁边的原生依赖 DLL
+; (Avalonia 的 libSkiaSharp / libHarfBuzzSharp 等)，否则干净机器上启动即崩溃。
 Source: "installer\publish\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs
+; GPL-3.0 合规：安装目录必须随附许可证
+Source: "LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
@@ -60,6 +64,8 @@ var
 begin
   if CurStep = ssInstall then
   begin
+    Exec('taskkill', '/F /IM MicaAgenda.Desktop.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    // 兼容从旧版（WPF 宿主）升级：旧进程也要关掉，否则占用文件导致安装失败
     Exec('taskkill', '/F /IM MicaAgenda.App.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   end;
 end;

@@ -17,6 +17,11 @@ TestResults/
 
 # Build artifacts
 MicaAgenda.Publish/
+pkg/
+release-assets/
+appimagetool
+tools/appimagetool
+release-notes-*.md
 
 # Legacy source zips
 MicaAgenda-Source-*.zip

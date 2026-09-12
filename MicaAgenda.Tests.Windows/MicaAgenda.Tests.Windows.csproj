@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net9.0</TargetFramework>
+    <TargetFramework>net9.0-windows</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>
@@ -19,9 +19,10 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- 跨平台核心测试：只依赖 MicaAgenda.Core，不引用任何 UI 宿主，
-         这样才能在 macOS / Linux runner 上跑（平台绑定测试见 MicaAgenda.Tests.Windows） -->
-    <ProjectReference Include="..\MicaAgenda.Core\MicaAgenda.Core.csproj" />
+    <!-- 平台绑定测试：注册表自启、Win32 像素换算、WPF 圆角裁剪。
+         这些类型只存在于 Windows/WPF 宿主里，因此单独成项目，让 MicaAgenda.Tests
+         能保持 net9.0 跨平台（CI 要在 macOS/Linux runner 上跑）。 -->
+    <ProjectReference Include="..\MicaAgenda.App\MicaAgenda.App.csproj" />
   </ItemGroup>
 
 </Project>

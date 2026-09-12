@@ -2,6 +2,7 @@ using System.Windows;
 using System.Runtime.CompilerServices;
 
 [assembly:InternalsVisibleTo("MicaAgenda.Tests")]
+[assembly:InternalsVisibleTo("MicaAgenda.Tests.Windows")]
 
 [assembly:ThemeInfo(
     ResourceDictionaryLocation.None,            //where theme specific resource dictionaries are located

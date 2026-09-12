@@ -3,6 +3,7 @@ using System.Net;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using MicaAgenda.App.Helpers;
 using MicaAgenda.App.Models;
 
 namespace MicaAgenda.App.Services;
@@ -73,7 +74,7 @@ public sealed class McpServer : IDisposable
         _runTask = Task.Run(() => RunLoopAsync(_cts.Token));
         // 观察后台循环任务，避免遗漏异常变成"未观察异常"被 finalizer 反复打印
         _ = _runTask.ContinueWith(
-            t => App.LogError(t.Exception?.Flatten().InnerException, "McpServer.RunLoopTask"),
+            t => AppLog.Error(t.Exception?.Flatten().InnerException, "McpServer.RunLoopTask"),
             CancellationToken.None,
             TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
             TaskScheduler.Default);
@@ -127,7 +128,7 @@ public sealed class McpServer : IDisposable
             }
             catch (Exception ex)
             {
-                App.LogError(ex, "McpServer.RunLoop");
+                AppLog.Error(ex, "McpServer.RunLoop");
                 break;
             }
 

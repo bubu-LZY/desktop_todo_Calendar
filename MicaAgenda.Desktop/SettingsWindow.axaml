@@ -1,0 +1,250 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="MicaAgenda.Desktop.SettingsWindow"
+        Title="设置"
+        Width="560" Height="800"
+        WindowStartupLocation="CenterOwner"
+        CanResize="False"
+        Background="#F7F8FA"
+        FontSize="13"
+        x:CompileBindings="False">
+
+  <Window.Styles>
+    <Style Selector="TextBlock.groupTitle">
+      <Setter Property="FontSize" Value="15" />
+      <Setter Property="FontWeight" Value="Bold" />
+      <Setter Property="Foreground" Value="#111827" />
+      <Setter Property="Margin" Value="0,0,0,10" />
+    </Style>
+    <Style Selector="TextBlock.fieldLabel">
+      <Setter Property="Foreground" Value="#6B7280" />
+      <Setter Property="VerticalAlignment" Value="Center" />
+      <Setter Property="Margin" Value="0,0,8,0" />
+    </Style>
+    <Style Selector="TextBlock.hint">
+      <Setter Property="Foreground" Value="#9CA3AF" />
+      <Setter Property="FontSize" Value="12" />
+      <Setter Property="TextWrapping" Value="Wrap" />
+    </Style>
+    <Style Selector="TextBox.inputBox">
+      <Setter Property="Padding" Value="8,6" />
+      <Setter Property="BorderBrush" Value="#D1D5DB" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="Background" Value="#FFFFFF" />
+      <Setter Property="VerticalContentAlignment" Value="Center" />
+    </Style>
+    <Style Selector="Button.actionButton">
+      <Setter Property="Padding" Value="14,7" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="BorderBrush" Value="#D1D5DB" />
+      <Setter Property="Background" Value="#FFFFFF" />
+      <Setter Property="Cursor" Value="Hand" />
+    </Style>
+    <Style Selector="Button.primaryButton">
+      <Setter Property="Padding" Value="14,7" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="Background" Value="#2563EB" />
+      <Setter Property="Foreground" Value="#FFFFFF" />
+      <Setter Property="BorderBrush" Value="#2563EB" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+      <Setter Property="Cursor" Value="Hand" />
+    </Style>
+    <Style Selector="Border.card">
+      <Setter Property="Background" Value="#FFFFFF" />
+      <Setter Property="CornerRadius" Value="8" />
+      <Setter Property="Padding" Value="16" />
+      <Setter Property="Margin" Value="0,0,0,12" />
+    </Style>
+  </Window.Styles>
+
+  <Grid Margin="24" RowDefinitions="*,Auto">
+    <ScrollViewer Grid.Row="0" VerticalScrollBarVisibility="Auto">
+      <StackPanel>
+
+        <!-- ===== HTTP API ===== -->
+        <Border Classes="card">
+          <StackPanel>
+            <TextBlock Text="HTTP API" Classes="groupTitle" />
+            <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+              <CheckBox x:Name="ApiEnabledBox" Content="启用 API" VerticalAlignment="Center" Margin="0,0,16,0" />
+              <TextBlock Text="端口" Classes="fieldLabel" />
+              <TextBox x:Name="ApiPortBox" Width="80" Classes="inputBox" IsReadOnly="True" />
+            </StackPanel>
+            <TextBlock Text="Token（供其他 Agent 调用时鉴权）" Classes="fieldLabel" Margin="0,0,0,4" />
+            <Grid ColumnDefinitions="*,Auto">
+              <TextBox x:Name="ApiTokenBox" Grid.Column="0" Classes="inputBox" IsReadOnly="True" />
+              <StackPanel Grid.Column="1" Orientation="Horizontal" Margin="8,0,0,0">
+                <Button Content="复制" Classes="actionButton" Click="CopyToken_Click" />
+                <Button Content="重新生成" Classes="actionButton" Margin="8,0,0,0" Click="RegenerateToken_Click" />
+              </StackPanel>
+            </Grid>
+            <TextBlock x:Name="ApiHint" Classes="hint" Margin="0,6,0,0" />
+          </StackPanel>
+        </Border>
+
+        <!-- ===== 定时提醒 ===== -->
+        <Border Classes="card">
+          <StackPanel>
+            <TextBlock Text="定时提醒" Classes="groupTitle" />
+            <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+              <CheckBox x:Name="ReminderEnabledBox" Content="启用提醒" VerticalAlignment="Center" Margin="0,0,16,0" />
+              <TextBlock Text="提醒时间" Classes="fieldLabel" />
+              <TextBox x:Name="ReminderTimeBox" Width="70" Classes="inputBox" />
+              <TextBlock Text="（HH:mm）" Foreground="#9CA3AF" VerticalAlignment="Center" Margin="4,0,0,0" />
+            </StackPanel>
+            <TextBlock Text="飞书 webhook 地址" Classes="fieldLabel" Margin="0,0,0,4" />
+            <TextBox x:Name="FeishuWebhookBox" Classes="inputBox" Margin="0,0,0,10" />
+            <TextBlock Text="企业微信 webhook 地址" Classes="fieldLabel" Margin="0,0,0,4" />
+            <TextBox x:Name="WeComWebhookBox" Classes="inputBox" />
+            <TextBlock Text="上面两个地址对「定时提醒」和「定时报告」通用。" Classes="hint" Margin="0,6,0,0" />
+          </StackPanel>
+        </Border>
+
+        <!-- ===== 定时报告 ===== -->
+        <Border Classes="card">
+          <StackPanel>
+            <TextBlock Text="定时报告（任务完成情况）" Classes="groupTitle" />
+            <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+              <CheckBox x:Name="ReportEnabledBox" Content="启用报告" VerticalAlignment="Center" Margin="0,0,16,0" />
+              <TextBlock Text="发送时间" Classes="fieldLabel" />
+              <TextBox x:Name="ReportTimeBox" Width="70" Classes="inputBox" />
+              <TextBlock Text="（HH:mm）" Foreground="#9CA3AF" VerticalAlignment="Center" Margin="4,0,0,0" />
+            </StackPanel>
+            <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+              <RadioButton x:Name="ReportWeeklyRadio" Content="每周" GroupName="ReportSchedule"
+                           VerticalAlignment="Center" Margin="0,0,6,0" IsCheckedChanged="ReportSchedule_Changed" />
+              <ComboBox x:Name="ReportDayOfWeekBox" Width="86" Margin="0,0,16,0" VerticalAlignment="Center" />
+              <RadioButton x:Name="ReportMonthlyRadio" Content="每月" GroupName="ReportSchedule"
+                           VerticalAlignment="Center" Margin="0,0,6,0" IsCheckedChanged="ReportSchedule_Changed" />
+              <ComboBox x:Name="ReportDayOfMonthBox" Width="76" Margin="0,0,6,0" VerticalAlignment="Center" />
+              <TextBlock Text="号（超出当月天数自动取月末）" Foreground="#9CA3AF" VerticalAlignment="Center" />
+            </StackPanel>
+            <TextBlock Text="报告内容：完成率、耗时最长 / 完成最快 / 超时完成 / 至今未完成 / 逾期未完成。"
+                       Classes="hint" Margin="0,0,0,10" />
+            <TextBlock Text="推送渠道" Classes="fieldLabel" Margin="0,0,0,4" />
+            <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+              <CheckBox x:Name="ReportSendFeishuBox" Content="飞书" VerticalAlignment="Center" Margin="0,0,16,0" />
+              <CheckBox x:Name="ReportSendWeComBox" Content="企业微信" VerticalAlignment="Center" />
+            </StackPanel>
+            <TextBlock Text="自定义 webhook（可选；自动识别飞书并用卡片推送，其他地址按企微 text 格式推送）"
+                       Classes="fieldLabel" Margin="0,0,0,4" />
+            <TextBox x:Name="ReportCustomWebhookBox" Classes="inputBox" Margin="0,0,0,10" />
+            <StackPanel Orientation="Horizontal">
+              <Button x:Name="ReportPreviewButton" Content="预览报告" Classes="actionButton" Click="ReportPreview_Click" />
+              <Button x:Name="ReportSendNowButton" Content="立即发送" Classes="actionButton" Margin="8,0,0,0" Click="ReportSendNow_Click" />
+            </StackPanel>
+            <TextBox x:Name="ReportPreviewBox" Height="180" Margin="0,10,0,0" IsReadOnly="True"
+                     TextWrapping="Wrap" AcceptsReturn="True"
+                     FontSize="11.5" IsVisible="False" />
+            <TextBlock x:Name="ReportActionStatus" Foreground="#157347" FontSize="11" Margin="0,6,0,0" TextWrapping="Wrap" />
+          </StackPanel>
+        </Border>
+
+        <!-- ===== 自动备份 ===== -->
+        <Border Classes="card">
+          <StackPanel>
+            <TextBlock Text="自动备份" Classes="groupTitle" />
+            <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+              <CheckBox x:Name="BackupEnabledBox" Content="启用自动备份" VerticalAlignment="Center" Margin="0,0,16,0" />
+              <TextBlock Text="备份时间" Classes="fieldLabel" />
+              <TextBox x:Name="BackupTimeBox" Width="70" Classes="inputBox" />
+              <TextBlock Text="（HH:mm）" Foreground="#9CA3AF" VerticalAlignment="Center" Margin="4,0,0,0" />
+            </StackPanel>
+            <TextBlock Text="每天到点自动导出全年任务 JSON，保存到本地。" Classes="hint" Margin="0,0,0,6" />
+            <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+              <CheckBox x:Name="BackupSendFeishuBox" Content="备份后发送到飞书" VerticalAlignment="Center" Margin="0,0,16,0" />
+              <CheckBox x:Name="BackupSendWeComBox" Content="备份后发送到企业微信" VerticalAlignment="Center" />
+            </StackPanel>
+            <WrapPanel Orientation="Horizontal">
+              <Button x:Name="BackupNowButton" Content="立即备份" Classes="actionButton" Click="BackupNow_Click" />
+              <Button Content="打开备份文件夹" Classes="actionButton" Margin="8,0,0,0" Click="OpenBackupFolder_Click" />
+              <Button Content="导出 JSON" Classes="actionButton" Margin="8,0,0,0" Click="ExportJson_Click" />
+              <Button Content="导入 JSON" Classes="actionButton" Margin="8,0,0,0" Click="ImportJson_Click" />
+            </WrapPanel>
+          </StackPanel>
+        </Border>
+
+        <!-- ===== MCP + my-mindmap 同步 ===== -->
+        <Border Classes="card">
+          <StackPanel>
+            <TextBlock Text="MCP 接口（供外部 AI 客户端连接）" Classes="groupTitle" />
+            <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+              <CheckBox x:Name="McpEnabledBox" Content="启用 MCP" VerticalAlignment="Center" Margin="0,0,16,0" />
+              <TextBlock Text="端口" Classes="fieldLabel" />
+              <TextBox x:Name="McpPortBox" Width="80" Classes="inputBox" IsReadOnly="True" />
+            </StackPanel>
+            <TextBlock Text="MCP 端点地址" Classes="fieldLabel" Margin="0,0,0,4" />
+            <TextBox x:Name="McpEndpointBox" Classes="inputBox" IsReadOnly="True" Margin="0,0,0,10" />
+            <CheckBox x:Name="SyncMyMindMapBox" Margin="0,0,0,8"
+                      Content="同步 my mind map agent（把 [MM复习] 任务的勾选状态实时同步回复习计划；删除任务不删除复习计划）" />
+            <TextBlock Text="my mind map agent 本地 HTTP 地址" Classes="fieldLabel" Margin="0,0,0,4" />
+            <TextBox x:Name="MindMapBaseUrlBox" Classes="inputBox" Margin="0,0,0,8" />
+            <TextBlock Text="my mind map agent 本地 HTTP Token（端口 17800，不是 MCP Token）" Classes="fieldLabel" Margin="0,0,0,4" />
+            <TextBox x:Name="MyMindMapTokenBox" Classes="inputBox" Margin="0,0,0,8" />
+            <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+              <Button x:Name="TestMyMindMapButton" Content="测试连接" Classes="actionButton" Click="TestMyMindMap_Click" />
+              <Button x:Name="SyncMindMapNowButton" Content="立即同步" Classes="actionButton" Margin="8,0,0,0" Click="SyncMindMapNow_Click" />
+              <TextBlock x:Name="MyMindMapTestStatus" Foreground="#157347" FontSize="11" Margin="10,0,0,0" VerticalAlignment="Center" />
+            </StackPanel>
+            <TextBlock x:Name="SyncMindMapStatus" Foreground="#157347" FontSize="11" Margin="0,0,0,8" TextWrapping="Wrap" />
+            <Button Content="什么是 my mind map agent？（打开项目页）" Classes="actionButton"
+                    HorizontalAlignment="Left" Margin="0,0,0,8" Click="OpenMindMapAgentProject_Click" />
+            <StackPanel Orientation="Horizontal">
+              <Button x:Name="CopySkillDocButton" Content="复制 Skill 文档" Classes="actionButton" Click="CopySkillDoc_Click" />
+              <Button x:Name="CopyMcpConfigButton" Content="复制 MCP 配置 JSON" Classes="actionButton" Margin="8,0,0,0" Click="CopyMcpConfig_Click" />
+            </StackPanel>
+            <TextBlock Text="Claude Desktop / Cursor 等客户端添加 MCP Server 后，即可直接调用本程序的查询/增删改查任务等工具。"
+                       Classes="hint" Margin="0,8,0,0" />
+          </StackPanel>
+        </Border>
+
+        <!-- ===== 桌面行为 ===== -->
+        <Border Classes="card">
+          <StackPanel>
+            <TextBlock Text="桌面行为" Classes="groupTitle" />
+            <CheckBox x:Name="EmbedDesktopBox" Content="嵌入桌面（置底模式：沉在其他窗口之下）" Margin="0,0,0,8" />
+            <CheckBox x:Name="LockWindowBox" Content="锁定位置（禁止拖动 / 缩放）" />
+            <TextBlock Text="开机自启动为 Windows 专属能力，请在 Windows 版（WPF 宿主）中配置。"
+                       Classes="hint" Margin="0,8,0,0" />
+          </StackPanel>
+        </Border>
+
+        <!-- ===== 重置 ===== -->
+        <Border Classes="card" BorderBrush="#FCA5A5" BorderThickness="1">
+          <StackPanel>
+            <TextBlock Text="重置" Classes="groupTitle" Foreground="#991B1B" />
+            <TextBlock Text="一键清空所有任务：删除数据库里的全部任务，并把右侧面板 / 日历格 / 本周统计 / 备份里的任务都清掉。重置后程序相当于新装状态，下次保存会自动落盘。"
+                       Foreground="#7F1D1D" FontSize="12" TextWrapping="Wrap" Margin="0,0,0,8" />
+            <StackPanel Orientation="Horizontal">
+              <Button x:Name="DeleteAllTasksButton" Content="一键删除所有任务" Padding="14,7"
+                      BorderThickness="1" BorderBrush="#DC2626" Background="#DC2626"
+                      Foreground="#FFFFFF" FontWeight="SemiBold" Cursor="Hand" Click="DeleteAllTasks_Click" />
+              <TextBlock x:Name="DeleteAllTasksStatus" Foreground="#157347" FontSize="11" Margin="10,0,0,0" VerticalAlignment="Center" />
+            </StackPanel>
+          </StackPanel>
+        </Border>
+
+        <!-- ===== 节假日数据 ===== -->
+        <Border Classes="card">
+          <StackPanel>
+            <TextBlock Text="节假日数据" Classes="groupTitle" />
+            <TextBlock Text="数据来自 timor.tech/api/holiday（每年首次进入时联网拉取，缓存 TTL 7 天）。国务院临时调休会在下次联网时自动同步。"
+                       Classes="hint" Margin="0,0,0,8" />
+            <TextBlock x:Name="HolidayStatusText" Foreground="#374151" FontSize="12" TextWrapping="Wrap" Margin="0,0,0,8" Text="读取中…" />
+            <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+              <Button x:Name="HolidayRefreshNowButton" Content="立即刷新" Classes="actionButton" Click="HolidayRefreshNow_Click" />
+              <Button x:Name="HolidayClearCacheButton" Content="清空本地缓存" Classes="actionButton" Margin="8,0,0,0" Click="HolidayClearCache_Click" />
+            </StackPanel>
+            <TextBlock x:Name="HolidayRefreshStatus" Foreground="#157347" FontSize="11" Margin="0,6,0,0" TextWrapping="Wrap" />
+          </StackPanel>
+        </Border>
+
+      </StackPanel>
+    </ScrollViewer>
+
+    <StackPanel Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,14,0,0">
+      <Button Content="取消" Classes="actionButton" Click="Cancel_Click" Margin="0,0,10,0" />
+      <Button Content="保存" Classes="primaryButton" Click="Save_Click" />
+    </StackPanel>
+  </Grid>
+</Window>

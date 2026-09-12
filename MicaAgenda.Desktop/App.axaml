@@ -1,0 +1,11 @@
+<Application xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="MicaAgenda.Desktop.App"
+             RequestedThemeVariant="Default">
+  <Application.Styles>
+    <FluentTheme />
+  </Application.Styles>
+
+  <!-- 主题资源字典与自定义样式会在此处按 WPF 版的 6 套主题逐一迁移；
+       骨架阶段先只挂 FluentTheme，保证控件有默认外观。 -->
+</Application>

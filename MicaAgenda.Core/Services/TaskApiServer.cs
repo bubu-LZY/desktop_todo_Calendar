@@ -2,6 +2,7 @@ using System.IO;
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using MicaAgenda.App.Helpers;
 using MicaAgenda.App.Models;
 
 namespace MicaAgenda.App.Services;
@@ -75,7 +76,7 @@ public sealed class TaskApiServer : IDisposable
         // 观察后台循环任务：即便有遗漏的异常（如 listener 已释放时 GetContextAsync 竞态），
         // 也不会变成"未观察异常"被 finalizer 反复打印到日志。
         _ = _runTask.ContinueWith(
-            t => App.LogError(t.Exception?.Flatten().InnerException, "TaskApiServer.RunLoopTask"),
+            t => AppLog.Error(t.Exception?.Flatten().InnerException, "TaskApiServer.RunLoopTask"),
             CancellationToken.None,
             TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
             TaskScheduler.Default);
@@ -129,7 +130,7 @@ public sealed class TaskApiServer : IDisposable
             }
             catch (Exception ex)
             {
-                App.LogError(ex, "TaskApiServer.RunLoop");
+                AppLog.Error(ex, "TaskApiServer.RunLoop");
                 break;
             }
 

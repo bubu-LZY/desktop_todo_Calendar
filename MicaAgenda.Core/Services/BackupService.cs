@@ -6,6 +6,7 @@ using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Threading;
+using MicaAgenda.App.Helpers;
 using MicaAgenda.App.Models;
 
 namespace MicaAgenda.App.Services;
@@ -135,7 +136,7 @@ public sealed class BackupService : IDisposable
         catch (Exception ex)
         {
             // 定时器回调是 async void（线程池），异常会终止进程，必须在此兜底
-            App.LogError(ex, "BackupService");
+            AppLog.Error(ex, "BackupService");
         }
         finally
         {

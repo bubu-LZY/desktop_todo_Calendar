@@ -25,6 +25,8 @@ public partial class App : Application
 
     public App()
     {
+        // Core（数据层/服务层）经 AppLog 记录异常，这里把 Sink 指向本宿主的写盘实现
+        Helpers.AppLog.Sink = LogError;
         EnsureWindirForWpf();
         SubscribeGlobalExceptionHandlers();
     }

@@ -2,6 +2,7 @@ using System.Net.Http;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
+using MicaAgenda.App.Helpers;
 using MicaAgenda.App.Models;
 
 namespace MicaAgenda.App.Services;
@@ -108,7 +109,7 @@ public sealed class ReminderService : IDisposable
                 {
                     // 渠道失败要记日志：webhook 填错 / 群被移除时用户应该有线索，
                     // 否则配置页一切看似正常，到点却什么都不响，会以为是程序坏了
-                    App.LogError(ex, "ReminderService.Feishu");
+                    AppLog.Error(ex, "ReminderService.Feishu");
                 }
             }
 
@@ -121,7 +122,7 @@ public sealed class ReminderService : IDisposable
                 }
                 catch (Exception ex)
                 {
-                    App.LogError(ex, "ReminderService.WeCom");
+                    AppLog.Error(ex, "ReminderService.WeCom");
                 }
             }
 
@@ -136,7 +137,7 @@ public sealed class ReminderService : IDisposable
         catch (Exception ex)
         {
             // 定时器回调是 async void（线程池），异常会终止进程，必须在此兜底
-            App.LogError(ex, "ReminderService");
+            AppLog.Error(ex, "ReminderService");
         }
         finally
         {

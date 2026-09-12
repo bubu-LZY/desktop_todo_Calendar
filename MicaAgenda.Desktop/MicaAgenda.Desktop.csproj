@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <RootNamespace>MicaAgenda.Desktop</RootNamespace>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <!-- 编译期绑定：XAML 里的 {Binding Xxx} 直接编译成强类型访问，缺属性在构建期报错而不是运行期 -->
+    <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
+    <ApplicationIcon>Assets\app.ico</ApplicationIcon>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Avalonia" Version="12.1.2" />
+    <PackageReference Include="Avalonia.Desktop" Version="12.1.2" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="12.1.2" />
+    <PackageReference Include="Avalonia.Fonts.Inter" Version="12.1.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 与 WPF 宿主共用同一份数据层 / 服务层 / ViewModel，避免两边漂移 -->
+    <ProjectReference Include="..\MicaAgenda.Core\MicaAgenda.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 托盘图标：作为 Avalonia 资源嵌入，TrayIconService 用 avares:// 加载 -->
+    <AvaloniaResource Include="Assets\task-icon-32.png" />
+  </ItemGroup>
+
+</Project>

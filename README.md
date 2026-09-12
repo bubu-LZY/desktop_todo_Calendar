@@ -77,29 +77,31 @@ https://bubu-lzy.github.io/desktop_todo_Calendar/
 
 从 [Releases](https://github.com/bubu-LZY/desktop_todo_Calendar/releases) 下载最新版本：
 
-- `desktop_todo_Calendar-Setup-3.1.7.exe`
+| 平台 | 文件 |
+|---|---|
+| Windows | `desktop_todo_Calendar-Setup-3.2.0.exe` |
+| macOS (Apple Silicon) | `desktop_todo_Calendar-3.2.0-arm64.dmg` / `.zip` |
+| macOS (Intel) | `desktop_todo_Calendar-3.2.0-x64.dmg` / `.zip` |
+| Linux | `desktop_todo_Calendar-3.2.0-x64.AppImage`、`desktop_todo_Calendar_3.2.0_amd64.deb` |
+| 源码 | `desktop_todo_Calendar-Source-3.2.0.zip` |
 
-### 源码 / 便携包
-
-- `desktop_todo_Calendar-Source-3.1.7.zip`
-
-发布包为 `win-x64` 自包含版本，无需额外安装 .NET 运行时。
+发布包为自包含版本，无需额外安装 .NET 运行时。未签名，首次运行 mac 需 `xattr -dr com.apple.quarantine /Applications/...`。
 
 ## 从源码构建
 
 环境要求：
 
-- Windows 10 或更高版本
-- .NET 9 SDK
+- .NET 9 SDK（Windows / macOS / Linux 均可）
 
-```powershell
+```bash
 git clone https://github.com/bubu-LZY/desktop_todo_Calendar.git
 cd desktop_todo_Calendar
 
-dotnet test MicaAgenda.Tests/MicaAgenda.Tests.csproj
+dotnet test MicaAgenda.Tests -c Release
 dotnet build MicaAgenda.sln -c Release
 
-dotnet publish MicaAgenda.App -r win-x64 --self-contained true -o publish -c Release
+# 跨平台宿主：MicaAgenda.Desktop（Avalonia）
+dotnet publish MicaAgenda.Desktop -r win-x64 --self-contained true -c Release -o installer/publish
 ```
 
 ### 构建安装程序

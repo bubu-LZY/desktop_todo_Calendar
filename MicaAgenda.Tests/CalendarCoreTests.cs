@@ -1,7 +1,5 @@
 using MicaAgenda.App.Models;
 using MicaAgenda.App.Services;
-using Microsoft.Win32;
-using System.Windows;
 
 namespace MicaAgenda.Tests;
 
@@ -218,59 +216,6 @@ public sealed class CalendarCoreTests
         Assert.Equal(CalendarBackgroundMode.None, loaded.Settings.BackgroundMode);
 
         File.Delete(path);
-    }
-
-    [Fact]
-    public void AutoStartService_WritesAndRemovesCurrentUserRunValue()
-    {
-        var id = Guid.NewGuid().ToString("N");
-        var parentPath = $@"Software\MicaAgenda.Tests\{id}";
-        var runPath = $@"{parentPath}\Run";
-        var valueName = "MicaAgendaTest";
-        var executablePath = @"C:\Apps\MicaAgenda\MicaAgenda.App.exe";
-
-        try
-        {
-            AutoStartService.SetEnabled(true, runPath, valueName, executablePath);
-
-            using (var key = Registry.CurrentUser.OpenSubKey(runPath, false))
-            {
-                Assert.Equal($"\"{executablePath}\"", key?.GetValue(valueName));
-            }
-
-            Assert.True(AutoStartService.IsEnabled(runPath, valueName));
-
-            AutoStartService.SetEnabled(false, runPath, valueName, executablePath);
-
-            using (var key = Registry.CurrentUser.OpenSubKey(runPath, false))
-            {
-                Assert.Null(key?.GetValue(valueName));
-            }
-        }
-        finally
-        {
-            Registry.CurrentUser.DeleteSubKey(runPath, false);
-            Registry.CurrentUser.DeleteSubKey(parentPath, false);
-        }
-    }
-
-    [Theory]
-    [InlineData(22, 1, 22)]
-    [InlineData(22, 1.25, 28)]
-    [InlineData(0, 1.5, 1)]
-    public void WindowEffects_ToDevicePixels_RoundsUpAndKeepsPositiveRegion(int value, double scale, int expected)
-    {
-        Assert.Equal(expected, WindowEffects.ToDevicePixels(value, scale));
-    }
-
-    [Fact]
-    public void MainWindow_CreateRoundedShellClip_MatchesShellSizeAndCornerRadius()
-    {
-        var clip = MicaAgenda.App.MainWindow.CreateRoundedShellClip(980, 680, 22);
-
-        Assert.Equal(new Rect(0, 0, 980, 680), clip.Rect);
-        Assert.Equal(22, clip.RadiusX);
-        Assert.Equal(22, clip.RadiusY);
     }
 
     [Fact]

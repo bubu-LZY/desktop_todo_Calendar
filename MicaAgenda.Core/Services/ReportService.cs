@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.IO;
 using System.Text.Json;
+using MicaAgenda.App.Helpers;
 using MicaAgenda.App.Models;
 
 namespace MicaAgenda.App.Services;
@@ -139,7 +140,7 @@ public sealed class ReportService : IDisposable
                 ReportSent?.Invoke(text);
                 if (errors.Count > 0)
                 {
-                    App.LogError(new InvalidOperationException(string.Join(" | ", errors)), "ReportService(部分渠道失败)");
+                    AppLog.Error(new InvalidOperationException(string.Join(" | ", errors)), "ReportService(部分渠道失败)");
                 }
             }
             else
@@ -149,7 +150,7 @@ public sealed class ReportService : IDisposable
                     _failedAttempts++;
                 }
 
-                App.LogError(
+                AppLog.Error(
                     new InvalidOperationException($"报告推送全部失败（第 {_failedAttempts} 次）：{string.Join(" | ", errors)}"),
                     "ReportService");
             }
@@ -157,7 +158,7 @@ public sealed class ReportService : IDisposable
         catch (Exception ex)
         {
             // 定时器回调是 async void（线程池），异常会终止进程，必须在此兜底
-            App.LogError(ex, "ReportService");
+            AppLog.Error(ex, "ReportService");
         }
         finally
         {
