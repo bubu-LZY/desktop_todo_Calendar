@@ -115,8 +115,11 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="${GITHUB_REF_NAME}"
-          shopt -s nullglob
-          ASSETS=(release-assets/* *-Source-*.zip)
+          # 只收集文件：download-artifact 会保留 installer/ dist/ 子目录，直接把目录当资产会报 "is a directory"
+          mapfile -t ASSETS < <(find release-assets -type f)
+          while IFS= read -r -d '' z; do ASSETS+=("$z"); done < <(find . -maxdepth 1 -name '*-Source-*.zip' -print0)
+          if [ ${#ASSETS[@]} -eq 0 ]; then echo "ERROR: 未收集到任何产物"; exit 1; fi
+          echo "将上传 ${#ASSETS[@]} 个资产："; printf '  %s\n' "${ASSETS[@]}"
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "${ASSETS[@]}" --clobber      # 幂等：已存在则覆盖本次产物
             gh release edit "$TAG" --notes-file release-notes.md --latest
