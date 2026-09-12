@@ -18,7 +18,7 @@ desktop_todo_Calendar 是一个 Windows 桌面日历/任务管理程序，内置
 
 ## 2. 连接信息
 
-- 端点地址：`http://localhost:17802/mcp`
+- 端点地址：`http://localhost:17804/mcp`
 - 传输方式：Streamable HTTP（HTTP + JSON-RPC 2.0）
 - 方法：客户端调用统一使用 `POST`
 
@@ -29,7 +29,7 @@ desktop_todo_Calendar 是一个 Windows 桌面日历/任务管理程序，内置
   "mcpServers": {
     "desktop_todo_Calendar": {
       "type": "streamable-http",
-      "url": "http://localhost:17802/mcp",
+      "url": "http://localhost:17804/mcp",
       "headers": {
         "Authorization": "Bearer YOUR_TOKEN_HERE"
       }
@@ -462,7 +462,7 @@ X-Auth-Token: YOUR_TOKEN_HERE
 ### curl 查询今日任务
 
 ```bash
-curl -X POST http://localhost:17802/mcp \
+curl -X POST http://localhost:17804/mcp \
   -H "Authorization: Bearer YOUR_TOKEN_HERE" \
   -H "Content-Type: application/json" \
   -d '{
@@ -479,7 +479,7 @@ curl -X POST http://localhost:17802/mcp \
 ### curl 添加任务
 
 ```bash
-curl -X POST http://localhost:17802/mcp \
+curl -X POST http://localhost:17804/mcp \
   -H "Authorization: Bearer YOUR_TOKEN_HERE" \
   -H "Content-Type: application/json" \
   -d '{
@@ -503,7 +503,7 @@ curl -X POST http://localhost:17802/mcp \
 import json
 import requests
 
-url = "http://localhost:17802/mcp"
+url = "http://localhost:17804/mcp"
 headers = {
     "Authorization": "Bearer YOUR_TOKEN_HERE",
     "Content-Type": "application/json",
@@ -527,7 +527,7 @@ print(result["result"]["content"][0]["text"])
 ### JavaScript / TypeScript
 
 ```js
-const response = await fetch("http://localhost:17802/mcp", {
+const response = await fetch("http://localhost:17804/mcp", {
   method: "POST",
   headers: {
     "Authorization": "Bearer YOUR_TOKEN_HERE",

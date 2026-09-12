@@ -17,8 +17,12 @@ public partial class SettingsWindow : Window
     private readonly ChinaHolidayService _holidayService;
     private readonly ReportService _reportService;
 
-    /// <summary>保存后触发，参数为更新后的配置。</summary>
-    public event Action<AppConfig>? ApplyRequested;
+    /// <summary>
+    /// 保存后触发：(更新后的配置, 保存前的配置快照)。
+    /// 主窗体靠第二个参数判断"哪些设置项真的变了"——设置窗口和主窗体共用同一个 AppConfig
+    /// 实例，保存时已经就地改写，只传新值的话新旧比较恒等，任何变化都判定不出来。
+    /// </summary>
+    public event Action<AppConfig, AppConfig>? ApplyRequested;
 
     /// <summary>导入任务后触发，用于刷新主界面。</summary>
     public event Action? TasksImported;
@@ -471,8 +475,12 @@ public partial class SettingsWindow : Window
     /// <summary>通知主窗体执行清空所有任务；返回删除的任务数。</summary>
     public event Func<int>? DeleteAllTasksRequested;
 
-    /// <summary>请求主窗体立即执行一次与 my-mindmap agent 的复习计划同步；返回结果文本。</summary>
-    public event Func<Task<string>>? MindMapSyncRequested;
+    /// <summary>
+    /// 请求主窗体立即执行一次与 my-mindmap agent 的复习计划同步；返回结果文本。
+    /// 参数是设置面板里当前填写的地址与 Token：用户通常是先点「立即同步」验证通了才点保存，
+    /// 只读已保存配置会拿到旧值（甚至直接提示"未开启同步"）。
+    /// </summary>
+    public event Func<string, string, Task<string>>? MindMapSyncRequested;
 
     private void Save_Click(object sender, RoutedEventArgs e)
     {
@@ -500,6 +508,10 @@ public partial class SettingsWindow : Window
 
     private void SaveCore()
     {
+        // 先留一份"保存前"的快照：下面都是一句句就地改写 _config，而这个实例与主窗体共用，
+        // 改完再传过去就分不出新旧了（嵌入桌面/锁定位置这些"保存即生效"的判断会全部失效）。
+        var previous = _config.Clone();
+
         // 校验端口
         if (!int.TryParse(ApiPortBox.Text.Trim(), out var port) || port <= 0 || port > 65535)
         {
@@ -579,7 +591,7 @@ public partial class SettingsWindow : Window
         }
 
         _ = _configStore.SaveAsync(_config);
-        ApplyRequested?.Invoke(_config);
+        ApplyRequested?.Invoke(_config, previous);
 
         DialogResult = true;
         Close();
@@ -615,11 +627,38 @@ public partial class SettingsWindow : Window
         MyMindMapTestStatus.Text = "正在测试…";
         try
         {
-            using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+            using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(8) };
             var baseUrl = (MindMapBaseUrlBox?.Text ?? "http://127.0.0.1:17800").Trim().TrimEnd('/');
-            var url = $"{baseUrl}/api/status?token={Uri.EscapeDataString(MyMindMapTokenBox.Text.Trim())}";
-            using var resp = await client.GetAsync(url);
-            MyMindMapTestStatus.Text = resp.IsSuccessStatusCode ? "连接成功 ✓" : $"连接失败：HTTP {(int)resp.StatusCode}";
+            var token = (MyMindMapTokenBox?.Text ?? string.Empty).Trim();
+
+            // 第一步：服务在不在、Token 对不对
+            using (var statusResp = await client.GetAsync($"{baseUrl}/api/status?token={Uri.EscapeDataString(token)}"))
+            {
+                if (!statusResp.IsSuccessStatusCode)
+                {
+                    MyMindMapTestStatus.Text = statusResp.StatusCode == System.Net.HttpStatusCode.Unauthorized
+                        ? "连接失败：Token 无效或已过期（请在 my-mindmap agent 的设置里重新复制）"
+                        : $"连接失败：HTTP {(int)statusResp.StatusCode}";
+                    return;
+                }
+            }
+
+            // 第二步：真正同步要用的复习计划接口。它由对端主界面回答，主界面没打开时会 503 ——
+            // 这一步能提前暴露"能连上、但同步拿不到数据"这种只测 /api/status 看不出来的问题。
+            using (var planResp = await client.GetAsync($"{baseUrl}/api/desk-calendar/review-plan?token={Uri.EscapeDataString(token)}"))
+            {
+                if (!planResp.IsSuccessStatusCode)
+                {
+                    MyMindMapTestStatus.Text = $"已连接，但复习计划取不到：HTTP {(int)planResp.StatusCode}（请打开 my-mindmap agent 主窗口）";
+                    return;
+                }
+
+                var json = await planResp.Content.ReadAsStringAsync();
+                var count = CountReviewTasks(json);
+                MyMindMapTestStatus.Text = count >= 0
+                    ? $"连接成功 ✓（复习任务 {count} 条）"
+                    : "连接成功 ✓（复习计划返回内容无法解析）";
+            }
         }
         catch (Exception ex)
         {
@@ -629,6 +668,26 @@ public partial class SettingsWindow : Window
         {
             if (TestMyMindMapButton is not null) TestMyMindMapButton.IsEnabled = true;
         }
+    }
+
+    /// <summary>数一下复习计划接口返回的任务条数；解析不出来返回 -1。</summary>
+    private static int CountReviewTasks(string json)
+    {
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            if (doc.RootElement.TryGetProperty("tasks", out var tasks)
+                && tasks.ValueKind == System.Text.Json.JsonValueKind.Array)
+            {
+                return tasks.GetArrayLength();
+            }
+        }
+        catch
+        {
+            // 解析失败按"未知"处理，连接本身是通的
+        }
+
+        return -1;
     }
 
     private async void SyncMindMapNow_Click(object sender, RoutedEventArgs e)
@@ -643,7 +702,11 @@ public partial class SettingsWindow : Window
                 SyncMindMapStatus.Text = "同步功能不可用";
                 return;
             }
-            var result = await MindMapSyncRequested();
+
+            // 用面板里当前填写的地址 / Token 同步，不必先保存（保存会关掉本窗口，反而看不到结果）
+            var baseUrl = (MindMapBaseUrlBox?.Text ?? string.Empty).Trim();
+            var token = (MyMindMapTokenBox?.Text ?? string.Empty).Trim();
+            var result = await MindMapSyncRequested(baseUrl, token);
             SyncMindMapStatus.Text = result;
         }
         catch (Exception ex)

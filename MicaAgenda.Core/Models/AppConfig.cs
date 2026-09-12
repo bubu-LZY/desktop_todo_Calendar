@@ -98,4 +98,10 @@ public sealed class AppConfig
     // 极不友好（看着像"无响应"）；需要的人去设置里勾选即可。</summary>
     public bool EmbedDesktop { get; set; } = false;
 
+    /// <summary>
+    /// 复制一份配置快照。设置窗口与主窗体共用同一个 AppConfig 实例，保存时是「就地改写」，
+    /// 所以主窗体要判断"哪些设置项变了"必须先拿到改写前的快照——否则新旧值永远相同，
+    /// 「保存后立即生效」的分支永远不执行（只能重启程序才生效）。
+    /// </summary>
+    public AppConfig Clone() => (AppConfig)MemberwiseClone();
 }

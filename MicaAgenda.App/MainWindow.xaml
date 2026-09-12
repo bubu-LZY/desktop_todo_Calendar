@@ -1467,7 +1467,10 @@
                             <TextBlock Text="设置" VerticalAlignment="Center" />
                         </StackPanel>
                     </Button>
-                    <Button x:Name="CloseButton" Content="×" Style="{StaticResource CloseButton}" Click="Close_Click" />
+                    <!-- × 一律隐藏（见 UpdateCloseButtonVisibility）：这是常驻桌面的小挂件，
+                         误点关掉会让人以为程序退出了。收起/退出走托盘菜单。 -->
+                    <Button x:Name="CloseButton" Content="×" Style="{StaticResource CloseButton}"
+                            Visibility="Collapsed" Click="Close_Click" />
                 </StackPanel>
                 <StackPanel Orientation="Vertical" DockPanel.Dock="Left" VerticalAlignment="Center" Margin="0,0,0,0">
                     <!-- 第一行：时间/星期，今日任务量，本周任务量 -->
