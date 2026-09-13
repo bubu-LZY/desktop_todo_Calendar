@@ -102,8 +102,8 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
-        FileLog.Write($"[STARTUP] MainWindow ctor - v3.1.9 - exe={Environment.ProcessPath ?? "unknown"}");
-        Title = "MicaAgenda v3.1.9";
+        FileLog.Write($"[STARTUP] MainWindow ctor - v3.1.10 - exe={Environment.ProcessPath ?? "unknown"}");
+        Title = "MicaAgenda v3.1.10";
 
         // 窗口初始化前同步加载配置，确保桌面嵌入/锁定在首帧即生效
         _config = _configStore.Load();
@@ -262,7 +262,17 @@ public partial class MainWindow : Window
 
                 if (_config.HighPriorityStartup)
                 {
-                    HighPriorityStartupService.SetEnabled(true);
+                    // 自身进程优先级立刻提上去：不需要管理员权限，必定生效，
+                    // 这也是「高优先级」真正能被感知到的部分。
+                    HighPriorityStartupService.ApplyProcessPriority(true);
+
+                    // 计划任务缺失时补登记一次，但开机过程中不弹 UAC（太打扰），
+                    // 失败只记一条日志，用户可以自己在设置里授权。
+                    var highPriority = HighPriorityStartupService.Enable(allowElevation: false);
+                    if (!highPriority.TaskRegistered)
+                    {
+                        FileLog.Write($"[STARTUP] 高优先级开机任务未登记：{highPriority.Message}");
+                    }
                 }
             }, "Startup.AutoStart");
 

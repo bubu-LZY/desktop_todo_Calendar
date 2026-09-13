@@ -71,7 +71,7 @@ jobs:
           Write-Output "ISCC: $iscc"
 
           $ver = if ('${{ github.ref_type }}' -eq 'tag') { '${{ github.ref_name }}'.TrimStart('v') } else { '${{ inputs.version }}' }
-          if (-not $ver) { $ver = '3.1.9' }
+          if (-not $ver) { $ver = '3.1.10' }
 
           # 中文语言文件：优先用编译器自带的；编译器不带中文时回退到随仓库携带的副本
           $langIsl = Join-Path (Split-Path $iscc) 'Languages\ChineseSimplified.isl'
