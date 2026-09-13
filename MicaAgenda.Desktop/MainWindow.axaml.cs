@@ -1,5 +1,6 @@
 using System;
 using System.Linq;
+using System.Runtime.Versioning;
 using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls;
@@ -99,6 +100,9 @@ public partial class MainWindow : Window
             var holidays = await _holidayService.LoadCachedOrEmbeddedAsync(year);
             _viewModel = new MainViewModel(data, holidays: holidays, syncRoot: _syncRoot);
             DataContext = _viewModel;
+
+            // 先把开机启动相关的诉求落实到本次运行（Windows 专属）。
+            ApplyStartupOptions();
 
             // 数据就位后再启动后台服务（与 WPF 宿主同序）：API/MCP/提醒/备份/报告/思维导图同步。
             StartServices();
@@ -369,6 +373,45 @@ public partial class MainWindow : Window
     }
 
     // ===== 后台服务（与 WPF 宿主对等：API/MCP/提醒/备份/报告/思维导图同步）=====
+
+    /// <summary>
+    /// 把「高优先级启动」落实到本次运行（Windows 专属，注册表开机自启在保存设置时已写）。
+    /// 进程优先级由程序自己提，不需要管理员权限、必定生效 —— 这也是「高优先级」
+    /// 真正能被感知到的部分；计划任务缺失时补登记一次，但开机过程中不弹 UAC（太打扰），
+    /// 失败只记一条日志，用户可以自己在设置里授权。
+    /// </summary>
+    private void ApplyStartupOptions()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        try
+        {
+            if (!_config.HighPriorityStartup)
+            {
+                return;
+            }
+
+            HighPriorityStartupService.ApplyProcessPriority(true);
+
+            var result = EnableHighPriorityTask();
+            if (!result.TaskRegistered)
+            {
+                AppLog.Error(null, "[STARTUP] 高优先级开机任务未登记：" + result.Message);
+            }
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error(ex, "MainWindow.ApplyStartupOptions");
+        }
+    }
+
+    /// <summary>补登记高优先级开机任务（Windows 专属，调用点必须已判断平台）。</summary>
+    [SupportedOSPlatform("windows")]
+    private static HighPriorityStartupService.SetupResult EnableHighPriorityTask()
+        => HighPriorityStartupService.Enable(allowElevation: false);
 
     private void StartServices()
     {

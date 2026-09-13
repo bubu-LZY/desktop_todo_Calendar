@@ -1,5 +1,7 @@
+using System.Runtime.Versioning;
 using System.ComponentModel;
 using System.Diagnostics;
+using MicaAgenda.App.Helpers;
 
 namespace MicaAgenda.App.Services;
 
@@ -17,6 +19,7 @@ namespace MicaAgenda.App.Services;
 ///   -Priority 参数（Windows PowerShell 5.1 和 PowerShell 7 都没有这个参数），
 ///   也就是说任务就算建成功也永远拉不起程序。现在任务直接执行 exe 本体，优先级由程序自己设置。
 /// </summary>
+[SupportedOSPlatform("windows")]
 public static class HighPriorityStartupService
 {
     internal const string TaskName = "MicaAgenda_HighPriority";
@@ -155,7 +158,7 @@ public static class HighPriorityStartupService
         }
         catch (Exception ex)
         {
-            App.LogError(ex, "HighPriorityStartupService.ApplyProcessPriority");
+            AppLog.Error(ex, "HighPriorityStartupService.ApplyProcessPriority");
             return false;
         }
     }

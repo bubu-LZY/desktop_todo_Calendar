@@ -1,7 +1,9 @@
+using System.Runtime.Versioning;
 using Microsoft.Win32;
 
 namespace MicaAgenda.App.Services;
 
+[SupportedOSPlatform("windows")]
 public static class AutoStartService
 {
     internal const string RunKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";

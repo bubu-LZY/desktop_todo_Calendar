@@ -2,6 +2,7 @@ using System;
 using System.Diagnostics;
 using System.Linq;
 using System.Net.Http;
+using System.Runtime.Versioning;
 using System.Text;
 using System.Threading.Tasks;
 using Avalonia;
@@ -95,6 +96,17 @@ public partial class SettingsWindow : Window
         MyMindMapTokenBox.Text = _config.MyMindMapToken;
         EmbedDesktopBox.IsChecked = _config.EmbedDesktop;
         LockWindowBox.IsChecked = _config.LockWindow;
+        if (OperatingSystem.IsWindows())
+        {
+            AutoStartBox.IsChecked = _config.AutoStart;
+            HighPriorityBox.IsChecked = _config.HighPriorityStartup;
+            _ = RefreshHighPriorityStatusAsync();
+        }
+        else
+        {
+            // 非 Windows：整块隐藏，不呈现「点了没反应」的开关
+            StartupOptionsPanel.IsVisible = false;
+        }
         LoadReportValues();
         UpdateApiHint();
         UpdateMcpEndpoint();
@@ -629,6 +641,30 @@ public partial class SettingsWindow : Window
         _config.EmbedDesktop = EmbedDesktopBox.IsChecked == true;
         _config.LockWindow = LockWindowBox.IsChecked == true;
 
+        // 开机启动相关要在关窗之前办完：登记计划任务需要管理员授权，只有窗口还在才能把
+        // UAC 授权框挂到正确的父窗口上，也才有机会在失败时回滚，而不是留下「勾着但没生效」的假象。
+        if (OperatingSystem.IsWindows())
+        {
+            var newAutoStart = AutoStartBox.IsChecked == true;
+            var newHighPriority = HighPriorityBox.IsChecked == true;
+            var startupNotes = await ApplyStartupOptionsAsync(newAutoStart, newHighPriority);
+
+            if (newHighPriority && !HighPriorityStartupService.IsEnabled())
+            {
+                // 计划任务最终没登记成功：把选项退回关闭，并如实说明原因
+                newHighPriority = false;
+                HighPriorityBox.IsChecked = false;
+                await ShowInfoAsync("高优先级启动未生效", string.Join("\n\n", startupNotes));
+            }
+            else if (startupNotes.Count > 0)
+            {
+                await ShowInfoAsync("开机启动", string.Join("\n", startupNotes));
+            }
+
+            _config.AutoStart = newAutoStart;
+            _config.HighPriorityStartup = newHighPriority;
+        }
+
         if (!TryApplyReportValues(showErrors: true))
         {
             return;
@@ -637,6 +673,101 @@ public partial class SettingsWindow : Window
         await _configStore.SaveAsync(_config);
         ApplyRequested?.Invoke(_config);
         Close();
+    }
+
+    /// <summary>
+    /// 落实开机启动相关选项，返回需要提示给用户的说明（一切正常时返回空列表）。
+    /// 「高优先级启动」要登记计划任务，这一步必须有管理员权限：先在普通权限下试一次，
+    /// 被拒绝就弹 UAC 再试一次；用户取消授权、或最终没登记成功，都会如实返回，绝不静默吞掉。
+    /// </summary>
+    private async Task<List<string>> ApplyStartupOptionsAsync(bool autoStart, bool highPriority)
+    {
+        var notes = new List<string>();
+        if (!OperatingSystem.IsWindows())
+        {
+            return notes;
+        }
+
+        try
+        {
+            AutoStartService.SetEnabled(autoStart);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error(ex, "AutoStartService");
+            notes.Add("写入开机自启注册表项失败：" + ex.Message);
+        }
+
+        try
+        {
+            if (highPriority)
+            {
+                // 先把当前进程的优先级提上去：这一步不需要任何权限、立刻生效，
+                // 也是「高优先级」真正能被感知到的部分。
+                HighPriorityStartupService.ApplyProcessPriority(true);
+
+                // 登记任务要起 schtasks、可能弹 UAC：放到线程池，别堵住界面线程。
+                var result = await Task.Run(EnableHighPriorityTask);
+                if (!result.TaskRegistered)
+                {
+                    notes.Add(result.Message
+                        + "\n\n本次运行期间程序仍会以高优先级运行，但做不到「开机自动启动」。"
+                        + "\n如果只是想在开机时自动启动，可以改用「开机自启动」（不需要管理员权限）。");
+                }
+            }
+            else
+            {
+                var result = await Task.Run(DisableHighPriorityTask);
+                if (result.Status is HighPriorityStartupService.SetupStatus.Failed
+                    or HighPriorityStartupService.SetupStatus.Cancelled
+                    or HighPriorityStartupService.SetupStatus.NeedsElevation)
+                {
+                    notes.Add(result.Message);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error(ex, "HighPriorityStartupService");
+            notes.Add("设置高优先级启动失败：" + ex.Message);
+        }
+
+        await RefreshHighPriorityStatusAsync();
+        return notes;
+    }
+
+    /// <summary>登记高优先级开机任务（Windows 专属，调用点必须已判断平台）。</summary>
+    [SupportedOSPlatform("windows")]
+    private static HighPriorityStartupService.SetupResult EnableHighPriorityTask()
+        => HighPriorityStartupService.Enable(allowElevation: true);
+
+    /// <summary>移除高优先级开机任务（Windows 专属，调用点必须已判断平台）。</summary>
+    [SupportedOSPlatform("windows")]
+    private static HighPriorityStartupService.SetupResult DisableHighPriorityTask()
+        => HighPriorityStartupService.Disable(allowElevation: true);
+
+    /// <summary>
+    /// 显示开机任务的真实状态：直接查询任务计划程序，而不是读配置里的「愿望值」。
+    /// 查询要起一个 schtasks 进程，放到线程池里做，避免拖慢设置窗口打开。
+    /// </summary>
+    private async Task RefreshHighPriorityStatusAsync()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        try
+        {
+            var registered = await Task.Run(HighPriorityStartupService.IsEnabled);
+            HighPriorityStatus.Text = registered
+                ? "开机任务：已登记（开机后会以高优先级启动）"
+                : "开机任务：未登记（勾选并保存后会请求管理员授权登记）";
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error(ex, "SettingsWindow.RefreshHighPriorityStatus");
+        }
     }
 
     // ===== 工具方法 =====

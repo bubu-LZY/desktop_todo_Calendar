@@ -1,6 +1,8 @@
 # desktop_todo_Calendar
 
-一个基于 .NET 9 WPF 的 Windows 桌面日历 / 待办任务工具，支持 Mica 风格玻璃主题、中国节假日、桌面嵌入，以及面向 AI 客户端的 MCP Server 和 HTTP API。
+一个基于 .NET 9 的桌面日历 / 待办任务工具，支持 Mica 风格玻璃主题、中国节假日、桌面嵌入，以及面向 AI 客户端的 MCP Server 和 HTTP API。
+
+> 界面有两套宿主：跨平台宿主 `MicaAgenda.Desktop`（Avalonia，Windows / macOS / Linux，Windows 安装包打的就是它）与 `MicaAgenda.App`（WPF，仅 Windows）。两者共用 `MicaAgenda.Core` 的数据层与服务层。
 
 > 仓库与产品展示名：`desktop_todo_Calendar`。  
 > 底层工程名仍保留 `MicaAgenda.App`，便于兼容旧数据和既有构建链路。
@@ -84,6 +86,8 @@ https://bubu-lzy.github.io/desktop_todo_Calendar/
 | macOS (Intel) | `desktop_todo_Calendar-3.2.0-x64.dmg` / `.zip` |
 | Linux | `desktop_todo_Calendar-3.2.0-x64.AppImage`、`desktop_todo_Calendar_3.2.0_amd64.deb` |
 | 源码 | `desktop_todo_Calendar-Source-3.2.0.zip` |
+
+Windows 安装包打包的是跨平台宿主 `MicaAgenda.Desktop.exe`（Avalonia），不是仅 Windows 的 WPF 宿主。
 
 发布包为自包含版本，无需额外安装 .NET 运行时。未签名，首次运行 mac 需 `xattr -dr com.apple.quarantine /Applications/...`。
 

@@ -2,9 +2,10 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         x:Class="MicaAgenda.Desktop.SettingsWindow"
         Title="设置"
-        Width="560" Height="800"
+        Width="660" Height="620"
+        MinWidth="580" MinHeight="460"
         WindowStartupLocation="CenterOwner"
-        CanResize="False"
+        CanResize="True"
         Background="#F7F8FA"
         FontSize="13"
         x:CompileBindings="False">
@@ -57,7 +58,7 @@
     </Style>
   </Window.Styles>
 
-  <Grid Margin="24" RowDefinitions="*,Auto">
+  <Grid Margin="18" RowDefinitions="*,Auto">
     <ScrollViewer Grid.Row="0" VerticalScrollBarVisibility="Auto">
       <StackPanel>
 
@@ -203,9 +204,17 @@
           <StackPanel>
             <TextBlock Text="桌面行为" Classes="groupTitle" />
             <CheckBox x:Name="EmbedDesktopBox" Content="嵌入桌面（置底模式：沉在其他窗口之下）" Margin="0,0,0,8" />
-            <CheckBox x:Name="LockWindowBox" Content="锁定位置（禁止拖动 / 缩放）" />
-            <TextBlock Text="开机自启动为 Windows 专属能力，请在 Windows 版（WPF 宿主）中配置。"
-                       Classes="hint" Margin="0,8,0,0" />
+            <CheckBox x:Name="LockWindowBox" Content="锁定位置（禁止拖动 / 缩放）" Margin="0,0,0,8" />
+            <!-- 开机启动两项是 Windows 专属（注册表 / 计划任务）：非 Windows 平台整块隐藏，
+                 不给用户「点了没反应的开关」。 -->
+            <StackPanel x:Name="StartupOptionsPanel" Spacing="4">
+              <CheckBox x:Name="AutoStartBox" Content="开机自启动" />
+              <CheckBox x:Name="HighPriorityBox" Content="高优先级开机启动（首次设置需要管理员授权）" />
+              <TextBlock x:Name="HighPriorityStatus" Classes="hint" Margin="19,0,0,0"
+                         Text="正在检查开机任务状态…" />
+              <TextBlock Classes="hint" Margin="0,2,0,0"
+                         Text="「开机自启动」不需要管理员权限；「高优先级启动」会登记一个开机计划任务，首次设置会弹出 UAC 授权框。" />
+            </StackPanel>
           </StackPanel>
         </Border>
 

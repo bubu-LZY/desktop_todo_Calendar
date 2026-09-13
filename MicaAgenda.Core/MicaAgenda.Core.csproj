@@ -7,4 +7,12 @@
     <RootNamespace>MicaAgenda.App</RootNamespace>
   </PropertyGroup>
 
+  <ItemGroup>
+    <!-- 两个 Windows 专属能力（注册表开机自启、schtasks 高优先级自启）需要在 Core 里编译。
+         net9.0 目标不含这些 Windows API，必须显式引用；调用方一律先判断
+         OperatingSystem.IsWindows()，非 Windows 平台不会走到这里。 -->
+    <PackageReference Include="Microsoft.Win32.Registry" Version="5.0.0" />
+    <PackageReference Include="System.Security.Principal.Windows" Version="5.0.0" />
+  </ItemGroup>
+
 </Project>
