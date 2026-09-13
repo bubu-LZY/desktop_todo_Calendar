@@ -389,6 +389,15 @@ public partial class MainWindow : Window
 
         try
         {
+            // 开机自启动：把注册表里的启动项重新指向「当前这份 exe」。装了新版 / 换了安装目录之后，
+            // 旧版留下的启动项会指向已经不存在的旧宿主 exe，表现就是「勾了开机自启动但开机后没反应」；
+            // SetEnabled 同时会清掉安装包写的旧值名，避免同一个程序开机被拉起两次。
+            // 只在用户开着自启时对齐，不动「设置里没开自启」的情况，免得把安装包勾的自启悄悄删掉。
+            if (_config.AutoStart)
+            {
+                AutoStartService.SetEnabled(true);
+            }
+
             if (!_config.HighPriorityStartup)
             {
                 return;

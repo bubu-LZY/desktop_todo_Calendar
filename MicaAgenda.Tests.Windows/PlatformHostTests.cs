@@ -47,6 +47,41 @@ public class PlatformHostTests
         }
     }
 
+    [Fact]
+    public void AutoStartService_RecognizesAndClearsLegacyInstallerValue()
+    {
+        var id = Guid.NewGuid().ToString("N");
+        var parentPath = $@"Software\MicaAgenda.Tests\{id}";
+        var runPath = $@"{parentPath}\Run";
+        var valueName = "MicaAgendaTest";
+        var legacyValueName = "desktop_todo_CalendarTest";
+        var executablePath = @"C:\Apps\MicaAgenda\MicaAgenda.Desktop.exe";
+
+        try
+        {
+            // 安装脚本过去只写「旧值名」：程序必须能看见它，否则设置里显示未开启、怎么关都还留着一条。
+            AutoStartService.SetEnabled(true, runPath, legacyValueName, @"C:\Apps\MicaAgenda\MicaAgenda.App.exe");
+            Assert.True(AutoStartService.IsEnabled(runPath, valueName, legacyValueName));
+
+            // 程序侧保存「开启自启」时：写入自己的值名，并清掉安装脚本的旧值名（同一个程序不该开机跑两次）。
+            AutoStartService.SetEnabled(true, runPath, valueName, legacyValueName, executablePath);
+            Assert.True(AutoStartService.IsEnabled(runPath, valueName, legacyValueName));
+            using (var key = Registry.CurrentUser.OpenSubKey(runPath, false))
+            {
+                Assert.Equal($"\"{executablePath}\"", key?.GetValue(valueName));
+                Assert.Null(key?.GetValue(legacyValueName));
+            }
+
+            // 关掉自启要两个值名都清掉，否则「关了还开机自启」。
+            AutoStartService.SetEnabled(false, runPath, valueName, legacyValueName, executablePath);
+            Assert.False(AutoStartService.IsEnabled(runPath, valueName, legacyValueName));
+        }
+        finally
+        {
+            Registry.CurrentUser.DeleteSubKey(runPath, false);
+            Registry.CurrentUser.DeleteSubKey(parentPath, false);
+        }
+    }
     [Theory]
     [InlineData(22, 1, 22)]
     [InlineData(22, 1.25, 28)]

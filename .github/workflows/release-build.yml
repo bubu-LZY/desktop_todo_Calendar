@@ -49,6 +49,11 @@ jobs:
       - name: 测试（跨平台单测）
         run: dotnet test MicaAgenda.Tests -c Release --no-restore
 
+      # Windows 专属实现（注册表开机自启、schtasks 高优先级自启）不在 MicaAgenda.Tests 里，单独跑一遍
+      - name: 测试（Windows 专属）
+        if: matrix.pkg == 'windows'
+        run: dotnet test MicaAgenda.Tests.Windows -c Release --no-restore
+
       - name: 发布（${{ matrix.rid }}）
         run: >
           dotnet publish MicaAgenda.Desktop -c Release

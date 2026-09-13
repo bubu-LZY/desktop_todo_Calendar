@@ -4,7 +4,7 @@
 #define MyAppName "desktop_todo_Calendar"
 ; 允许 CI 用 /DMyAppVersion=... 覆盖；本地直接编译时用兜底值
 #ifndef MyAppVersion
-  #define MyAppVersion "3.2.0"
+  #define MyAppVersion "3.2.1"
 #endif
 #define MyAppPublisher "MicaAgenda"
 #define MyAppExeName "MicaAgenda.Desktop.exe"
@@ -53,45 +53,28 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
 Filename: "{app}\{#MyAppExeName}"; Description: "启动 {#MyAppName}"; Flags: nowait postinstall skipifsilent
 
 [Code]
-// 安装前自动关闭正在运行的 MicaAgenda 进程 + 清理旧版本残留文件
-// 保留单文件版本必需的 7 个文件，删除其他全部（多文件时代残留的 MicaAgenda.App.dll
-// / .deps.json / System.*.dll / Microsoft.*.dll 等），避免 DLL 冲突导致 WPF 启动异常。
+// 安装前自动关闭正在运行的 MicaAgenda 进程 + 清理旧版本残留文件。
 // ⚠️ 绝对不能触碰用户数据目录（%LOCALAPPDATA%\MicaAgenda 与 %APPDATA%\MicaAgenda），
 //    它们保存任务数据 / 节假日缓存 / 配置文件，清掉会导致用户数据永久丢失。
-// 本脚本只清理安装目录（即 {app}，默认 C:\Program Files\MicaAgenda）下的文件。
-procedure CurStepChanged(CurStep: TSetupStep);
-var
-  ResultCode: Integer;
-begin
-  if CurStep = ssInstall then
-  begin
-    Exec('taskkill', '/F /IM MicaAgenda.Desktop.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-    // 兼容从旧版（WPF 宿主）升级：旧进程也要关掉，否则占用文件导致安装失败
-    Exec('taskkill', '/F /IM MicaAgenda.App.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-  end;
-end;
-
-procedure CurInstallBeforeInstall;
+//    本脚本只清理安装目录（即 {app}，默认 %LOCALAPPDATA%\Programs\desktop_todo_Calendar）下的文件。
+// 策略是「先删后铺」：删掉旧版本残留（WPF 宿主的 MicaAgenda.App.exe / MicaAgenda.App.dll 与
+// PresentationFramework*.dll / *_cor3.dll 等 WPF 专属依赖），再由 [Files] 重新铺一遍本次产物；
+// 只保留卸载器必需的 unins000.*，否则「应用和功能」里会卸载不掉。
+// 注意：只清顶层文件，语言子目录（cs / de / zh-Hans 等）里的旧资源 DLL 不处理 —— 新版不会加载它们。
 var
   AppDir: String;
   Keep: TStringList;
   FindRec: TFindRec;
   FilePath, FileName: String;
-  IsSafePath: Boolean;
 begin
-  // {app} 是安装目录（C:\Program Files\MicaAgenda），不是用户数据目录。
-  // 多重护栏：如果路径包含 'AppData' / 'Roaming' / 'Local'，拒绝执行清理。
   AppDir := ExpandConstant('{app}');
-  IsSafePath := (Pos('AppData', AppDir) = 0)
-            and (Pos('Appdata', AppDir) = 0)
-            and (Pos('appdata', AppDir) = 0)
-            and (Pos('Roaming', AppDir) = 0)
-            and (Pos('roaming', AppDir) = 0)
-            and (Pos('Local\\', AppDir) = 0)
-            and (Pos('local\\', AppDir) = 0);
-  if not IsSafePath then
+  // 只认「本程序的安装目录」：最后一级目录名必须是 desktop_todo_Calendar。
+  // 安装包免管理员（PrivilegesRequired=lowest），{app} 默认落在 %LOCALAPPDATA%\Programs\desktop_todo_Calendar，
+  // 所以不能按「路径里含 AppData 就跳过」来兜底 —— 那会让清理永远不执行。改成认目录名：
+  // 即使用户把安装目录指到别处（比如用户数据目录），也不会误删。
+  if CompareText(ExtractFileName(AppDir), 'desktop_todo_Calendar') <> 0 then
   begin
-    Log('ABORT: Refusing to clean path that contains AppData/Roaming/Local: ' + AppDir);
+    Log('ABORT: Refusing to clean unexpected directory: ' + AppDir);
     Exit;
   end;
   if not DirExists(AppDir) then Exit;
@@ -99,17 +82,10 @@ begin
   try
     Keep.Sorted := True;
     Keep.Duplicates := dupIgnore;
-    Keep.Add('MicaAgenda.App.exe');
-    Keep.Add('MicaAgenda.App.pdb');
-    Keep.Add('D3DCompiler_47_cor3.dll');
-    Keep.Add('PenImc_cor3.dll');
-    Keep.Add('PresentationNative_cor3.dll');
-    Keep.Add('vcruntime140_cor3.dll');
-    Keep.Add('wpfgfx_cor3.dll');
     Keep.Add('unins000.exe');
     Keep.Add('unins000.dat');
     Keep.Add('unins000.msg');
-    if FindFirst(AppDir + '\\*', FindRec) then
+    if FindFirst(AppDir + '\*', FindRec) then
     begin
       try
         repeat
@@ -118,7 +94,7 @@ begin
             FileName := FindRec.Name;
             if Keep.IndexOf(FileName) < 0 then
             begin
-              FilePath := AppDir + '\\' + FileName;
+              FilePath := AppDir + '\' + FileName;
               if DeleteFile(FilePath) then
                 Log('Cleaned stale file: ' + FilePath)
               else
@@ -132,5 +108,19 @@ begin
     end;
   finally
     Keep.Free;
+  end;
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+var
+  ResultCode: Integer;
+begin
+  if CurStep = ssInstall then
+  begin
+    Exec('taskkill', '/F /IM MicaAgenda.Desktop.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    // 兼容从旧版（WPF 宿主）升级：旧进程也要关掉，否则占用文件导致安装失败
+    Exec('taskkill', '/F /IM MicaAgenda.App.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    // 进程关掉之后再清理：正在运行的 exe / 已加载的原生 dll 删不掉
+    RemoveStaleAppFiles;
   end;
 end;
