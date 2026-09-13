@@ -61,6 +61,7 @@ Filename: "{app}\{#MyAppExeName}"; Description: "启动 {#MyAppName}"; Flags: no
 // PresentationFramework*.dll / *_cor3.dll 等 WPF 专属依赖），再由 [Files] 重新铺一遍本次产物；
 // 只保留卸载器必需的 unins000.*，否则「应用和功能」里会卸载不掉。
 // 注意：只清顶层文件，语言子目录（cs / de / zh-Hans 等）里的旧资源 DLL 不处理 —— 新版不会加载它们。
+procedure RemoveStaleAppFiles;
 var
   AppDir: String;
   Keep: TStringList;
@@ -85,7 +86,7 @@ begin
     Keep.Add('unins000.exe');
     Keep.Add('unins000.dat');
     Keep.Add('unins000.msg');
-    if FindFirst(AppDir + '\*', FindRec) then
+    if FindFirst(AppDir + '\\*', FindRec) then
     begin
       try
         repeat
@@ -94,7 +95,7 @@ begin
             FileName := FindRec.Name;
             if Keep.IndexOf(FileName) < 0 then
             begin
-              FilePath := AppDir + '\' + FileName;
+              FilePath := AppDir + '\\' + FileName;
               if DeleteFile(FilePath) then
                 Log('Cleaned stale file: ' + FilePath)
               else

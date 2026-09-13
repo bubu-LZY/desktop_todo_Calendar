@@ -40,11 +40,12 @@ v3.1.8 / v3.1.9 / v3.1.10 修掉的问题，此前只落在 WPF 那条线上（`
 
 ### 🐛 修复（安装包 / 开机自启动）
 - **安装包里的「清理旧版本残留文件」从未执行过**：`setup.iss` 里那段删除旧文件的过程叫
-  `CurInstallBeforeInstall`，而 Inno Setup 并没有这个事件 —— 它从来没有被调用过；同时它拼路径用的是
-  C# 风格的 `\\`（Pascal 不做转义，实际成了双反斜杠），就算被调用也找不到文件。现在改成真正的事件调用点
-  （`CurStepChanged` 的 `ssInstall`，在关掉旧进程之后），分隔符改回单个 `\`。从 WPF 版（v3.1.x）升上来的
-  安装目录里会一直留着 `MicaAgenda.App.exe` / `MicaAgenda.App.dll` 与 `PresentationFramework*.dll`、
-  `*_cor3.dll` 等 WPF 专属依赖，现在会被清掉（只保留卸载器必需的 `unins000.*`，再由 `[Files]` 重新铺一遍）。
+  `CurInstallBeforeInstall`，而 Inno Setup 并没有这个事件 —— 它从来没有被调用过，所以从 WPF 版（v3.1.x）
+  升上来的安装目录里一直留着 `MicaAgenda.App.exe` / `MicaAgenda.App.dll` 与 `PresentationFramework*.dll`、
+  `*_cor3.dll` 等 WPF 专属依赖。现在改成真正的事件调用点（`CurStepChanged` 的 `ssInstall`，在关掉旧进程
+  之后执行），只保留卸载器必需的 `unins000.*`，其余文件由 `[Files]` 重新铺一遍；顺带去掉路径拼接里多写的
+  一层反斜杠。已用 Inno Setup 6.7.3 编译并实际跑过一次安装：安装目录里的旧宿主文件会被清掉，而安装到
+  用户数据目录（目录名不是 `desktop_todo_Calendar`）时会拒绝清理。
 - **清理的自我保护条件会把自己挡掉**：安装包免管理员（`PrivilegesRequired=lowest`），`{app}` 实际落在
   `%LOCALAPPDATA%\Programs\desktop_todo_Calendar`，而旧代码「路径里含 AppData 就放弃清理」正好命中 ——
   纵使被调用也会直接退出。现在改为认安装目录的最后一级目录名。
