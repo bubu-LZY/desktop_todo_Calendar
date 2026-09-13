@@ -43,6 +43,9 @@ public sealed class CalendarTask
         UpdatedAt = at;
     }
 
+    /// <summary>是否是复习同步管辖的复习任务（标题带复习前缀）。用户自己建的任务不参与同步。</summary>
+    public bool IsReviewTask => ReviewTaskTitle.IsReview(Title);
+
     /// <summary>创建日期（本地时区），用于"创建距今多久"一类展示。</summary>
     public DateOnly CreatedDate => DateOnly.FromDateTime(CreatedAt.LocalDateTime);
 

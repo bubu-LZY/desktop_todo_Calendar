@@ -13,19 +13,16 @@ namespace MicaAgenda.App.Services;
 internal static class ReviewSyncPlanner
 {
     /// <summary>新版复习任务标题前缀（由本程序写进日历）。</summary>
-    internal const string ReviewPrefix = "[MM复习]";
+    internal const string ReviewPrefix = ReviewTaskTitle.Prefix;
 
     /// <summary>旧版前缀，只读识别用：历史上推送过的任务标题带这个前缀，也要能配对与清理。</summary>
-    internal const string LegacyPrefix = "[复习]";
+    internal const string LegacyPrefix = ReviewTaskTitle.LegacyPrefix;
 
     /// <summary>对端没给出标题时的兜底标题。</summary>
     internal const string FallbackTitle = "复习任务";
 
     /// <summary>标题是否属于「复习计划同步」管辖范围。用户自己建的任务一律不参与同步。</summary>
-    internal static bool HasReviewPrefix(string? title) =>
-        title is not null
-        && (title.StartsWith(ReviewPrefix, StringComparison.OrdinalIgnoreCase)
-            || title.StartsWith(LegacyPrefix, StringComparison.OrdinalIgnoreCase));
+    internal static bool HasReviewPrefix(string? title) => ReviewTaskTitle.IsReview(title);
 
     /// <summary>去掉前缀后的标题，两端用它做「日期 + 标题」配对。</summary>
     internal static string NormalizeTitle(string? title)

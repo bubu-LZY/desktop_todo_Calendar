@@ -45,7 +45,7 @@ public partial class SettingsWindow : Window
     public Func<int>? DeleteAllTasksRequested { get; set; }
 
     /// <summary>请求主窗体立即执行一次 my-mindmap 同步，返回结果文本。</summary>
-    public Func<Task<string>>? MindMapSyncRequested { get; set; }
+    public Func<string?, string?, Task<string>>? MindMapSyncRequested { get; set; }
 
     // Avalonia XAML 编译器要求根类型存在公共无参构造函数（仅供编译期/设计期）；
     // 运行时一律使用下面的有参构造注入依赖。
@@ -466,9 +466,12 @@ public partial class SettingsWindow : Window
         SyncMindMapStatus.Text = "正在同步…";
         try
         {
+            // 用面板里当前填写的地址 / Token 同步，不必先保存（保存会关掉本窗口，反而看不到结果）
+            var baseUrl = (MindMapBaseUrlBox.Text ?? string.Empty).Trim();
+            var token = (MyMindMapTokenBox.Text ?? string.Empty).Trim();
             SyncMindMapStatus.Text = MindMapSyncRequested is null
                 ? "同步功能不可用"
-                : await MindMapSyncRequested();
+                : await MindMapSyncRequested(baseUrl, token);
         }
         catch (Exception ex)
         {

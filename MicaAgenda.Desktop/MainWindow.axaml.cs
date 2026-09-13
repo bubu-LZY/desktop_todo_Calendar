@@ -530,8 +530,11 @@ public partial class MainWindow : Window
         _mindMapSyncService = new MindMapReviewSyncService(_viewModel.Data, _syncRoot, () => _config, OnDataChangedFromApi);
     }
 
-    /// <summary>设置窗口「立即同步」入口（供 #44 设置面板调用）。</summary>
-    internal async System.Threading.Tasks.Task<string> SyncMindMapNowAsync()
+    /// <summary>
+    /// 设置窗口「立即同步」入口：优先用面板里当前填写的地址 / Token（不必先保存、
+    /// 也不受「启用同步」开关限制 —— 这是用户的显式动作），返回给面板展示的结果文本。
+    /// </summary>
+    internal async System.Threading.Tasks.Task<string> SyncMindMapNowAsync(string? baseUrl, string? token)
     {
         if (_mindMapSyncService is null)
         {
@@ -540,9 +543,47 @@ public partial class MainWindow : Window
 
         return _mindMapSyncService is null
             ? "同步服务不可用"
-            : await _mindMapSyncService.SyncNowAsync();
+            : await _mindMapSyncService.SyncNowAsync(baseUrl, token);
     }
 
+    /// <summary>其它入口（托盘菜单等）：用已保存的配置同步一次。</summary>
+    internal System.Threading.Tasks.Task<string> SyncMindMapNowAsync() => SyncMindMapNowAsync(null, null);
+
+    /// <summary>
+    /// 复习任务在日历里被勾选 / 取消后，立刻把状态与「状态最后变更时间」推给 my-mindmap agent
+    /// （对端按时间戳仲裁，谁新听谁的）。对端的定时轮询是每小时一次，只靠它的话状态变化要等很久；
+    /// 这里主动推一次。非复习任务 / 未开启同步 / 没填 Token 都直接跳过，失败也不影响日历本机操作。
+    /// </summary>
+    private async System.Threading.Tasks.Task PushCompletionToMindMapAsync(TaskItemViewModel task)
+    {
+        if (!_config.SyncMyMindMapEnabled || string.IsNullOrWhiteSpace(_config.MyMindMapToken))
+        {
+            return;
+        }
+
+        if (!task.Model.IsReviewTask)
+        {
+            return;
+        }
+
+        try
+        {
+            if (_mindMapSyncService is null)
+            {
+                TryStart(StartMindMapSyncService, "MindMapSync");
+            }
+
+            if (_mindMapSyncService is not null)
+            {
+                await _mindMapSyncService.PushStatusAsync(_config.MyMindMapToken, task.Model);
+            }
+        }
+        catch (Exception ex)
+        {
+            // 静默：对端未启动 / Token 失效时不影响日历本机操作，下一次定时同步会再对齐
+            AppLog.Error(ex, "MainWindow.PushCompletionToMindMap");
+        }
+    }
     private void OnDataChangedFromApi()
     {
         // 批量接口会在极短时间内连续写入，先合并再刷新，避免高频重建 UI 与重复落盘。
@@ -853,6 +894,7 @@ public partial class MainWindow : Window
         if (TaskFrom(sender) is { IsCompleted: false } task)
         {
             _viewModel?.ToggleTaskCompletion(task.Id);
+            _ = PushCompletionToMindMapAsync(task);
         }
     }
 
@@ -861,6 +903,7 @@ public partial class MainWindow : Window
         if (TaskFrom(sender) is { IsCompleted: true } task)
         {
             _viewModel?.ToggleTaskCompletion(task.Id);
+            _ = PushCompletionToMindMapAsync(task);
         }
     }
 
@@ -910,6 +953,7 @@ public partial class MainWindow : Window
         }
 
         _viewModel?.ToggleTaskCompletion(task.Id);
+        _ = PushCompletionToMindMapAsync(task);
     }
 
     // ===== 任务标题行内编辑 =====

@@ -48,6 +48,26 @@ public sealed class ReviewSyncPlannerTests
     public void HasReviewPrefix_OnlyMatchesReviewTasks(string? title, bool expected) =>
         Assert.Equal(expected, ReviewSyncPlanner.HasReviewPrefix(title));
 
+    /// <summary>
+    /// 标题前缀约定与两个宿主（WPF / Avalonia）判定一致：两个宿主都靠它决定
+    /// 「勾选完成后要不要把状态推给 my-mindmap agent」，误判会导致用户任务被同步或被漏推。
+    /// </summary>
+    [Theory]
+    [InlineData("[MM复习]三角函数", true)]
+    [InlineData("[复习]三角函数", true)]
+    [InlineData("复习三角函数", false)]
+    [InlineData("三角函数", false)]
+    [InlineData("", false)]
+    [InlineData(null, false)]
+    public void ReviewTaskTitle_MatchesSameSetAsPlanner(string? title, bool expected)
+    {
+        Assert.Equal(expected, ReviewTaskTitle.IsReview(title));
+        Assert.Equal(expected, ReviewSyncPlanner.HasReviewPrefix(title));
+
+        var task = new CalendarTask { Title = title ?? string.Empty };
+        Assert.Equal(expected, task.IsReviewTask);
+    }
+
     [Theory]
     [InlineData("[MM复习]三角函数", "三角函数")]
     [InlineData("[复习]三角函数", "三角函数")]
