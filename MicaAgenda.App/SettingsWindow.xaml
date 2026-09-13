@@ -672,7 +672,8 @@
                         <CheckBox x:Name="EmbedDesktopBox" Content="嵌入桌面（置底模式：沉在其他窗口之下）" Style="{StaticResource SoftCheckBox}" Margin="0,0,0,4" />
                         <CheckBox x:Name="LockWindowBox" Content="锁定位置（禁止拖动 / 缩放）" Style="{StaticResource SoftCheckBox}" />
                         <CheckBox x:Name="AutoStartBox" Content="开机自启动" Style="{StaticResource SoftCheckBox}" Margin="0,4,0,0" />
-                        <CheckBox x:Name="HighPriorityBox" Content="高优先级开机启动（需要管理员权限）" Style="{StaticResource SoftCheckBox}" Margin="0,4,0,0" />
+                        <CheckBox x:Name="HighPriorityBox" Content="高优先级开机启动（首次设置需要管理员授权）" Style="{StaticResource SoftCheckBox}" Margin="0,4,0,0" />
+                        <TextBlock x:Name="HighPriorityStatus" Style="{StaticResource HintText}" Margin="19,2,0,0" Text="正在检查开机任务状态…" />
                     </StackPanel>
                 </Border>
 
