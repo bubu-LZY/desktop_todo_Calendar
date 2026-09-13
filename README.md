@@ -77,11 +77,11 @@ https://bubu-lzy.github.io/desktop_todo_Calendar/
 
 从 [Releases](https://github.com/bubu-LZY/desktop_todo_Calendar/releases) 下载最新版本：
 
-- `desktop_todo_Calendar-Setup-3.1.8.exe`
+- `desktop_todo_Calendar-Setup-3.1.9.exe`
 
 ### 源码 / 便携包
 
-- `desktop_todo_Calendar-Source-3.1.8.zip`
+- `desktop_todo_Calendar-Source-3.1.9.zip`
 
 发布包为 `win-x64` 自包含版本，无需额外安装 .NET 运行时。
 
@@ -116,7 +116,7 @@ dotnet publish MicaAgenda.App -r win-x64 --self-contained true -o installer\publ
 版本号默认取 `setup.iss` 里的 `MyAppVersion`，也可以在命令行覆盖：
 
 ```powershell
-& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DMyAppVersion=3.1.8 setup.iss
+& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DMyAppVersion=3.1.9 setup.iss
 ```
 
 推 `v*` 标签（或手动触发 `Build & Release (Windows)` workflow）时，CI 会自动跑上面的测试、
