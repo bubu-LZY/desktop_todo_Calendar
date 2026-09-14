@@ -7,6 +7,7 @@
         Title="{Binding Title}"
         WindowDecorations="None"
         Background="Transparent"
+        SizeChanged="Window_SizeChanged"
         x:CompileBindings="False">
 
   <Window.Resources>
@@ -15,6 +16,45 @@
     <conv:InverseBoolConverter x:Key="InverseBool" />
     <conv:CompletedStrikethroughConverter x:Key="CompletedStrikethrough" />
     <conv:ShortDateConverter x:Key="ShortDate" />
+
+    <!-- ===== 日格里的完成勾选框 =====
+         Fluent 默认复选框是 20×20 的方框 + 32px 最小高度，一个日期格子里塞不下几条任务。
+         这里换成自绘的 12×12 小方框：任务条的高度基本由它决定，压小它才能"一格看到更多任务"。 -->
+    <ControlTheme x:Key="DayTaskCheckBox" TargetType="CheckBox">
+      <Setter Property="Width" Value="13" />
+      <Setter Property="Height" Value="13" />
+      <Setter Property="MinWidth" Value="0" />
+      <Setter Property="MinHeight" Value="0" />
+      <Setter Property="Padding" Value="0" />
+      <Setter Property="Cursor" Value="Hand" />
+      <Setter Property="Template">
+        <ControlTemplate>
+          <Border Width="13" Height="13" Background="Transparent">
+            <Border Name="Box" Width="12" Height="12" CornerRadius="3"
+                    BorderThickness="1" BorderBrush="{DynamicResource TaskBorderBrush}"
+                    Background="Transparent" VerticalAlignment="Center" HorizontalAlignment="Center">
+              <Path Name="Glyph" Data="M 1,4.2 L 4,7 L 9.2,1.6"
+                    Stroke="{DynamicResource WeekDoneCheckBrush}" StrokeThickness="1.6"
+                    StrokeLineCap="Round" StrokeJoin="Round"
+                    VerticalAlignment="Center" HorizontalAlignment="Center" />
+            </Border>
+          </Border>
+        </ControlTemplate>
+      </Setter>
+      <Style Selector="^ /template/ Path#Glyph">
+        <Setter Property="IsVisible" Value="False" />
+      </Style>
+      <Style Selector="^:checked /template/ Path#Glyph">
+        <Setter Property="IsVisible" Value="True" />
+      </Style>
+      <Style Selector="^:checked /template/ Border#Box">
+        <Setter Property="Background" Value="{DynamicResource TaskBackgroundBrush}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource SelectedCellBorderBrush}" />
+      </Style>
+      <Style Selector="^:pointerover /template/ Border#Box">
+        <Setter Property="BorderBrush" Value="{DynamicResource SelectedCellBorderBrush}" />
+      </Style>
+    </ControlTheme>
 
     <!-- ===== 背景模式调色板 =====
          下面的值是「浅色模式」的外观；切换背景模式时由 MainWindow.ApplyBackgroundResources()
@@ -54,7 +94,7 @@
     <!-- ===== 任务胶囊模板（月/周日格共用）===== -->
     <DataTemplate x:Key="TaskTemplate" DataType="vm:TaskItemViewModel">
       <Border Classes="taskPill" Classes.important="{Binding IsImportant}"
-              Margin="0,1" Padding="3,0" CornerRadius="4" BorderThickness="1"
+              Margin="0,0.5" Padding="2,0" CornerRadius="3" BorderThickness="1"
               ToolTip.Tip="{Binding TooltipText}">
         <Border.ContextMenu>
           <ContextMenu>
@@ -69,23 +109,34 @@
           </ContextMenu>
         </Border.ContextMenu>
         <Grid ColumnDefinitions="*,Auto">
-          <StackPanel Grid.Column="0" Orientation="Horizontal"
-                      IsVisible="{Binding IsEditing, Converter={StaticResource InverseBool}}">
-            <TextBlock Text="✓" Margin="0,0,4,0" Foreground="{DynamicResource WeekDoneCheckBrush}" FontWeight="Bold"
+          <!-- 显示态：序号 + 标记 + 时间 + 标题。标题独占一个 * 列，超长时才会省略号截断。
+               整行共用一个 IsVisible，编辑时连同勾选框之外的内容一起让位给下面的输入框。 -->
+          <Grid Grid.Column="0" ColumnDefinitions="Auto,Auto,Auto,Auto,*"
+                IsVisible="{Binding IsEditing, Converter={StaticResource InverseBool}}">
+            <!-- 自动序号：跟着"重要优先 → 创建时间"的排序走，由 DayCellViewModel 统一写入 -->
+            <TextBlock Grid.Column="0" Text="{Binding OrderText}" FontSize="8" MinWidth="9"
+                       Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center" />
+            <TextBlock Grid.Column="1" Text="✓" Margin="0,0,2,0" FontSize="8.5" FontWeight="Bold"
+                       Foreground="{DynamicResource WeekDoneCheckBrush}"
                        VerticalAlignment="Center" IsVisible="{Binding IsCompleted}" />
-            <TextBlock Text="★" Margin="0,0,3,0" Foreground="{DynamicResource ImportantTaskTextBrush}" FontWeight="Bold"
+            <TextBlock Grid.Column="2" Text="★" Margin="0,0,2,0" FontSize="8.5" FontWeight="Bold"
+                       Foreground="{DynamicResource ImportantTaskTextBrush}"
                        VerticalAlignment="Center" IsVisible="{Binding IsImportant}" />
-            <TextBlock Classes="taskTitle" Classes.important="{Binding IsImportant}"
-                       Text="{Binding Title}" FontSize="9" VerticalAlignment="Center"
+            <TextBlock Grid.Column="3" Text="{Binding TimeText}" FontSize="8" Margin="0,0,2,0"
+                       Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center"
+                       IsVisible="{Binding HasTime}" />
+            <TextBlock Grid.Column="4" Classes="taskTitle" Classes.important="{Binding IsImportant}"
+                       Text="{Binding Title}" FontSize="8.5" VerticalAlignment="Center"
                        TextTrimming="CharacterEllipsis"
                        Opacity="{Binding IsCompleted, Converter={StaticResource TaskTitleOpacity}}"
                        TextDecorations="{Binding IsCompleted, Converter={StaticResource CompletedStrikethrough}}" />
-          </StackPanel>
-          <CheckBox Grid.Column="1" IsChecked="{Binding IsCompleted, Mode=OneWay}"
+          </Grid>
+          <CheckBox Grid.Column="1" Theme="{StaticResource DayTaskCheckBox}"
+                    IsChecked="{Binding IsCompleted, Mode=OneWay}"
                     IsCheckedChanged="TaskCheckBox_Changed"
-                    Margin="4,0,0,0" VerticalAlignment="Center" />
+                    Margin="3,0,0,0" VerticalAlignment="Center" />
           <TextBox Grid.Column="0" Grid.ColumnSpan="2" Text="{Binding EditTitle}"
-                   IsVisible="{Binding IsEditing}" FontSize="10" Padding="3,1"
+                   IsVisible="{Binding IsEditing}" FontSize="10" Padding="3,1" MinHeight="18"
                    KeyDown="TaskEditTextBox_KeyDown" LostFocus="TaskEditTextBox_LostFocus" />
         </Grid>
       </Border>
@@ -322,11 +373,42 @@
               <TextBlock Text="{Binding TodayTaskSummary}" FontSize="10.5" Foreground="{DynamicResource MutedTextBrush}" Margin="0,2,0,0" />
             </StackPanel>
           </DockPanel>
-          <!-- 快速添加输入框 -->
-          <TextBox Grid.Row="1" Tag="TodayTaskDraftBox" Text="{Binding TodayTaskDraft}"
-                   IsVisible="{Binding IsAddingTodayTask}" Margin="0,0,0,4" Padding="4,3" FontSize="11.5"
-                   PlaceholderText="输入任务，回车添加"
-                   KeyDown="TodayTaskTextBox_KeyDown" LostFocus="TodayTaskTextBox_LostFocus" />
+          <!-- ===== 快速添加表单：标题 + 时间 + 提前提醒 + 确定 =====
+               提前提醒是三个互斥的下拉列表（天 / 小时 / 分钟），选一个即可；
+               三个都停在「不选」＝到点提醒，留空时间则完全不推到点提醒。
+               用 Tag 而不是 x:Name 定位：这段在 DataTemplate 内部，x:Name 生成不了字段
+               （模板有自己的命名空间），宿主里既有右侧面板又有窄窗视图两份实例。 -->
+          <StackPanel Grid.Row="1" Tag="AddTaskForm" IsVisible="{Binding IsAddingTodayTask}"
+                      Margin="0,0,0,5" Spacing="4">
+            <TextBox Tag="TodayTaskDraftBox" Text="{Binding TodayTaskDraft}"
+                     Padding="4,3" FontSize="11.5" MinHeight="22"
+                     PlaceholderText="输入任务，回车添加"
+                     KeyDown="TodayTaskTextBox_KeyDown" LostFocus="TodayTaskTextBox_LostFocus" />
+            <Grid ColumnDefinitions="Auto,*">
+              <TextBlock Grid.Column="0" Text="时间" FontSize="10.5" Margin="0,0,4,0"
+                         Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center" />
+              <TextBox Grid.Column="1" Tag="TaskTimeBox" Text="{Binding TodayTaskTimeText}"
+                       Padding="4,2" FontSize="11" MinHeight="20" MaxLength="5"
+                       PlaceholderText="HH:mm（可留空）"
+                       KeyDown="TodayTaskTextBox_KeyDown" LostFocus="TodayTaskTextBox_LostFocus" />
+            </Grid>
+            <TextBlock Text="提前提醒（三选一）" FontSize="10" Foreground="{DynamicResource MutedTextBrush}" />
+            <StackPanel Orientation="Horizontal" Spacing="3">
+              <ComboBox Width="58" FontSize="10.5" MinHeight="24" Padding="5,1"
+                        ItemsSource="{Binding ReminderLeadDayOptions}"
+                        SelectedItem="{Binding TodayTaskLeadDay}" />
+              <ComboBox Width="58" FontSize="10.5" MinHeight="24" Padding="5,1"
+                        ItemsSource="{Binding ReminderLeadHourOptions}"
+                        SelectedItem="{Binding TodayTaskLeadHour}" />
+              <ComboBox Width="58" FontSize="10.5" MinHeight="24" Padding="5,1"
+                        ItemsSource="{Binding ReminderLeadMinuteOptions}"
+                        SelectedItem="{Binding TodayTaskLeadMinute}" />
+            </StackPanel>
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="4">
+              <Button Content="取消" FontSize="10.5" Padding="8,2" MinHeight="0" Click="CancelTodayTask_Click" />
+              <Button Content="确定" FontSize="10.5" Padding="10,2" MinHeight="0" Click="CommitTodayTask_Click" />
+            </StackPanel>
+          </StackPanel>
           <!-- 任务列表 + 本周完成情况 -->
           <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
             <StackPanel>
@@ -581,7 +663,7 @@
               <TextBlock Text="{Binding TodayTaskCount}" FontSize="12" Foreground="{DynamicResource MutedTextBrush}" />
               <TextBlock Text="{Binding ThisWeekTaskCount}" FontSize="12" Foreground="{DynamicResource MutedTextBrush}" />
             </StackPanel>
-            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
+            <StackPanel x:Name="ViewSwitchPanel" DockPanel.Dock="Right" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
               <Button Classes="toolbar" Content="今天" Click="Today_Click" />
               <Button Classes="toolbar" Content="月视图" Click="MonthView_Click" />
               <Button Classes="toolbar" Content="周视图" Click="WeekView_Click" />
@@ -589,12 +671,9 @@
               <Button Classes="toolbar" Content="设置" Click="Settings_Click" />
             </StackPanel>
           </DockPanel>
-          <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+          <StackPanel x:Name="ViewControlsPanel" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
             <TextBlock Text="背景" FontSize="12" Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center" />
             <ComboBox x:Name="BackgroundModeBox" Width="112" FontSize="12" SelectionChanged="BackgroundMode_Changed">
-              <ComboBoxItem Content="毛玻璃" Tag="Glass" />
-              <ComboBoxItem Content="透明" Tag="Transparent" />
-              <ComboBoxItem Content="纯色" Tag="Solid" />
               <ComboBoxItem Content="无背景" Tag="None" />
               <ComboBoxItem Content="白雾玻璃" Tag="FrostedWhite" />
               <ComboBoxItem Content="灰雾玻璃" Tag="FrostedGray" />
@@ -612,7 +691,7 @@
       </Border>
 
       <!-- ===== 主体：左=月/周/年视图（按 ViewMode 切换），右=任务面板（三视图共享）===== -->
-      <Grid Grid.Row="1" ColumnDefinitions="*,216">
+      <Grid x:Name="NormalViewHost" Grid.Row="1" ColumnDefinitions="*,216">
         <Grid Grid.Column="0">
         <!-- 月视图：连续月份时间轴 -->
         <ScrollViewer IsVisible="{Binding Settings.ViewMode, Converter={StaticResource ViewModeEquals}, ConverterParameter=Month}"
@@ -661,6 +740,15 @@
                         Content="{Binding}"
                         ContentTemplate="{StaticResource RightPanelTemplate}" />
       </Grid>
+
+      <!-- ===== 窄窗视图：窗口窄到放不下日历格子时，整个主体只剩「今日任务」这一块 =====
+           与 WPF 宿主 MicaAgenda.App 的 NarrowTaskOnlyView 同一行为：顶栏的视图切换 /
+           背景 / 透明度一起收起（否则按了按钮画面没反应，反而更迷惑）。 -->
+      <ContentControl x:Name="NarrowTaskOnlyView" Grid.Row="1" IsVisible="False"
+                      HorizontalAlignment="Stretch" VerticalAlignment="Stretch"
+                      Margin="8,8,8,8"
+                      Content="{Binding}"
+                      ContentTemplate="{StaticResource RightPanelTemplate}" />
     </Grid>
   </Border>
 </Window>

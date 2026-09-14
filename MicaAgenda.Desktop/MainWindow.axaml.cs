@@ -52,6 +52,15 @@ public partial class MainWindow : Window
     // 时间轴边缘扩展冷却，防止布局变化引发连锁扩展。
     private DateTime _lastExtend = DateTime.MinValue;
 
+    /// <summary>
+    /// 窄窗阈值：窗口窄到放不下日历格子时，主体切换成「只有今日任务」的视图。
+    /// 与 WPF 宿主 MicaAgenda.App 的 NarrowLayoutThreshold 取同一个值（460dp）。
+    /// </summary>
+    private const double NarrowLayoutThreshold = 460.0;
+
+    // 布局 pass 里改可见性会再触发一轮布局；用标记 + Post 推到下一帧，挡掉重入。
+    private bool _responsiveLayoutPending;
+
     // 数据落盘：WPF 宿主每次改动后 SaveAsync，Avalonia 宿主此前完全没接，改动关闭即丢。
     // 用「防抖定时器（脏了才写）+ 退出前兜底」覆盖所有改动入口，避免在每个处理器里散落保存调用。
     private readonly CalendarDataStore _store = new();
@@ -144,6 +153,9 @@ public partial class MainWindow : Window
             ApplyNoCloseButton();
             ApplyBackground();
             ApplyDesktopEmbed();
+
+            // 首帧的 SizeChanged 未必赶在 Opened 之前到（或不触发），这里按当前宽度定一次版式。
+            UpdateResponsiveLayout();
         }
         catch (Exception ex)
         {
@@ -710,7 +722,9 @@ public partial class MainWindow : Window
             return;
         }
 
-        _reminderService = new ReminderService(_viewModel.Data, _syncRoot, () => _config);
+        // 逐条任务的到点提醒推完后要在任务上落一个「已推过」标记，
+        // 复用 API 那条「数据变了 → 刷新 + 标记脏 + 落盘」的通路。
+        _reminderService = new ReminderService(_viewModel.Data, _syncRoot, () => _config, OnDataChangedFromApi);
     }
 
     private void StartBackupService()
@@ -1182,6 +1196,44 @@ public partial class MainWindow : Window
         return new WindowBounds(fallback.Left, fallback.Top, sizeSource.Width, sizeSource.Height);
     }
 
+    private void Window_SizeChanged(object? sender, SizeChangedEventArgs e)
+    {
+        if (_responsiveLayoutPending)
+        {
+            return;
+        }
+
+        _responsiveLayoutPending = true;
+        Dispatcher.UIThread.Post(
+            () =>
+            {
+                _responsiveLayoutPending = false;
+                UpdateResponsiveLayout();
+            },
+            DispatcherPriority.Background);
+    }
+
+    /// <summary>
+    /// 窄窗版式：窗口窄到放不下日历格子时，主体只留「今日任务」这一块
+    /// （今日任务 + 本周任务完成情况 + 逾期未完成 / 未完成 / 已完成）。
+    /// 顶栏的视图切换 / 背景 / 透明度一起收起 —— 否则按了按钮画面没反应，反而更迷惑。
+    /// 行为与 WPF 宿主的 UpdateResponsiveLayout 完全一致。
+    /// </summary>
+    private void UpdateResponsiveLayout()
+    {
+        if (NormalViewHost is null || NarrowTaskOnlyView is null
+            || ViewControlsPanel is null || ViewSwitchPanel is null)
+        {
+            return;
+        }
+
+        var narrow = Bounds.Width > 0 && Bounds.Width <= NarrowLayoutThreshold;
+        ViewControlsPanel.IsVisible = !narrow;
+        ViewSwitchPanel.IsVisible = !narrow;
+        NormalViewHost.IsVisible = !narrow;
+        NarrowTaskOnlyView.IsVisible = narrow;
+    }
+
     private void ApplyWindowBounds(WindowBounds b)
     {
         _applyingBounds = true;
@@ -1437,11 +1489,44 @@ public partial class MainWindow : Window
 
     private void TodayTaskTextBox_LostFocus(object? sender, RoutedEventArgs e)
     {
-        if (_viewModel?.IsAddingTodayTask == true)
+        if (_viewModel?.IsAddingTodayTask != true)
         {
-            CommitTodayAdd();
+            return;
         }
+
+        // 焦点很可能只是在表单内部移动（标题 → 时间 → 提前提醒三个下拉），这时绝不能提交：
+        // 一提交表单就收起，用户根本没机会填时间和提醒。等焦点落定后再判断一次。
+        Dispatcher.UIThread.Post(CommitTodayAddIfFocusLeftForm, DispatcherPriority.Background);
     }
+
+    /// <summary>表单失去全部焦点才提交；焦点还在表单里（点下拉、切换输入框）就保持展开。</summary>
+    private void CommitTodayAddIfFocusLeftForm()
+    {
+        if (_viewModel?.IsAddingTodayTask != true || IsFocusInsideAddTaskForm())
+        {
+            return;
+        }
+
+        CommitTodayAdd();
+    }
+
+    /// <summary>
+    /// 当前键盘焦点是否还在快速添加表单里。
+    /// 表单在 DataTemplate 内部，x:Name 生成不了字段，只能用 Tag 认。
+    /// </summary>
+    private bool IsFocusInsideAddTaskForm()
+    {
+        if (TopLevel.GetTopLevel(this)?.FocusManager?.GetFocusedElement() is not Visual focused)
+        {
+            return false;
+        }
+
+        return focused.GetVisualAncestors().Any(ancestor => ancestor is Control { Tag: "AddTaskForm" });
+    }
+
+    private void CommitTodayTask_Click(object? sender, RoutedEventArgs e) => CommitTodayAdd();
+
+    private void CancelTodayTask_Click(object? sender, RoutedEventArgs e) => _viewModel?.CancelTodayTask();
 
     private void CommitTodayAdd()
     {

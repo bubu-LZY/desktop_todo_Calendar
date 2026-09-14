@@ -19,6 +19,9 @@ public sealed class TaskItemViewModel : ViewModelBase
     private bool _shownIsCompleted;
     private bool _shownIsImportant;
     private string _shownTitle;
+    private TimeOnly? _shownTime;
+    private int? _shownLeadMinutes;
+    private int _orderIndex;
 
     public TaskItemViewModel(CalendarTask task, Func<DateTimeOffset>? nowProvider = null)
     {
@@ -28,6 +31,8 @@ public sealed class TaskItemViewModel : ViewModelBase
         _shownIsCompleted = task.IsCompleted;
         _shownIsImportant = task.IsImportant;
         _shownTitle = task.Title;
+        _shownTime = task.Time;
+        _shownLeadMinutes = task.ReminderLeadMinutes;
     }
 
     public Guid Id => _task.Id;
@@ -72,6 +77,34 @@ public sealed class TaskItemViewModel : ViewModelBase
 
     /// <summary>UI 当前显示的标题。</summary>
     public string ShownTitle => _shownTitle;
+
+    /// <summary>
+    /// 在所属列表里的序号（1 起）。由持有它的列表（<see cref="DayCellViewModel"/>）在
+    /// 构建 / 重排之后统一写入，UI 用它渲染任务前面的「1.」「2.」。
+    /// 0 表示未编号（不分组的列表里不显示序号）。
+    /// </summary>
+    public int OrderIndex
+    {
+        get => _orderIndex;
+        set
+        {
+            if (!SetProperty(ref _orderIndex, value))
+            {
+                return;
+            }
+
+            OnPropertyChanged(nameof(OrderText));
+        }
+    }
+
+    /// <summary>序号文本（"1." / "2."）；未编号时是空串。</summary>
+    public string OrderText => _orderIndex > 0 ? $"{_orderIndex}." : string.Empty;
+
+    /// <summary>当天的具体时间点文本（"09:30"）；没设时间是空串。</summary>
+    public string TimeText => _task.Time is { } time ? time.ToString("HH:mm") : string.Empty;
+
+    /// <summary>是否设了具体时间。UI 用它在标题前面留出时间的位置。</summary>
+    public bool HasTime => _task.Time is not null;
 
     public bool IsEditing
     {
@@ -129,6 +162,16 @@ public sealed class TaskItemViewModel : ViewModelBase
             OnPropertyChanged(nameof(Title));
             OnPropertyChanged(nameof(TooltipText));
         }
+
+        if (_shownTime != _task.Time || _shownLeadMinutes != _task.ReminderLeadMinutes)
+        {
+            _shownTime = _task.Time;
+            _shownLeadMinutes = _task.ReminderLeadMinutes;
+            OnPropertyChanged(nameof(TimeText));
+            OnPropertyChanged(nameof(HasTime));
+            OnPropertyChanged(nameof(TimeBadge));
+            OnPropertyChanged(nameof(TooltipText));
+        }
     }
 
     /// <summary>
@@ -146,8 +189,21 @@ public sealed class TaskItemViewModel : ViewModelBase
 
     private DateOnly Today => DateOnly.FromDateTime(_now().LocalDateTime);
 
-    /// <summary>紧凑的时间徽标（如 "3天未完" / "逾期2天" / "用时2小时"），空间够的地方显示。</summary>
+    /// <summary>
+    /// 紧凑的时间徽标（如 "09:30 · 3天未完" / "逾期2天" / "用时2小时"），空间够的地方显示。
+    /// 设了具体时间的任务把时间顶在最前面：右侧面板里一眼就能看出几点要做。
+    /// </summary>
     public string TimeBadge
+    {
+        get
+        {
+            var status = StatusBadge;
+            return HasTime ? $"{TimeText} · {status}" : status;
+        }
+    }
+
+    /// <summary>状态徽标本体（与"有没有设时间"无关）。</summary>
+    private string StatusBadge
     {
         get
         {
@@ -179,6 +235,14 @@ public sealed class TaskItemViewModel : ViewModelBase
             sb.AppendLine(Title);
 
             var createdDay = _task.CreatedDate;
+            if (_task.Time is { } scheduledAt)
+            {
+                var lead = _task.ReminderLeadMinutes ?? 0;
+                sb.AppendLine(lead > 0
+                    ? $"计划：{scheduledAt:HH:mm}（提前 {Helpers.TimeText.FormatLead(lead)} 提醒）"
+                    : $"计划：{scheduledAt:HH:mm}（到点提醒）");
+            }
+
             sb.Append($"创建：{_task.CreatedAt:MM/dd HH:mm}");
             if (createdDay == today)
             {

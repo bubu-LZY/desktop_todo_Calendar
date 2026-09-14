@@ -124,10 +124,9 @@ public sealed class CalendarDataStore
 
     private static void Normalize(CalendarData data)
     {
-        if (data.Settings.BackgroundMode == CalendarBackgroundMode.ClearBorder)
-        {
-            data.Settings.BackgroundMode = CalendarBackgroundMode.None;
-        }
+        // 历史背景主题统一迁到现役主题（ClearBorder → 无背景；已下线的毛玻璃/透明/纯色 → 白雾玻璃）。
+        // 放在加载路径上，老配置文件一进来就被改正，UI 里不会出现「下拉列表选不中的值」。
+        data.Settings.BackgroundMode = data.Settings.BackgroundMode.MigrateLegacy();
 
         // 完成态与完成时间戳必须自洽，否则报告里会出现"已完成但用时算不出来"的记录。
         // 常见来源：外部 API / MCP 直接把 IsCompleted 置 true 却没写 CompletedAt，

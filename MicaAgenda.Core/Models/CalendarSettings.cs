@@ -9,6 +9,10 @@ public enum CalendarViewMode
 
 public enum CalendarBackgroundMode
 {
+    // ⚠️ Glass / Transparent / Solid 是已下线的历史主题：v4.0.0 起下拉列表里不再出现，
+    // 加载老配置时由 CalendarBackgroundModeExtensions.MigrateLegacy() 统一迁移到 FrostedWhite。
+    // 枚举值本身必须保留 —— 老 JSON 里写着 "Glass" 时，System.Text.Json 遇到未知枚举名会抛
+    // JsonException，而 CalendarDataStore 一旦解析失败就退化成「空数据」，等于把用户任务全丢掉。
     Glass,
     Transparent,
     Solid,
@@ -23,10 +27,29 @@ public enum CalendarBackgroundMode
     Graphite
 }
 
+public static class CalendarBackgroundModeExtensions
+{
+    /// <summary>
+    /// 把已下线的历史主题迁到现役主题。
+    ///
+    /// 毛玻璃 / 透明 / 纯色在 v3.3.x 里实际都是「半透明白底」（窗口不再请求系统材质之后，
+    /// 三者走的是同一个分支），现役主题里观感最接近的是白雾玻璃，因此统一迁到它，
+    /// 用户升级后看到的差异最小。ClearBorder 是更早的历史值，继续迁到「无背景」。
+    /// </summary>
+    public static CalendarBackgroundMode MigrateLegacy(this CalendarBackgroundMode mode) => mode switch
+    {
+        CalendarBackgroundMode.Glass
+            or CalendarBackgroundMode.Transparent
+            or CalendarBackgroundMode.Solid => CalendarBackgroundMode.FrostedWhite,
+        CalendarBackgroundMode.ClearBorder => CalendarBackgroundMode.None,
+        _ => mode
+    };
+}
+
 public sealed class CalendarSettings
 {
     public CalendarViewMode ViewMode { get; set; } = CalendarViewMode.Month;
-    public CalendarBackgroundMode BackgroundMode { get; set; } = CalendarBackgroundMode.Glass;
+    public CalendarBackgroundMode BackgroundMode { get; set; } = CalendarBackgroundMode.FrostedWhite;
     public double Opacity { get; set; } = 0.86;
     public double CellScale { get; set; } = 1.0;
     public double CellHeight { get; set; } = 74;

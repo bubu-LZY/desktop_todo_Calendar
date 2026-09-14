@@ -18,6 +18,26 @@ public sealed class CalendarTask
     /// </summary>
     public DateTimeOffset? UpdatedAt { get; set; }
 
+    /// <summary>
+    /// 任务当天的具体时间点（几点几分）。null = 没设时间。
+    /// 老数据、以及只写标题就快速添加的任务都是 null。
+    /// </summary>
+    public TimeOnly? Time { get; set; }
+
+    /// <summary>
+    /// 提前提醒量（分钟）：在「任务时间 - 本值」推一次提醒。
+    /// 存总分钟数而不是把天/时/分拆成三个字段 —— UI 上那三个下拉列表互斥，合成一个总量更好维护。
+    /// null 等价于 0（到点提醒）。
+    /// </summary>
+    public int? ReminderLeadMinutes { get; set; }
+
+    /// <summary>
+    /// 这条任务的一次性提醒已经推送过的时刻，null = 还没推。
+    /// 30 秒轮询靠它去重，也是「程序重启后不会把当天早已到点的提醒重复推一遍」的依据。
+    /// 改动时间 / 提前量后由 <see cref="ResetReminder"/> 清空。
+    /// </summary>
+    public DateTimeOffset? ReminderSentAt { get; set; }
+
     public void MarkCompleted(DateTimeOffset completedAt)
     {
         IsCompleted = true;
@@ -120,6 +140,42 @@ public sealed class CalendarTask
         return DateOnly.FromDateTime(CompletedAt!.Value.LocalDateTime).DayNumber - Date.DayNumber;
     }
 
+    // ===== 到点提醒 =====
+
+    /// <summary>提醒触发时刻（任务时间提前 <see cref="ReminderLeadMinutes"/> 分钟）；没设时间返回 null。</summary>
+    public DateTime? ReminderTriggerAt()
+        => Time is null ? null : Date.ToDateTime(Time.Value).AddMinutes(-(ReminderLeadMinutes ?? 0));
+
+    /// <summary>当天补发窗口的右端（当天 23:59:59）：超过它就不再补推，避免开机时蹦出一堆陈旧提醒。</summary>
+    private DateTime ReminderWindowEnd => Date.ToDateTime(new TimeOnly(23, 59, 59));
+
+    /// <summary>此刻是否该推送这条任务的提醒（未完成、设了时间、没推过、已到点且仍在当天窗口内）。</summary>
+    public bool ShouldFireReminder(DateTime nowLocal)
+    {
+        var trigger = ReminderTriggerAt();
+        return !IsCompleted
+               && ReminderSentAt is null
+               && trigger is not null
+               && nowLocal >= trigger.Value
+               && nowLocal <= ReminderWindowEnd;
+    }
+
+    /// <summary>提醒已到点但超出当天窗口（隔天才开机）：应直接记成「已推」，不要补发。</summary>
+    public bool IsReminderExpired(DateTime nowLocal)
+    {
+        var trigger = ReminderTriggerAt();
+        return !IsCompleted
+               && ReminderSentAt is null
+               && trigger is not null
+               && nowLocal > ReminderWindowEnd;
+    }
+
+    /// <summary>标记一次性提醒已推送。</summary>
+    public void MarkReminderSent(DateTimeOffset at) => ReminderSentAt = at;
+
+    /// <summary>改时间 / 改提前量后调用：原提醒作废，允许按新时刻重新推一次。</summary>
+    public void ResetReminder() => ReminderSentAt = null;
+
     /// <summary>
     /// 落盘前的一致性修复：完成态与完成时间戳必须自洽，
     /// 否则报告里会出现"已完成但用时未知"这种算不出来的记录。
@@ -140,6 +196,17 @@ public sealed class CalendarTask
         if (UpdatedAt is null)
         {
             UpdatedAt = CompletedAt ?? CreatedAt;
+        }
+
+        // 提醒相关的自洽：没有时间就没有「到点提醒」可言，顺手清掉遗留标记；
+        // 负的提前量没有意义，钳到 0。
+        if (Time is null)
+        {
+            ReminderSentAt = null;
+        }
+        else if (ReminderLeadMinutes is < 0)
+        {
+            ReminderLeadMinutes = 0;
         }
     }
 

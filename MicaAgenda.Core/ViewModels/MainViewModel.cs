@@ -27,6 +27,10 @@ public sealed class MainViewModel : ViewModelBase
     private DateOnly _panelDate;
     private bool _isAddingTodayTask;
     private string _todayTaskDraft = string.Empty;
+    private string _todayTaskTimeText = string.Empty;
+    private string _todayTaskLeadDay = ReminderLeadNoneLabel;
+    private string _todayTaskLeadHour = ReminderLeadNoneLabel;
+    private string _todayTaskLeadMinute = ReminderLeadNoneLabel;
 
     /// <summary>本周三个分组共用的 VM 实例池（按任务 Id），保证跨组移动时实例不销毁。</summary>
     private readonly Dictionary<Guid, TaskItemViewModel> _weekVmPool = new();
@@ -279,10 +283,127 @@ public sealed class MainViewModel : ViewModelBase
         set => SetProperty(ref _todayTaskDraft, value);
     }
 
+    /// <summary>
+    /// 今日任务面板的时间输入草稿（自由文本 "HH:mm"，留空表示不设时间）。
+    /// 输入框里保持字符串而不是 TimeOnly，用户打字到一半（"1" / "14:"）不会被打断。
+    /// </summary>
+    public string TodayTaskTimeText
+    {
+        get => _todayTaskTimeText;
+        set => SetProperty(ref _todayTaskTimeText, value);
+    }
+
+    /// <summary>提前提醒量三个下拉列表的公共「不选」项。</summary>
+    public const string ReminderLeadNoneLabel = "不选";
+
+    /// <summary>「提前几天」下拉的可选项；标签本身就是数据源（"3天" → 3 天）。</summary>
+    public IReadOnlyList<string> ReminderLeadDayOptions { get; } =
+        [ReminderLeadNoneLabel, "1天", "2天", "3天", "4天", "5天", "6天", "7天"];
+
+    /// <summary>「提前几小时」下拉的可选项。</summary>
+    public IReadOnlyList<string> ReminderLeadHourOptions { get; } =
+        [ReminderLeadNoneLabel, "1时", "2时", "3时", "4时", "6时", "8时", "12时"];
+
+    /// <summary>「提前几分钟」下拉的可选项。</summary>
+    public IReadOnlyList<string> ReminderLeadMinuteOptions { get; } =
+        [ReminderLeadNoneLabel, "5分", "10分", "15分", "20分", "30分", "45分"];
+
+    /// <summary>「提前几天」当前选项。</summary>
+    public string TodayTaskLeadDay
+    {
+        get => _todayTaskLeadDay;
+        set => SetLeadLabel(ref _todayTaskLeadDay, value, nameof(TodayTaskLeadDay), clearHour: true, clearMinute: true);
+    }
+
+    /// <summary>「提前几小时」当前选项。</summary>
+    public string TodayTaskLeadHour
+    {
+        get => _todayTaskLeadHour;
+        set => SetLeadLabel(ref _todayTaskLeadHour, value, nameof(TodayTaskLeadHour), clearDay: true, clearMinute: true);
+    }
+
+    /// <summary>「提前几分钟」当前选项。</summary>
+    public string TodayTaskLeadMinute
+    {
+        get => _todayTaskLeadMinute;
+        set => SetLeadLabel(ref _todayTaskLeadMinute, value, nameof(TodayTaskLeadMinute), clearDay: true, clearHour: true);
+    }
+
+    /// <summary>
+    /// 提前提醒量（分钟），三个下拉都停在「不选」时为 null（= 到点提醒）。
+    /// 互斥由 setter 保证，这里仍然把三组相加：万一有外部代码直接塞了两个值，
+    /// 求和比"取第一个非零"更符合直觉，也不会算出 0。
+    /// </summary>
+    public int? TodayTaskReminderLead
+    {
+        get
+        {
+            var total = ParseLeadMinutes(_todayTaskLeadDay, "天", 24 * 60)
+                        + ParseLeadMinutes(_todayTaskLeadHour, "时", 60)
+                        + ParseLeadMinutes(_todayTaskLeadMinute, "分", 1);
+            return total > 0 ? total : null;
+        }
+    }
+
+    /// <summary>
+    /// 三个下拉互斥：谁被选成具体值，另外两个就回到「不选」。
+    /// 用户的心智是"提前量只有一个"，同时留两个选中会算出一个谁也没想要的提前量。
+    /// </summary>
+    private void SetLeadLabel(
+        ref string field,
+        string? value,
+        string propertyName,
+        bool clearDay = false,
+        bool clearHour = false,
+        bool clearMinute = false)
+    {
+        var label = string.IsNullOrWhiteSpace(value) ? ReminderLeadNoneLabel : value;
+        if (!SetProperty(ref field, label, propertyName))
+        {
+            return;
+        }
+
+        if (!string.Equals(label, ReminderLeadNoneLabel, StringComparison.Ordinal))
+        {
+            // 递归深度最多一层：把对方置成「不选」时不再触发任何清除。
+            if (clearDay)
+            {
+                TodayTaskLeadDay = ReminderLeadNoneLabel;
+            }
+
+            if (clearHour)
+            {
+                TodayTaskLeadHour = ReminderLeadNoneLabel;
+            }
+
+            if (clearMinute)
+            {
+                TodayTaskLeadMinute = ReminderLeadNoneLabel;
+            }
+        }
+
+        OnPropertyChanged(nameof(TodayTaskReminderLead));
+    }
+
+    /// <summary>把下拉标签（"3天" / "2时" / "30分"）解析成分钟数；「不选」或解析失败返回 0。</summary>
+    private static int ParseLeadMinutes(string label, string suffix, int minutesPerUnit)
+    {
+        if (label.Length <= suffix.Length || !label.EndsWith(suffix, StringComparison.Ordinal))
+        {
+            return 0;
+        }
+
+        return int.TryParse(label[..^suffix.Length], out var amount) && amount > 0
+            ? amount * minutesPerUnit
+            : 0;
+    }
+
     /// <summary>展开今日任务的快速输入框。</summary>
     public void BeginAddTodayTask()
     {
         TodayTaskDraft = string.Empty;
+        TodayTaskTimeText = string.Empty;
+        ResetLeadLabels();
         IsAddingTodayTask = true;
     }
 
@@ -290,16 +411,51 @@ public sealed class MainViewModel : ViewModelBase
     public void CancelTodayTask()
     {
         TodayTaskDraft = string.Empty;
+        TodayTaskTimeText = string.Empty;
+        ResetLeadLabels();
         IsAddingTodayTask = false;
     }
 
-    /// <summary>提交今日任务的快速输入，返回新建的任务（草稿为空则返回 null）。</summary>
+    /// <summary>
+    /// 提交今日任务的快速输入，返回新建的任务（草稿为空则返回 null）。
+    /// 时间草稿解析成 TimeOnly 一起写进任务；解析不出来就当作没设时间——
+    /// 面板上的提示文案已经写明格式，这里不再打断用户。
+    /// </summary>
     public CalendarTask? CommitTodayTask()
     {
         var title = TodayTaskDraft.Trim();
+        var time = ParseTimeDraft(TodayTaskTimeText);
+        var lead = TodayTaskReminderLead;
+
         TodayTaskDraft = string.Empty;
+        TodayTaskTimeText = string.Empty;
+        ResetLeadLabels();
         IsAddingTodayTask = false;
-        return string.IsNullOrWhiteSpace(title) ? null : AddTask(_panelDate, title);
+
+        return string.IsNullOrWhiteSpace(title) ? null : AddTask(_panelDate, title, time, lead);
+    }
+
+    /// <summary>三个下拉一起回到「不选」。</summary>
+    private void ResetLeadLabels()
+    {
+        TodayTaskLeadDay = ReminderLeadNoneLabel;
+        TodayTaskLeadHour = ReminderLeadNoneLabel;
+        TodayTaskLeadMinute = ReminderLeadNoneLabel;
+    }
+
+    /// <summary>
+    /// 解析面板上的时间草稿：接受 "9:5" / "09:05" / "9：05"（中文冒号）等写法。
+    /// 解析失败返回 null（= 不设时间）。
+    /// </summary>
+    public static TimeOnly? ParseTimeDraft(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return null;
+        }
+
+        var normalized = text.Trim().Replace('：', ':');
+        return TimeOnly.TryParse(normalized, out var parsed) ? parsed : null;
     }
 
     /// <summary>切换面板展示的日期并刷新任务清单。</summary>
@@ -845,7 +1001,11 @@ public sealed class MainViewModel : ViewModelBase
         }
     }
 
-    public CalendarTask AddTask(DateOnly date, string title)
+    /// <param name="time">当天的具体时间点；null = 不设时间（也不会有到点提醒）。</param>
+    /// <param name="reminderLeadMinutes">
+    /// 提前提醒量（分钟）；null 或负数按 0 处理（= 到点提醒）。只在设了时间时有意义。
+    /// </param>
+    public CalendarTask AddTask(DateOnly date, string title, TimeOnly? time = null, int? reminderLeadMinutes = null)
     {
         lock (_syncRoot)
         {
@@ -853,7 +1013,9 @@ public sealed class MainViewModel : ViewModelBase
             {
                 Date = date,
                 Title = title.Trim(),
-                CreatedAt = _nowProvider()
+                CreatedAt = _nowProvider(),
+                Time = time,
+                ReminderLeadMinutes = time is null ? null : Math.Max(0, reminderLeadMinutes ?? 0)
             };
             _data.Tasks.Add(task);
             IsDirty = true;

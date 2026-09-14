@@ -21,6 +21,7 @@ public sealed class DayCellViewModel : ViewModelBase
         IsToday = isToday;
         Tasks = new ObservableCollection<TaskItemViewModel>(tasks);
         Holidays = new ObservableCollection<ChinaHoliday>(holidays);
+        RenumberTasks();
     }
 
     public DateOnly Date { get; }
@@ -103,6 +104,7 @@ public sealed class DayCellViewModel : ViewModelBase
             }
 
             RefreshHolidays(incomingHolidays);
+            RenumberTasks();
             return;
         }
 
@@ -177,6 +179,20 @@ public sealed class DayCellViewModel : ViewModelBase
         }
 
         RefreshHolidays(incomingHolidays);
+        RenumberTasks();
+    }
+
+    /// <summary>
+    /// 重排本格任务的显示序号（1 起），让每一条任务前面都有「1.」「2.」。
+    /// 用 VM 上的 OrderIndex 而不是 XAML 里的 AlternationIndex：Avalonia 不支持
+    /// WPF 那个附加属性，而序号又必须跟着"重要优先 → 创建时间"的排序走。
+    /// </summary>
+    private void RenumberTasks()
+    {
+        for (var i = 0; i < Tasks.Count; i++)
+        {
+            Tasks[i].OrderIndex = i + 1;
+        }
     }
 
     /// <summary>

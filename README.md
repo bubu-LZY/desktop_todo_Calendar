@@ -15,10 +15,10 @@
 
 - MCP Server（Model Context Protocol）集成
 - HTTP REST API
-- 12 种背景主题
+- 8 种背景主题
 - 中国节假日联网刷新与本地缓存
 - 桌面嵌入 / 置底
-- 定时提醒、自动备份
+- 定时提醒（每日汇总 + 任务到点提醒）、自动备份
 - 系统托盘常驻
 - DWM Mica / Acrylic 窗口效果
 - 窄窗口响应式布局
@@ -44,15 +44,18 @@ https://bubu-lzy.github.io/desktop_todo_Calendar/
 
 ### 任务管理
 
+- 点日期格上的 + 或右侧「今日任务」的 + 添加任务（右侧表单可同时设时间与提前提醒）
 - 双击日期格空白处添加任务
 - 双击已有任务原地编辑
 - 右键菜单：完成 / 取消完成、重要 / 取消重要、删除
 - 今日任务面板、本周任务完成情况统计
-- 任务支持 `YYYY-MM-DD` 日期、重要标记、完成时间
+- 任务支持 `YYYY-MM-DD` 日期、具体时间（HH:mm）、重要标记、完成时间
+- 任务可设「提前几天 / 几小时 / 几分钟」的到点提醒（三个下拉互斥），到点推到飞书 / 企业微信
+- 日期格子里的任务自动带序号（1. 2. 3.），任务条更紧凑
 
 ### 背景与界面
 
-- 12 种主题：玻璃、透明、纯色、无背景、清边框、白雾、灰雾、暗色磨砂、蓝色亚克力、薄荷玻璃、纸感浅白、石墨深色
+- 8 种主题：无背景、白雾、灰雾、暗色磨砂、蓝色亚克力、薄荷玻璃、纸感浅白、石墨深色
 - 透明度可调
 - 无边框圆角窗口
 - 桌面嵌入模式，可保持在其他普通窗口之下
@@ -71,7 +74,7 @@ https://bubu-lzy.github.io/desktop_todo_Calendar/
 - 锁定窗口位置
 - 导入 / 导出 JSON
 - 自动备份
-- 定时提醒
+- 定时提醒：每日汇总 + 逐条任务的到点提醒
 
 ## 下载
 
@@ -81,11 +84,11 @@ https://bubu-lzy.github.io/desktop_todo_Calendar/
 
 | 平台 | 文件 |
 |---|---|
-| Windows | `desktop_todo_Calendar-Setup-3.3.4.exe` |
-| macOS (Apple Silicon) | `desktop_todo_Calendar-3.3.4-arm64.dmg` / `.zip` |
-| macOS (Intel) | `desktop_todo_Calendar-3.3.4-x64.dmg` / `.zip` |
-| Linux | `desktop_todo_Calendar-3.3.4-x64.AppImage`、`desktop_todo_Calendar_3.3.4_amd64.deb` |
-| 源码 | `desktop_todo_Calendar-Source-3.3.4.zip` |
+| Windows | `desktop_todo_Calendar-Setup-4.0.0.exe` |
+| macOS (Apple Silicon) | `desktop_todo_Calendar-4.0.0-arm64.dmg` / `.zip` |
+| macOS (Intel) | `desktop_todo_Calendar-4.0.0-x64.dmg` / `.zip` |
+| Linux | `desktop_todo_Calendar-4.0.0-x64.AppImage`、`desktop_todo_Calendar_4.0.0_amd64.deb` |
+| 源码 | `desktop_todo_Calendar-Source-4.0.0.zip` |
 
 Windows 安装包打包的是跨平台宿主 `MicaAgenda.Desktop.exe`（Avalonia），不是仅 Windows 的 WPF 宿主。
 

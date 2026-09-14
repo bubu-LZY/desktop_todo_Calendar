@@ -1,3 +1,5 @@
+using System.Text;
+
 namespace MicaAgenda.App.Helpers;
 
 /// <summary>
@@ -34,5 +36,39 @@ public static class TimeText
         return value.Hours == 0
             ? $"{value.Days}天"
             : $"{value.Days}天{value.Hours}小时";
+    }
+
+    /// <summary>
+    /// 把「提前提醒量（分钟）」格式化成中文短串（"3天" / "2小时30分钟" / "15分钟"）。
+    /// 提醒服务的推送文案与任务悬浮提示共用，避免两处各写一份、慢慢跑偏。
+    /// </summary>
+    public static string FormatLead(int totalMinutes)
+    {
+        if (totalMinutes <= 0)
+        {
+            return "0分钟";
+        }
+
+        var days = totalMinutes / (24 * 60);
+        var hours = totalMinutes % (24 * 60) / 60;
+        var minutes = totalMinutes % 60;
+
+        var sb = new StringBuilder();
+        if (days > 0)
+        {
+            sb.Append(days).Append('天');
+        }
+
+        if (hours > 0)
+        {
+            sb.Append(hours).Append("小时");
+        }
+
+        if (minutes > 0)
+        {
+            sb.Append(minutes).Append("分钟");
+        }
+
+        return sb.ToString();
     }
 }

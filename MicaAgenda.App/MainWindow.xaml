@@ -1502,9 +1502,6 @@
                                   Width="104"
                                   Style="{StaticResource ToolbarComboBox}"
                                   SelectionChanged="BackgroundModeBox_SelectionChanged">
-                            <ComboBoxItem Content="毛玻璃" Tag="Glass" />
-                            <ComboBoxItem Content="透明" Tag="Transparent" />
-                            <ComboBoxItem Content="纯色" Tag="Solid" />
                             <ComboBoxItem Content="无背景" Tag="None" />
                             <ComboBoxItem Content="白雾玻璃" Tag="FrostedWhite" />
                             <ComboBoxItem Content="灰雾玻璃" Tag="FrostedGray" />

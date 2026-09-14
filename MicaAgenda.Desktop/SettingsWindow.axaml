@@ -122,6 +122,8 @@
             <TextBlock Text="企业微信 webhook 地址" Classes="fieldLabel" Margin="0,0,0,4" />
             <TextBox x:Name="WeComWebhookBox" Classes="inputBox" />
             <TextBlock Text="上面两个地址对「定时提醒」和「定时报告」通用。" Classes="hint" Margin="0,6,0,0" />
+            <TextBlock Text="「启用提醒」是总开关：除了上面这个点的每日汇总，任务里单独设了具体时间后，也会在这里的地址上收到到点提醒。"
+                       Classes="hint" Margin="0,4,0,0" TextWrapping="Wrap" />
           </StackPanel>
         </Border>
 
