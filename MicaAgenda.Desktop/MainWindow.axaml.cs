@@ -1006,9 +1006,9 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// 把背景模式映射为 Avalonia 的 TransparencyLevelHint + 着色 Background。
-    /// WPF 用 Windows DWM（Mica/亚克力）；这里改用 Avalonia 跨平台透明度等级 + 与 WPF 一致的 ARGB 着色，
-    /// 由 OS 决定实际可用的背景材质（Windows=Mica/Acrylic，macOS=Blur，Linux=透明/纯色兜底）。
+    /// 把背景模式映射成「外壳 Shell 上的 ARGB 着色」。窗口本身固定逐像素透明，由外壳画出
+    /// 底色 / 22px 圆角 / 1px 细边框 —— 与 WPF 宿主（WindowStyle=None + AllowsTransparency）同一套观感，
+    /// 各模式的差异只体现在这层刷子的颜色与不透明度上（见下面的 Shell.Background switch）。
     /// </summary>
     private void ApplyBackground()
     {
@@ -1021,22 +1021,13 @@ public partial class MainWindow : Window
         var mode = s.BackgroundMode == CalendarBackgroundMode.ClearBorder ? CalendarBackgroundMode.None : s.BackgroundMode;
         var alpha = (byte)Math.Clamp(s.Opacity * 255, 6, 255);
 
-        TransparencyLevelHint = mode switch
-        {
-            CalendarBackgroundMode.Glass => new[]
-            {
-                WindowTransparencyLevel.Mica, WindowTransparencyLevel.AcrylicBlur,
-                WindowTransparencyLevel.Blur, WindowTransparencyLevel.Transparent
-            },
-            CalendarBackgroundMode.FrostedWhite or CalendarBackgroundMode.FrostedGray or CalendarBackgroundMode.FrostedDark
-                or CalendarBackgroundMode.AcrylicBlue or CalendarBackgroundMode.AcrylicMint => new[]
-            {
-                WindowTransparencyLevel.AcrylicBlur, WindowTransparencyLevel.Blur, WindowTransparencyLevel.Transparent
-            },
-            CalendarBackgroundMode.Transparent or CalendarBackgroundMode.None => new[] { WindowTransparencyLevel.Transparent },
-            // 窗口本身必须支持逐像素透明，圆角外沿才能透出桌面（与 WPF 宿主的 AllowsTransparency 对齐）。
-            _ => new[] { WindowTransparencyLevel.Transparent },
-        };
+        // 固定请求「逐像素透明」：窗口整块透明，底色 / 圆角 / 细边框全部由外壳 Shell 自己画。
+        //
+        // 这里**不能**再请求 Mica / AcrylicBlur / Blur 这类系统材质：它们是 OS 在窗口底层画的一层
+        // 不透明材质，会把外壳盖住 —— 表现就是「四角变直角（圆角被压在下面看不见）」「透明度滑杆没反应」
+        // 「底下多一层白底」。v3.2.0 起宿主换成 Avalonia 且窗口不再带系统标题栏，Mica 才会真的被应用，
+        // 所以这个毛病是「无边框 + 请求系统材质」凑一起才出现的；与 WPF 宿主的 AllowsTransparency 对齐即可。
+        TransparencyLevelHint = new[] { WindowTransparencyLevel.Transparent };
 
         // 底色画在外壳 Border 上而不是窗口上：窗口整块透明，圆角外沿才能透出桌面。
         Shell.Background = mode switch

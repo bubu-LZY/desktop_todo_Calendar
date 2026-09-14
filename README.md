@@ -81,11 +81,11 @@ https://bubu-lzy.github.io/desktop_todo_Calendar/
 
 | 平台 | 文件 |
 |---|---|
-| Windows | `desktop_todo_Calendar-Setup-3.3.2.exe` |
-| macOS (Apple Silicon) | `desktop_todo_Calendar-3.3.2-arm64.dmg` / `.zip` |
-| macOS (Intel) | `desktop_todo_Calendar-3.3.2-x64.dmg` / `.zip` |
-| Linux | `desktop_todo_Calendar-3.3.2-x64.AppImage`、`desktop_todo_Calendar_3.3.2_amd64.deb` |
-| 源码 | `desktop_todo_Calendar-Source-3.3.2.zip` |
+| Windows | `desktop_todo_Calendar-Setup-3.3.3.exe` |
+| macOS (Apple Silicon) | `desktop_todo_Calendar-3.3.3-arm64.dmg` / `.zip` |
+| macOS (Intel) | `desktop_todo_Calendar-3.3.3-x64.dmg` / `.zip` |
+| Linux | `desktop_todo_Calendar-3.3.3-x64.AppImage`、`desktop_todo_Calendar_3.3.3_amd64.deb` |
+| 源码 | `desktop_todo_Calendar-Source-3.3.3.zip` |
 
 Windows 安装包打包的是跨平台宿主 `MicaAgenda.Desktop.exe`（Avalonia），不是仅 Windows 的 WPF 宿主。
 
