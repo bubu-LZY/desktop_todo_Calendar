@@ -74,6 +74,65 @@ public sealed class HighPriorityStartupServiceTests
     }
 
     [Fact]
+    public void ParseRegisteredExePath_ReadsCommandFromTaskXml()
+    {
+        const string xml = """
+            <?xml version="1.0" encoding="UTF-16"?>
+            <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+              <Actions Context="Author">
+                <Exec>
+                  <Command>C:\Users\lzy\AppData\Local\Programs\desktop_todo_Calendar\MicaAgenda.Desktop.exe</Command>
+                </Exec>
+              </Actions>
+            </Task>
+            """;
+
+        Assert.Equal(
+            @"C:\Users\lzy\AppData\Local\Programs\desktop_todo_Calendar\MicaAgenda.Desktop.exe",
+            HighPriorityStartupService.ParseRegisteredExePath(xml));
+    }
+
+    [Fact]
+    public void ParseRegisteredExePath_ToleratesUtf16ReadAsEightBit()
+    {
+        // schtasks 可能按 UTF-16 输出；被 8 位解码后 ASCII 会夹着 NUL，解析要照样能出结果。
+        const string garbled = "<\0C\0o\0m\0m\0a\0n\0d\0>\0C\0:\\\0x\0.\0e\0x\0e\0<\0/\0C\0o\0m\0m\0a\0n\0d\0>\0";
+
+        Assert.Equal(@"C:\x.exe", HighPriorityStartupService.ParseRegisteredExePath(garbled));
+    }
+
+    [Fact]
+    public void ParseRegisteredExePath_DecodesXmlEntitiesAndUnquotes()
+    {
+        Assert.Equal(
+            @"C:\Program Files\a&b\app.exe",
+            HighPriorityStartupService.ParseRegisteredExePath(
+                @"<Command>&quot;C:\Program Files\a&amp;b\app.exe&quot;</Command>"));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("<Task><Actions /></Task>")]
+    [InlineData("<Command></Command>")]
+    public void ParseRegisteredExePath_ReturnsNullWhenNothingUsable(string? output)
+    {
+        Assert.Null(HighPriorityStartupService.ParseRegisteredExePath(output));
+    }
+
+    [Theory]
+    [InlineData(@"C:\Apps\a.exe", @"C:\Apps\a.exe", true)]
+    [InlineData(@"C:\Apps\A.EXE", @"c:\apps\a.exe", true)]
+    [InlineData(@"C:\Apps\a.exe", @"C:\Apps\b.exe", false)]
+    [InlineData(@"C:\Apps\sub\..\a.exe", @"C:\Apps\a.exe", true)]
+    [InlineData(@"C:\Apps\a.exe", null, false)]
+    public void IsSameExe_ComparesNormalizedPaths(string? left, string? right, bool expected)
+    {
+        Assert.Equal(expected, HighPriorityStartupService.IsSameExe(left, right));
+    }
+
+    [Fact]
     public void TaskRegistered_OnlyReflectsCreatedOrAlreadyPresent()
     {
         Assert.True(new HighPriorityStartupService.SetupResult(

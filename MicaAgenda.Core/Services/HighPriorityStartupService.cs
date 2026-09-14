@@ -71,21 +71,36 @@ public static class HighPriorityStartupService
             return new SetupResult(SetupStatus.Failed, "无法确定程序自身路径，未能登记高优先级启动项。");
         }
 
-        if (QueryTask())
+        // 任务已存在时不能一律当成「已登记」：还要看它指向的是不是当前这份 exe。
+        // 典型场景 —— 旧版本用 WPF 宿主（MicaAgenda.App.exe）登记过任务，安装包升级时把旧宿主
+        // 删掉了，任务于是成了死链：开机什么都不会发生，用户看到的就是「勾了高优先级启动却没作用」。
+        var registered = GetRegisteredExePath();
+        var stale = registered is not null && !IsSameExe(registered, exePath);
+        if (!stale && QueryTask())
         {
             return new SetupResult(SetupStatus.AlreadyPresent, "高优先级启动项已登记。");
         }
 
         var arguments = BuildCreateArguments(exePath);
         var direct = RunSchtasks(arguments, elevated: false);
-        if (QueryTask())
+        if (NowRegisteredFor(exePath))
         {
-            return new SetupResult(SetupStatus.Created, "已登记高优先级启动项：下次登录会以最高权限自动启动。");
+            return new SetupResult(
+                SetupStatus.Created,
+                stale
+                    ? "高优先级启动项原先指向旧版本的程序路径，已修正为当前程序。"
+                    : "已登记高优先级启动项：下次登录会以最高权限自动启动。");
         }
 
         if (!allowElevation)
         {
-            return new SetupResult(SetupStatus.NeedsElevation, "登记高优先级启动项需要管理员权限。");
+            // 任务本来就在、只是没能修正（修正需要管理员权限）：如实回报「已登记」，
+            // 免得设置界面把「已存在但指向旧宿主」误报成「需要管理员授权」。
+            return stale
+                ? new SetupResult(
+                    SetupStatus.AlreadyPresent,
+                    "高优先级启动项已登记，但仍指向旧版本的程序路径；保存设置时授权管理员即可修正。")
+                : new SetupResult(SetupStatus.NeedsElevation, "登记高优先级启动项需要管理员权限。");
         }
 
         var elevated = RunSchtasks(arguments, elevated: true);
@@ -94,12 +109,81 @@ public static class HighPriorityStartupService
             return new SetupResult(SetupStatus.Cancelled, "已取消管理员授权，高优先级启动项没有登记。");
         }
 
-        if (QueryTask())
+        if (NowRegisteredFor(exePath))
         {
             return new SetupResult(SetupStatus.Created, "已登记高优先级启动项：下次登录会以最高权限自动启动。");
         }
 
         return new SetupResult(SetupStatus.Failed, "登记高优先级启动项失败。" + DescribeFailure(direct, elevated));
+    }
+
+    /// <summary>任务当前是否「存在，并且（能解析出路径时）指向这份 exe」。</summary>
+    private static bool NowRegisteredFor(string exePath)
+    {
+        if (!QueryTask())
+        {
+            return false;
+        }
+
+        var registered = GetRegisteredExePath();
+
+        // 解析不出路径时不纠缠：任务确实存在就算成功，
+        // 否则会把「查询输出格式变了」误判成「需要授权」，每次保存设置都白弹一次 UAC。
+        return registered is null || IsSameExe(registered, exePath);
+    }
+
+    /// <summary>
+    /// 计划任务当前指向的可执行文件（任务不存在 / 查询或解析失败返回 null）。
+    /// 用 /XML 而不是 /V：动作路径在 XML 的 &lt;Command&gt; 里，比按列切本地化输出可靠得多。
+    /// </summary>
+    public static string? GetRegisteredExePath()
+    {
+        var run = RunSchtasks($"/Query /TN \"{TaskName}\" /XML", elevated: false);
+        return run.Ok ? ParseRegisteredExePath(run.Output) : null;
+    }
+
+    /// <summary>从 schtasks /XML 的输出里取出 &lt;Command&gt;（即任务要跑的程序）。</summary>
+    internal static string? ParseRegisteredExePath(string? queryOutput)
+    {
+        if (string.IsNullOrWhiteSpace(queryOutput))
+        {
+            return null;
+        }
+
+        // schtasks 可能按 UTF-16 输出，被 8 位解码后 ASCII 部分会夹着 NUL；先去掉再匹配。
+        var text = queryOutput.Replace("\0", string.Empty);
+        var match = System.Text.RegularExpressions.Regex.Match(
+            text,
+            "<Command>(.*?)</Command>",
+            System.Text.RegularExpressions.RegexOptions.Singleline | System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        if (!match.Success)
+        {
+            return null;
+        }
+
+        var command = System.Net.WebUtility.HtmlDecode(match.Groups[1].Value).Trim().Trim('"');
+        return command.Length == 0 ? null : command;
+    }
+
+    /// <summary>两个路径是否指向同一个程序（忽略大小写与写法差异）。</summary>
+    internal static bool IsSameExe(string? left, string? right)
+    {
+        if (string.IsNullOrWhiteSpace(left) || string.IsNullOrWhiteSpace(right))
+        {
+            return false;
+        }
+
+        try
+        {
+            return string.Equals(
+                System.IO.Path.GetFullPath(left.Trim().Trim('"')),
+                System.IO.Path.GetFullPath(right.Trim().Trim('"')),
+                StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return string.Equals(left.Trim().Trim('"'), right.Trim().Trim('"'), StringComparison.OrdinalIgnoreCase);
+        }
     }
 
     /// <summary>移除开机任务，并把进程优先级恢复为普通。</summary>

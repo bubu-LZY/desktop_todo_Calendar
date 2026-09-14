@@ -35,9 +35,18 @@ public partial class MainWindow : Window
     private DispatcherTimer? _embedWatchdog;
     private bool _embedWatchdogHooked;
 
-    // 嵌入桌面模式下窗口带 WS_EX_NOACTIVATE（系统禁止激活），键盘消息进不来，
-    // 表现就是"加号点得动、输入框弹出来了却打不了字"。编辑期间临时放开激活并挂起看门狗。
+    // 行内输入（点加号 / 双击编辑）在嵌入桌面模式下必须临时放开窗口激活，
+    // 否则 WS_EX_NOACTIVATE 会让键盘消息永远送不进来。释放完全交给看门狗轮询
+    // （见 ShouldHoldTextEntry），不依赖任何回调 —— 漏一次也会在 200ms 内自愈。
     private bool _textEntryActive;
+    private DateTime _textEntryGraceUntilUtc;
+    private DateTime _textEntryDeadlineUtc;
+
+    // 宽限期内无条件保持放开（刚点开输入框时激活还没落地）；上限兜底，防止逻辑卡住时长期浮在别的窗口上。
+    // 上限给得很宽松：正常收回靠「窗口还是前台 + 输入框还有焦点」这两个轮询条件，用户一旦点到别处
+    // 就会在 200ms 内收回；只有「一直开着输入框不动」才会走到这个上限。
+    private static readonly TimeSpan TextEntryGrace = TimeSpan.FromMilliseconds(1500);
+    private static readonly TimeSpan TextEntryMaxDuration = TimeSpan.FromMinutes(30);
 
     // 时间轴边缘扩展冷却，防止布局变化引发连锁扩展。
     private DateTime _lastExtend = DateTime.MinValue;
@@ -87,6 +96,10 @@ public partial class MainWindow : Window
         _saveTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(800) };
         _saveTimer.Tick += (_, _) =>
         {
+            // 顺手确认窗口外观没被宿主/系统改回去（"×"自己回来、嵌入失效）。
+            // 幂等：样式已是目标值时不做任何写入，代价只有一两次 GetWindowLong。
+            ReinforceWindowChrome();
+
             if (_viewModel?.IsDirty == true)
             {
                 _ = SaveAsync();
@@ -169,6 +182,10 @@ public partial class MainWindow : Window
     {
         if (OperatingSystem.IsWindows())
         {
+            // 先起看门狗：此刻句柄未必就绪（Avalonia 的原生窗口可能还没建好），看门狗拿到句柄后
+            // 会自己把样式补齐，不依赖这一次调用是否成功。
+            StartChromeWatchdog();
+
             var hwnd = NativeHandle();
             if (hwnd == IntPtr.Zero)
             {
@@ -180,7 +197,10 @@ public partial class MainWindow : Window
             if (_config.EmbedDesktop)
             {
                 DesktopEmbedService.EmbedToDesktop(hwnd);
-                StartEmbedWatchdog();
+            }
+            else
+            {
+                DesktopEmbedService.SetNoActivateStyle(hwnd, false);
             }
 
             if (_config.LockWindow)
@@ -194,9 +214,14 @@ public partial class MainWindow : Window
         }
     }
 
-    private void StartEmbedWatchdog()
+    /// <summary>
+    /// 启动窗口外观看门狗（Windows 专属）。不管有没有开嵌入都跑：
+    /// 开了嵌入时负责把窗口压回最底层，没开时至少保证「×」等标题栏按钮不会自己回来。
+    /// 所有操作都幂等，"样式已是目标值"时只是一两次 GetWindowLong，代价可以忽略。
+    /// </summary>
+    private void StartChromeWatchdog()
     {
-        if (!OperatingSystem.IsWindows() || !_config.EmbedDesktop)
+        if (!OperatingSystem.IsWindows())
         {
             return;
         }
@@ -204,23 +229,18 @@ public partial class MainWindow : Window
         if (!_embedWatchdogHooked)
         {
             _embedWatchdogHooked = true;
-            // 看门狗只负责「窗口被系统抬到上面后重新压底」，33ms（30 次/秒）属于过度轮询：
-            // 每个 tick 都要走两次 SetWindowPos / SetWindowLong 系统调用，白白占用 UI 线程。
-            // 200ms（5 次/秒）足以在一瞬间纠正层级，系统调用量降到 1/6。
+            // 33ms（30 次/秒）属于过度轮询：每个 tick 都要走两次窗口样式 / Z 序系统调用，
+            // 白白占用 UI 线程。200ms（5 次/秒）足以在一瞬间纠正，系统调用量降到 1/6。
             _embedWatchdog = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(200) };
             _embedWatchdog.Tick += (_, _) =>
             {
                 try
                 {
-                    var hwnd = NativeHandle();
-                    if (hwnd != IntPtr.Zero)
-                    {
-                        DesktopEmbedService.EnsureEmbedded(hwnd);
-                    }
+                    ReinforceWindowChrome();
                 }
                 catch (Exception ex)
                 {
-                    AppLog.Error(ex, "EmbedWatchdog");
+                    AppLog.Error(ex, "ChromeWatchdog");
                 }
             };
         }
@@ -228,71 +248,7 @@ public partial class MainWindow : Window
         _embedWatchdog?.Start();
     }
 
-    // ===== 嵌入桌面下的文本输入 =====
-
-    /// <summary>
-    /// 开始文本输入：把行内输入框弹出来的同时，让窗口能拿到键盘焦点。
-    ///
-    /// 嵌入桌面模式给窗口加了 WS_EX_NOACTIVATE —— 鼠标点击照常生效（所以"加号点得动"），
-    /// 但系统永远不会把键盘焦点交给它。编辑期间临时清掉该样式并挂起压底看门狗，
-    /// 编辑结束由 <see cref="EndTextEntry"/> 恢复"沉在桌面"。
-    /// 非嵌入模式 / 非 Windows 平台直接跳过。
-    /// </summary>
-    private void BeginTextEntry()
-    {
-        if (!OperatingSystem.IsWindows() || !_config.EmbedDesktop || _textEntryActive)
-        {
-            return;
-        }
-
-        _textEntryActive = true;
-
-        try
-        {
-            // 看门狗每 200ms 会把 WS_EX_NOACTIVATE 写回去，编辑期间必须先停掉
-            _embedWatchdog?.Stop();
-
-            var hwnd = NativeHandle();
-            if (hwnd != IntPtr.Zero)
-            {
-                DesktopEmbedService.SetNoActivateStyle(hwnd, false);
-                DesktopEmbedService.BringToForeground(hwnd);
-            }
-
-            Activate();
-        }
-        catch (Exception ex)
-        {
-            AppLog.Error(ex, "MainWindow.BeginTextEntry");
-        }
-    }
-
-    /// <summary>输入结束（提交 / 取消 / 输入框失焦）：恢复"沉在桌面"的嵌入状态。</summary>
-    private void EndTextEntry()
-    {
-        if (!_textEntryActive)
-        {
-            return;
-        }
-
-        _textEntryActive = false;
-
-        try
-        {
-            var hwnd = NativeHandle();
-            if (hwnd != IntPtr.Zero)
-            {
-                // 内部会重新加上 WS_EX_NOACTIVATE 并压到 Z 序最底层
-                DesktopEmbedService.EmbedToDesktop(hwnd);
-            }
-
-            StartEmbedWatchdog();
-        }
-        catch (Exception ex)
-        {
-            AppLog.Error(ex, "MainWindow.EndTextEntry");
-        }
-    }
+    // ===== 行内输入框抢焦点 =====
 
     /// <summary>
     /// 把键盘焦点交给刚出现的行内输入框。
@@ -300,6 +256,10 @@ public partial class MainWindow : Window
     /// IsVisible 刚变 true 的元素要等一次布局才真正进入可视树，所以按 Loaded 优先级找一次、
     /// 再用 Background 兜底重试。定位必须按 DataContext 精确匹配：直接取第一个 TextBox 会命中
     /// 任务条目自己的编辑框（平时不可见），Focus() 静默失败 —— 正是"点了加号却打不了字"的成因。
+    ///
+    /// 嵌入桌面模式还要顺带放开窗口激活（见 <see cref="BeginTextEntry"/>）：被
+    /// WS_EX_NOACTIVATE 挡住的窗口收不到键盘消息，光调 Focus() 是打不进字的。
+    /// 放开只在一小段宽限期内无条件生效，之后由看门狗按实际情况收尾，漏不掉。
     /// </summary>
     private void FocusInlineTextBox(Func<TextBox?> locate)
     {
@@ -318,6 +278,140 @@ public partial class MainWindow : Window
 
         Dispatcher.UIThread.Post(TryFocus, DispatcherPriority.Loaded);
         Dispatcher.UIThread.Post(TryFocus, DispatcherPriority.Background);
+    }
+
+    /// <summary>
+    /// 把窗口外观重新拉回"桌面小部件"该有的样子（幂等，随时可重复调用）。
+    ///
+    /// 宿主与系统会在某些时机（点击激活、改尺寸、DPI 变化、切换窗口状态）重写窗口样式：
+    /// 把标题栏系统按钮（尤其是"×"）放回来，或者抹掉 WS_EX_NOACTIVATE —— 用户看到的就是
+    /// 「叉号自己回来了」「不再是内嵌的了」。与其去堵每一个触发点，不如周期性重放；
+    /// 这里用到的四个方法在"样式已是目标值"时都是空操作，一次调用只多一两次 GetWindowLong。
+    /// </summary>
+    private void ReinforceWindowChrome()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        var hwnd = NativeHandle();
+        if (hwnd == IntPtr.Zero)
+        {
+            return;
+        }
+
+        // 任何模式下都彻底去掉标题栏系统按钮（最小化 / 最大化 / 关闭），并隐藏任务栏按钮。
+        // 关键点：不能只在启动时做一次 —— 宿主在激活、改尺寸、DPI 变化、从托盘 Show() 等时机
+        // 都会把窗口样式写回去，所以必须周期性重放。
+        DesktopEmbedService.RemoveCaptionButtons(hwnd);
+        DesktopEmbedService.HideFromTaskbar(hwnd);
+
+        if (!_config.EmbedDesktop)
+        {
+            // 关掉嵌入时必须撤掉「禁止激活」：否则窗口会既沉在其他窗口之下、又点不动。
+            _textEntryActive = false;
+            DesktopEmbedService.SetNoActivateStyle(hwnd, false);
+            return;
+        }
+
+        // 正在行内输入：保持窗口可激活，别把 WS_EX_NOACTIVATE 写回去，否则字打不进去。
+        if (ShouldHoldTextEntry(hwnd))
+        {
+            return;
+        }
+
+        _textEntryActive = false;
+        DesktopEmbedService.EnsureEmbedded(hwnd);
+    }
+
+    // ===== 嵌入桌面下的文本输入（放开激活 + 轮询自愈）=====
+
+    /// <summary>
+    /// 开始行内输入：临时放开窗口激活，让刚弹出的输入框真的能收到键盘。
+    ///
+    /// 嵌入桌面给窗口加了 WS_EX_NOACTIVATE（系统层面禁止激活）：鼠标点击照常生效、键盘消息
+    /// 却永远送不进来 —— 表现就是"加号点得动、输入框弹出来了却打不了字"。这里把该样式临时
+    /// 去掉，并给自己两段时限：宽限期内无条件保持（保证第一时间能打字），之后交给
+    /// <see cref="ShouldHoldTextEntry"/> 按"还在编辑吗"逐 tick 判断，最长不超过
+    /// <see cref="TextEntryMaxDuration"/> 一定恢复沉底。
+    ///
+    /// 刻意不在这里停看门狗：释放逻辑全部由看门狗轮询负责，任何一次回调漏掉都会在 200ms 内
+    /// 自愈 —— v3.3.0 就是把恢复挂在提交 / 取消 / 失焦事件上，漏一次就把窗口永久留成了
+    /// "普通窗口"（用户看到的是内嵌失效、标题栏按钮全回来了）。
+    /// </summary>
+    private void BeginTextEntry()
+    {
+        if (!OperatingSystem.IsWindows() || !_config.EmbedDesktop)
+        {
+            return;
+        }
+
+        var hwnd = NativeHandle();
+        if (hwnd == IntPtr.Zero)
+        {
+            return;
+        }
+
+        try
+        {
+            _textEntryActive = true;
+            var now = DateTime.UtcNow;
+            _textEntryGraceUntilUtc = now.Add(TextEntryGrace);
+            _textEntryDeadlineUtc = now.Add(TextEntryMaxDuration);
+
+            DesktopEmbedService.SetNoActivateStyle(hwnd, false);
+            Activate();
+            DesktopEmbedService.RequestForeground(hwnd);
+        }
+        catch (Exception ex)
+        {
+            _textEntryActive = false;
+            AppLog.Error(ex, "MainWindow.BeginTextEntry");
+        }
+    }
+
+    /// <summary>
+    /// 是否还要继续压住"沉在桌面"的状态（true = 正在编辑，先别把激活禁令写回去）。
+    /// 纯轮询、无事件依赖：条件一旦不成立，下一 tick（200ms）立刻恢复嵌入。
+    /// </summary>
+    private bool ShouldHoldTextEntry(IntPtr hwnd)
+    {
+        if (!_textEntryActive)
+        {
+            return false;
+        }
+
+        var now = DateTime.UtcNow;
+        if (now > _textEntryDeadlineUtc)
+        {
+            return false;
+        }
+
+        // 宽限期内不看外部状态：刚点开输入框时激活还没落地，这里必须稳住。
+        if (now < _textEntryGraceUntilUtc)
+        {
+            return true;
+        }
+
+        // 窗口已不在前台（用户切走了 / 点了别的应用）就不再需要键盘焦点。
+        return IsActive
+            && DesktopEmbedService.IsForegroundWindow(hwnd)
+            && AnyInlineEditorFocused();
+    }
+
+    /// <summary>可视树里是否还有行内输入框拿着键盘焦点（提交 / 取消后它们会隐藏并失焦）。</summary>
+    private bool AnyInlineEditorFocused()
+    {
+        foreach (var textBox in this.GetVisualDescendants().OfType<TextBox>())
+        {
+            if (textBox.IsFocused && textBox.IsEffectivelyVisible)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>在整棵可视树里按 DataContext 找输入框（复习条目 / 面板条目用的是不同实例）。</summary>
@@ -396,13 +490,16 @@ public partial class MainWindow : Window
         if (OperatingSystem.IsWindows())
         {
             CanResize = !config.LockWindow;
-            if (!config.EmbedDesktop)
-            {
-                _embedWatchdog?.Stop();
-            }
         }
 
         ApplyDesktopEmbed();
+
+        // 关掉嵌入：窗口还压在最底层，得把它捞回前台，否则用户会以为"设置没生效"。
+        // （禁止激活的样式已经在 ApplyDesktopEmbed 里撤掉了，这里能真的激活起来。）
+        if (OperatingSystem.IsWindows() && !config.EmbedDesktop)
+        {
+            Activate();
+        }
     }
 
     private void RestartServices()
@@ -1130,7 +1227,6 @@ public partial class MainWindow : Window
         else if (e.Key == Key.Escape)
         {
             task.CancelEdit();
-            EndTextEntry();
             e.Handled = true;
         }
     }
@@ -1141,15 +1237,12 @@ public partial class MainWindow : Window
         {
             CommitEdit(task);
         }
-
-        EndTextEntry();
     }
 
     private void CommitEdit(TaskItemViewModel task)
     {
         var title = task.EditTitle?.Trim();
         task.IsEditing = false;
-        EndTextEntry();
         if (!string.IsNullOrWhiteSpace(title))
         {
             _viewModel?.RenameTask(task.Id, title);
@@ -1186,7 +1279,6 @@ public partial class MainWindow : Window
         else if (e.Key == Key.Escape)
         {
             cell.CancelAdd();
-            EndTextEntry();
             e.Handled = true;
         }
     }
@@ -1197,15 +1289,12 @@ public partial class MainWindow : Window
         {
             CommitAdd(cell);
         }
-
-        EndTextEntry();
     }
 
     private void CommitAdd(DayCellViewModel cell)
     {
         var title = cell.DraftTitle?.Trim();
         cell.CancelAdd();
-        EndTextEntry();
         if (!string.IsNullOrWhiteSpace(title))
         {
             _viewModel?.AddTask(cell.Date, title);
@@ -1234,7 +1323,6 @@ public partial class MainWindow : Window
         else if (e.Key == Key.Escape)
         {
             _viewModel?.CancelTodayTask();
-            EndTextEntry();
             e.Handled = true;
         }
     }
@@ -1245,8 +1333,6 @@ public partial class MainWindow : Window
         {
             CommitTodayAdd();
         }
-
-        EndTextEntry();
     }
 
     private void CommitTodayAdd()
@@ -1257,7 +1343,6 @@ public partial class MainWindow : Window
         }
 
         _viewModel.CommitTodayTask();
-        EndTextEntry();
         _ = SaveAsync();
     }
 
