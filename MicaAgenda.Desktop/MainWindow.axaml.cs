@@ -10,6 +10,7 @@ using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Layout;
 using Avalonia.Media;
+using Avalonia.Styling;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
 using MicaAgenda.App.Helpers;
@@ -1043,7 +1044,121 @@ public partial class MainWindow : Window
             CalendarBackgroundMode.Graphite => Argb(alpha, 17, 24, 39),
             _ => Argb(alpha, 255, 255, 255),
         };
+
+        ApplyBackgroundResources(mode);
     }
+
+    /// <summary>
+    /// 按背景模式整体替换调色板资源 —— 与 WPF 宿主 MicaAgenda.App.MainWindow.ApplyBackgroundResources
+    /// 是同一套键名与同一套取值。XAML 侧所有颜色都写成 {DynamicResource ...}，
+    /// 所以这里换掉资源就等于整窗换肤：日期格子、任务胶囊、右侧面板、本周分组卡片一起变。
+    ///
+    /// 之前的 Avalonia 宿主把颜色写死在 XAML / CellPalette 里，导致不管选哪种背景模式，
+    /// 日期格子和右侧任务列表永远是纯白底（用户上报的「不管什么模式都是纯白」）。
+    /// </summary>
+    private void ApplyBackgroundResources(CalendarBackgroundMode mode)
+    {
+        var noBackground = mode is CalendarBackgroundMode.None or CalendarBackgroundMode.ClearBorder;
+        var dark = IsDarkMode(mode);
+
+        // 深色模式同时把 FluentTheme 的控件主题切到 Dark：否则下拉框 / 滑杆 / 输入框 / 勾选框
+        // 会在深色底上露出一排浅色控件。浅色模式显式钉死 Light，不再跟随系统主题。
+        RequestedThemeVariant = dark ? ThemeVariant.Dark : ThemeVariant.Light;
+
+        SetBrush("PrimaryTextBrush", dark ? Argb(255, 243, 244, 246) : Argb(255, 17, 24, 39));
+        SetBrush("MutedTextBrush", dark ? Argb(255, 209, 213, 219) : Argb(255, 107, 114, 128));
+        SetBrush("CellBorderBrush", dark ? Argb(70, 255, 255, 255) : Argb(24, 0, 0, 0));
+        SetBrush("TaskBorderBrush", dark ? Argb(90, 255, 255, 255) : Argb(51, 0, 0, 0));
+        SetBrush("TodayCellBackgroundBrush", dark ? Argb(125, 30, 64, 175) : Argb(191, 220, 235, 254));
+        SetBrush("TodayCellBorderBrush", dark ? Argb(190, 147, 197, 253) : Argb(153, 59, 130, 246));
+        SetBrush("ImportantTaskBackgroundBrush", dark ? Argb(150, 127, 29, 29) : Argb(255, 254, 202, 202));
+        SetBrush("ImportantTaskBorderBrush", dark ? Argb(210, 248, 113, 113) : Argb(255, 239, 68, 68));
+        SetBrush("ImportantTaskTextBrush", dark ? Argb(255, 252, 165, 165) : Argb(255, 185, 28, 28));
+        SetBrush("HolidayBreakBrush", dark ? Argb(130, 127, 29, 29) : Argb(255, 254, 226, 226));
+        SetBrush("HolidayWorkBrush", dark ? Argb(130, 30, 64, 175) : Argb(255, 219, 234, 254));
+        SetBrush("HolidayTextBrush", dark ? Argb(255, 254, 202, 202) : Argb(255, 153, 27, 27));
+        SetBrush("HolidayWorkTextBrush", dark ? Argb(255, 191, 219, 254) : Argb(255, 29, 78, 216));
+        SetBrush("WeekDoneCheckBrush", dark ? Argb(255, 134, 239, 172) : Argb(255, 21, 115, 71));
+        SetBrush("WeekTaskRowHoverBrush", dark ? Argb(60, 255, 255, 255) : Argb(20, 0, 0, 0));
+        SetBrush("WeekGroupBackgroundBrush", dark ? Argb(110, 31, 41, 55) : Argb(143, 255, 255, 255));
+        SetBrush("WeekGroupHoverBrush", dark ? Argb(150, 55, 65, 81) : Argb(191, 255, 255, 255));
+        SetBrush("TodayPanelBorderBrush", dark ? Argb(140, 255, 255, 255) : Argb(34, 0, 0, 0));
+        SetBrush("WindowEdgeBrush", mode switch
+        {
+            CalendarBackgroundMode.None => Argb(34, 255, 255, 255),
+            CalendarBackgroundMode.ClearBorder => Argb(38, 255, 255, 255),
+            CalendarBackgroundMode.FrostedDark or CalendarBackgroundMode.Graphite => Argb(42, 255, 255, 255),
+            _ => Argb(30, 17, 24, 39)
+        });
+        SetBrush("ToolbarControlBackgroundBrush", mode switch
+        {
+            CalendarBackgroundMode.None or CalendarBackgroundMode.ClearBorder => Argb(34, 255, 255, 255),
+            CalendarBackgroundMode.FrostedDark or CalendarBackgroundMode.Graphite => Argb(95, 17, 24, 39),
+            CalendarBackgroundMode.AcrylicBlue => Argb(125, 219, 234, 254),
+            CalendarBackgroundMode.AcrylicMint => Argb(125, 209, 250, 229),
+            CalendarBackgroundMode.PaperLight => Argb(155, 255, 251, 235),
+            _ => Argb(125, 255, 255, 255)
+        });
+        SetBrush("ToolbarControlBorderBrush", dark ? Argb(70, 255, 255, 255) : Argb(42, 17, 24, 39));
+        SetBrush("ToolbarControlHoverBrush", dark ? Argb(130, 31, 41, 55) : Argb(170, 255, 255, 255));
+        SetBrush("ToolbarControlPressedBrush", dark ? Argb(160, 55, 65, 81) : Argb(185, 229, 231, 235));
+
+        if (noBackground)
+        {
+            // 无背景：格子整块透明，只留文字与任务胶囊（与 WPF 宿主一致）
+            SetBrush("DayCellBackgroundBrush", Brushes.Transparent);
+            SetBrush("DayCellOutMonthBackgroundBrush", Brushes.Transparent);
+            SetBrush("YearMonthBackgroundBrush", Brushes.Transparent);
+            SetBrush("TaskBackgroundBrush", dark ? Argb(120, 31, 41, 55) : Argb(130, 236, 253, 245));
+            SetBrush("TodayPanelBackgroundBrush", dark ? Argb(215, 36, 42, 52) : Argb(225, 255, 255, 255));
+            SetBrush("SelectedCellBackgroundBrush", dark ? Argb(120, 59, 130, 246) : Argb(102, 37, 99, 235));
+            return;
+        }
+
+        if (dark)
+        {
+            SetBrush("DayCellBackgroundBrush", Argb(95, 31, 41, 55));
+            SetBrush("DayCellOutMonthBackgroundBrush", Argb(45, 31, 41, 55));
+            SetBrush("YearMonthBackgroundBrush", Argb(105, 31, 41, 55));
+            SetBrush("TaskBackgroundBrush", Argb(135, 55, 65, 81));
+            // 深色下右侧面板要更实一点，否则和深色壁纸糊在一起看不清
+            SetBrush("TodayPanelBackgroundBrush", Argb(225, 30, 36, 46));
+            SetBrush("SelectedCellBackgroundBrush", Argb(150, 59, 130, 246));
+            return;
+        }
+
+        SetBrush("DayCellBackgroundBrush", mode switch
+        {
+            CalendarBackgroundMode.AcrylicBlue => Argb(165, 239, 246, 255),
+            CalendarBackgroundMode.AcrylicMint => Argb(165, 236, 253, 245),
+            CalendarBackgroundMode.FrostedGray => Argb(155, 243, 244, 246),
+            CalendarBackgroundMode.PaperLight => Argb(180, 255, 251, 235),
+            _ => Argb(175, 255, 255, 255)
+        });
+        SetBrush("DayCellOutMonthBackgroundBrush", Argb(111, 255, 255, 255));
+        SetBrush("YearMonthBackgroundBrush", Argb(175, 255, 255, 255));
+        SetBrush("TaskBackgroundBrush", mode switch
+        {
+            CalendarBackgroundMode.AcrylicBlue => Argb(190, 219, 234, 254),
+            CalendarBackgroundMode.AcrylicMint => Argb(190, 209, 250, 229),
+            CalendarBackgroundMode.PaperLight => Argb(190, 254, 243, 199),
+            _ => Argb(186, 233, 247, 239)
+        });
+        SetBrush("TodayPanelBackgroundBrush", mode switch
+        {
+            CalendarBackgroundMode.AcrylicBlue => Argb(190, 239, 246, 255),
+            CalendarBackgroundMode.AcrylicMint => Argb(190, 236, 253, 245),
+            CalendarBackgroundMode.FrostedGray => Argb(180, 243, 244, 246),
+            CalendarBackgroundMode.PaperLight => Argb(200, 255, 251, 235),
+            _ => Argb(175, 255, 255, 255)
+        });
+        SetBrush("SelectedCellBackgroundBrush", Argb(102, 37, 99, 235));
+    }
+
+    private void SetBrush(string key, IBrush brush) => Resources[key] = brush;
+
+    private static bool IsDarkMode(CalendarBackgroundMode mode)
+        => mode is CalendarBackgroundMode.FrostedDark or CalendarBackgroundMode.Graphite;
 
     private static IBrush Argb(byte a, byte r, byte g, byte b) => new SolidColorBrush(Color.FromArgb(a, r, g, b));
 

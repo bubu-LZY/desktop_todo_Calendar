@@ -25,6 +25,8 @@ public sealed class DayCellViewModel : ViewModelBase
 
     public DateOnly Date { get; }
     public bool IsInCurrentMonth { get; }
+    /// <summary>非本月日期（Avalonia 宿主的条件样式类用它挑底色）。</summary>
+    public bool IsOutMonth => !IsInCurrentMonth;
     public bool IsToday { get; }
     public ObservableCollection<TaskItemViewModel> Tasks { get; }
     public ObservableCollection<ChinaHoliday> Holidays { get; }
