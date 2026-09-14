@@ -920,8 +920,16 @@ public sealed class MainViewModel : ViewModelBase
         }
     }
 
+    /// <summary>
+    /// 复习任务（标题带复习前缀）被删除时触发。宿主据此通知 my-mindmap agent 一起删掉对应的
+    /// 复习周期 —— 不做的话下一次同步会按对端复习计划把它重新建回来，用户看到的是「删不掉」。
+    /// 放在事件里而不是直接调服务：删除入口有界面、MCP、HTTP API 多处，收到事件的地方只需接一次。
+    /// </summary>
+    public event Action<CalendarTask>? ReviewTaskDeleted;
+
     public void DeleteTask(Guid taskId)
     {
+        CalendarTask? removedReviewTask = null;
         lock (_syncRoot)
         {
             var task = FindTask(taskId);
@@ -933,6 +941,16 @@ public sealed class MainViewModel : ViewModelBase
             _data.Tasks.Remove(task);
             IsDirty = true;
             RebuildCalendar();
+            if (task.IsReviewTask)
+            {
+                removedReviewTask = task;
+            }
+        }
+
+        // 锁外通知：宿主收到后会去发网络请求，不能在锁内做
+        if (removedReviewTask is not null)
+        {
+            ReviewTaskDeleted?.Invoke(removedReviewTask);
         }
     }
 

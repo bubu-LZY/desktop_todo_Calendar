@@ -781,4 +781,60 @@ public sealed class MainViewModelTests
         Assert.Equal(0, task.GetOverdueDays(new DateOnly(2026, 4, 30)));
         Assert.Equal(0, task.GetPendingDays(new DateOnly(2026, 4, 30)));
     }
+
+    // ===== 复习任务删除通知（双向删除的界面入口）=====
+
+    [Fact]
+    public void DeleteTask_RaisesReviewTaskDeletedOnlyForReviewTasks()
+    {
+        var review = new CalendarTask
+        {
+            Id = Guid.NewGuid(),
+            Date = new DateOnly(2026, 5, 10),
+            Title = "[MM复习]三角函数",
+            CreatedAt = new DateTimeOffset(2026, 5, 10, 9, 0, 0, TimeSpan.Zero)
+        };
+        var legacy = new CalendarTask
+        {
+            Id = Guid.NewGuid(),
+            Date = new DateOnly(2026, 5, 10),
+            Title = "[复习]立体几何",
+            CreatedAt = new DateTimeOffset(2026, 5, 10, 9, 0, 0, TimeSpan.Zero)
+        };
+        var user = new CalendarTask
+        {
+            Id = Guid.NewGuid(),
+            Date = new DateOnly(2026, 5, 10),
+            Title = "买菜",
+            CreatedAt = new DateTimeOffset(2026, 5, 10, 9, 0, 0, TimeSpan.Zero)
+        };
+        var data = new CalendarData { Tasks = [review, legacy, user] };
+        var viewModel = new MainViewModel(data, () => new DateTimeOffset(2026, 5, 10, 10, 0, 0, TimeSpan.Zero));
+
+        var removed = new List<CalendarTask>();
+        viewModel.ReviewTaskDeleted += removed.Add;
+
+        viewModel.DeleteTask(user.Id);
+        Assert.Empty(removed);
+
+        viewModel.DeleteTask(legacy.Id);
+        viewModel.DeleteTask(review.Id);
+
+        Assert.Equal(new[] { legacy.Id, review.Id }, removed.Select(task => task.Id));
+        Assert.Empty(data.Tasks);
+    }
+
+    [Fact]
+    public void DeleteTask_UnknownIdRaisesNothing()
+    {
+        var data = new CalendarData();
+        var viewModel = new MainViewModel(data, () => new DateTimeOffset(2026, 5, 10, 10, 0, 0, TimeSpan.Zero));
+
+        var removed = new List<CalendarTask>();
+        viewModel.ReviewTaskDeleted += removed.Add;
+
+        viewModel.DeleteTask(Guid.NewGuid());
+
+        Assert.Empty(removed);
+    }
 }

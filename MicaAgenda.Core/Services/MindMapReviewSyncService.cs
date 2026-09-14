@@ -126,6 +126,11 @@ public sealed class MindMapReviewSyncService : IDisposable
                 return LastResult;
             }
 
+            // 先把「用户在日历里删掉的复习任务」通知给对端，再取复习计划：
+            // 这样本次取到的计划里就已经没有这些任务，不会再被建回来。
+            // 推不动的（对端没开 / 网络不通）保留待删记录，下次同步继续尝试。
+            var pendingDeletionKeys = await RetryPendingDeletionsAsync(baseUrl, token);
+
             var (entries, error) = await FetchReviewPlanAsync(baseUrl, token);
             if (entries is null)
             {
@@ -134,13 +139,19 @@ public sealed class MindMapReviewSyncService : IDisposable
                 return LastResult;
             }
 
+            // 对端计划里已经不存在 = 删除已被对端接受（或本来就已删除），待删记录可以清掉了
+            if (PruneConfirmedDeletions(entries))
+            {
+                _onDataChanged();
+            }
+
             ReviewSyncPlan plan;
             lock (_syncRoot)
             {
                 var reviewTasks = _data.Tasks
                     .Where(t => ReviewSyncPlanner.HasReviewPrefix(t.Title))
                     .ToList();
-                plan = ReviewSyncPlanner.Build(entries, reviewTasks, DateTimeOffset.Now);
+                plan = ReviewSyncPlanner.Build(entries, reviewTasks, DateTimeOffset.Now, pendingDeletionKeys);
             }
 
             var created = 0;
@@ -320,9 +331,164 @@ public sealed class MindMapReviewSyncService : IDisposable
         _ => $"my-mindmap agent 返回 HTTP {(int)status}"
     };
 
+    /// <summary>
+    /// 用户在日历里删掉了某条复习任务：记下待删记录，并立刻尝试通知对端一起删掉。
+    /// 只有开启同步且填了 Token 时才记录 —— 没开同步就维持原行为，不去改动对端复习计划。
+    /// 通知失败时记录会保留，下一次定时同步继续尝试（否则对端离线期间的删除会被「复活」）。
+    /// </summary>
+    public async Task RegisterReviewDeletionAsync(CalendarTask task)
+    {
+        if (!task.IsReviewTask)
+        {
+            return;
+        }
+
+        var config = _configProvider();
+        var token = FirstNonEmpty(config.MyMindMapToken, string.Empty);
+        if (!config.SyncMyMindMapEnabled || string.IsNullOrWhiteSpace(token))
+        {
+            return;
+        }
+
+        RememberDeletion(task);
+        if (await PushDeletionAsync(ResolveBaseUrl(config.MindMapBaseUrl), token, task))
+        {
+            ForgetDeletion(task);
+        }
+
+        _onDataChanged();
+    }
+
+    /// <summary>当前所有待同步的删除记录配对键（与 <see cref="ReviewSyncPlanner.KeyOf"/> 一致）。</summary>
+    private HashSet<string> PendingDeletionKeys()
+    {
+        lock (_syncRoot)
+        {
+            return _data.PendingReviewDeletions
+                .Select(d => ReviewSyncPlanner.KeyOf(d.Date, d.Title))
+                .ToHashSet(StringComparer.Ordinal);
+        }
+    }
+
+    private void RememberDeletion(CalendarTask task)
+    {
+        var key = ReviewSyncPlanner.KeyOf(task.Date, task.Title);
+        lock (_syncRoot)
+        {
+            if (_data.PendingReviewDeletions.Any(d => ReviewSyncPlanner.KeyOf(d.Date, d.Title) == key))
+            {
+                return;
+            }
+
+            _data.PendingReviewDeletions.Add(new ReviewDeletion
+            {
+                Date = task.Date,
+                Title = ReviewSyncPlanner.NormalizeTitle(task.Title),
+                DeletedAt = DateTimeOffset.Now
+            });
+        }
+    }
+
+    private void ForgetDeletion(CalendarTask task)
+    {
+        var key = ReviewSyncPlanner.KeyOf(task.Date, task.Title);
+        lock (_syncRoot)
+        {
+            _data.PendingReviewDeletions.RemoveAll(d => ReviewSyncPlanner.KeyOf(d.Date, d.Title) == key);
+        }
+    }
+
+    /// <summary>
+    /// 重试所有待同步的删除，返回仍在等待对端确认的配对键集合（本轮比对时跳过这些任务）。
+    /// </summary>
+    private async Task<HashSet<string>> RetryPendingDeletionsAsync(string baseUrl, string token)
+    {
+        List<ReviewDeletion> pending;
+        lock (_syncRoot)
+        {
+            pending = _data.PendingReviewDeletions.ToList();
+        }
+
+        var changed = false;
+        foreach (var deletion in pending)
+        {
+            // 待删记录存的是去前缀标题，这里还原成日历里那条任务的标题再推给对端
+            var task = new CalendarTask
+            {
+                Date = deletion.Date,
+                Title = ReviewSyncPlanner.BuildTaskTitle(deletion.Title)
+            };
+
+            if (await PushDeletionAsync(baseUrl, token, task))
+            {
+                ForgetDeletion(task);
+                changed = true;
+            }
+        }
+
+        if (changed)
+        {
+            _onDataChanged();
+        }
+
+        return PendingDeletionKeys();
+    }
+
+    /// <summary>
+    /// 清掉对端计划里已经不存在的待删记录：说明删除已经生效，记录没必要再留着。
+    /// </summary>
+    private bool PruneConfirmedDeletions(IReadOnlyList<ReviewSyncEntry> entries)
+    {
+        var present = new HashSet<string>(
+            entries.Select(e => ReviewSyncPlanner.KeyOf(e.Date, e.Title)),
+            StringComparer.Ordinal);
+
+        lock (_syncRoot)
+        {
+            return _data.PendingReviewDeletions
+                .RemoveAll(d => !present.Contains(ReviewSyncPlanner.KeyOf(d.Date, d.Title))) > 0;
+        }
+    }
+
     /// <summary>把日历端某条复习任务的最新状态推给 my-mindmap agent（用已保存的配置）。</summary>
     public Task<bool> PushStatusAsync(string token, CalendarTask task) =>
         PushStatusAsync(ResolveBaseUrl(_configProvider().MindMapBaseUrl), token, task);
+
+    /// <summary>
+    /// 告诉 my-mindmap agent「这条复习任务已在日历里删除」，让它把对应的复习周期一并删掉。
+    /// </summary>
+    private async Task<bool> PushDeletionAsync(string baseUrl, string token, CalendarTask task)
+    {
+        try
+        {
+            var payload = new
+            {
+                title = task.Title,
+                date = task.Date.ToString("yyyy-MM-dd")
+            };
+            var json = JsonSerializer.Serialize(payload);
+            using var request = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/api/desk-calendar/delete")
+            {
+                Content = new StringContent(json, Encoding.UTF8, "application/json")
+            };
+            request.Headers.TryAddWithoutValidation("Authorization", $"Bearer {token}");
+            using var resp = await _http.SendAsync(request);
+
+            // 对端还没有这个接口（旧版 my-mindmap agent）：按「已处理」返回，由调用方清掉待删记录。
+            // 否则会一直重试一件永远做不到的事，而行为本来就退回到旧版（删除会被对端计划复活）。
+            if (resp.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.MethodNotAllowed)
+            {
+                return true;
+            }
+
+            return resp.IsSuccessStatusCode;
+        }
+        catch
+        {
+            // 推送是尽力而为：失败不影响本机操作，待删记录保留，下一次定时同步继续尝试
+            return false;
+        }
+    }
 
     private async Task<bool> PushStatusAsync(string baseUrl, string token, CalendarTask task)
     {

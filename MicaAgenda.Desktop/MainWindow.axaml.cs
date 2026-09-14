@@ -35,6 +35,10 @@ public partial class MainWindow : Window
     private DispatcherTimer? _embedWatchdog;
     private bool _embedWatchdogHooked;
 
+    // 嵌入桌面模式下窗口带 WS_EX_NOACTIVATE（系统禁止激活），键盘消息进不来，
+    // 表现就是"加号点得动、输入框弹出来了却打不了字"。编辑期间临时放开激活并挂起看门狗。
+    private bool _textEntryActive;
+
     // 时间轴边缘扩展冷却，防止布局变化引发连锁扩展。
     private DateTime _lastExtend = DateTime.MinValue;
 
@@ -99,6 +103,7 @@ public partial class MainWindow : Window
             var year = DateOnly.FromDateTime(DateTime.Now).Year;
             var holidays = await _holidayService.LoadCachedOrEmbeddedAsync(year);
             _viewModel = new MainViewModel(data, holidays: holidays, syncRoot: _syncRoot);
+            _viewModel.ReviewTaskDeleted += NotifyReviewDeletion;
             DataContext = _viewModel;
 
             // 先把开机启动相关的诉求落实到本次运行（Windows 专属）。
@@ -222,6 +227,104 @@ public partial class MainWindow : Window
 
         _embedWatchdog?.Start();
     }
+
+    // ===== 嵌入桌面下的文本输入 =====
+
+    /// <summary>
+    /// 开始文本输入：把行内输入框弹出来的同时，让窗口能拿到键盘焦点。
+    ///
+    /// 嵌入桌面模式给窗口加了 WS_EX_NOACTIVATE —— 鼠标点击照常生效（所以"加号点得动"），
+    /// 但系统永远不会把键盘焦点交给它。编辑期间临时清掉该样式并挂起压底看门狗，
+    /// 编辑结束由 <see cref="EndTextEntry"/> 恢复"沉在桌面"。
+    /// 非嵌入模式 / 非 Windows 平台直接跳过。
+    /// </summary>
+    private void BeginTextEntry()
+    {
+        if (!OperatingSystem.IsWindows() || !_config.EmbedDesktop || _textEntryActive)
+        {
+            return;
+        }
+
+        _textEntryActive = true;
+
+        try
+        {
+            // 看门狗每 200ms 会把 WS_EX_NOACTIVATE 写回去，编辑期间必须先停掉
+            _embedWatchdog?.Stop();
+
+            var hwnd = NativeHandle();
+            if (hwnd != IntPtr.Zero)
+            {
+                DesktopEmbedService.SetNoActivateStyle(hwnd, false);
+                DesktopEmbedService.BringToForeground(hwnd);
+            }
+
+            Activate();
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error(ex, "MainWindow.BeginTextEntry");
+        }
+    }
+
+    /// <summary>输入结束（提交 / 取消 / 输入框失焦）：恢复"沉在桌面"的嵌入状态。</summary>
+    private void EndTextEntry()
+    {
+        if (!_textEntryActive)
+        {
+            return;
+        }
+
+        _textEntryActive = false;
+
+        try
+        {
+            var hwnd = NativeHandle();
+            if (hwnd != IntPtr.Zero)
+            {
+                // 内部会重新加上 WS_EX_NOACTIVATE 并压到 Z 序最底层
+                DesktopEmbedService.EmbedToDesktop(hwnd);
+            }
+
+            StartEmbedWatchdog();
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error(ex, "MainWindow.EndTextEntry");
+        }
+    }
+
+    /// <summary>
+    /// 把键盘焦点交给刚出现的行内输入框。
+    ///
+    /// IsVisible 刚变 true 的元素要等一次布局才真正进入可视树，所以按 Loaded 优先级找一次、
+    /// 再用 Background 兜底重试。定位必须按 DataContext 精确匹配：直接取第一个 TextBox 会命中
+    /// 任务条目自己的编辑框（平时不可见），Focus() 静默失败 —— 正是"点了加号却打不了字"的成因。
+    /// </summary>
+    private void FocusInlineTextBox(Func<TextBox?> locate)
+    {
+        void TryFocus()
+        {
+            var box = locate();
+            if (box is null)
+            {
+                return;
+            }
+
+            BeginTextEntry();
+            box.Focus();
+            box.CaretIndex = box.Text?.Length ?? 0;
+        }
+
+        Dispatcher.UIThread.Post(TryFocus, DispatcherPriority.Loaded);
+        Dispatcher.UIThread.Post(TryFocus, DispatcherPriority.Background);
+    }
+
+    /// <summary>在整棵可视树里按 DataContext 找输入框（复习条目 / 面板条目用的是不同实例）。</summary>
+    private TextBox? FindVisibleTextBoxByDataContext(object dataContext) =>
+        this.GetVisualDescendants()
+            .OfType<TextBox>()
+            .FirstOrDefault(box => box.IsVisible && ReferenceEquals(box.DataContext, dataContext));
 
     // ===== 托盘：显示 + 退出 =====
 
@@ -477,7 +580,12 @@ public partial class MainWindow : Window
             _ = _configStore.SaveAsync(_config);
         }
 
-        _apiServer = new TaskApiServer(_viewModel.Data, _syncRoot, _config.ApiToken, OnDataChangedFromApi);
+        _apiServer = new TaskApiServer(
+            _viewModel.Data,
+            _syncRoot,
+            _config.ApiToken,
+            OnDataChangedFromApi,
+            NotifyReviewDeletion);
         _apiServer.Start(_config.ApiPort);
     }
 
@@ -488,7 +596,12 @@ public partial class MainWindow : Window
             return;
         }
 
-        _mcpServer = new McpServer(_viewModel.Data, _syncRoot, OnDataChangedFromApi, _config.ApiToken);
+        _mcpServer = new McpServer(
+            _viewModel.Data,
+            _syncRoot,
+            OnDataChangedFromApi,
+            _config.ApiToken,
+            NotifyReviewDeletion);
         _mcpServer.Start(_config.McpPort);
     }
 
@@ -587,6 +700,46 @@ public partial class MainWindow : Window
             AppLog.Error(ex, "MainWindow.PushCompletionToMindMap");
         }
     }
+    /// <summary>
+    /// 复习任务被删除：通知 my-mindmap agent 一起删掉对应的复习周期。
+    ///
+    /// 界面右键删除走 <see cref="MainViewModel.ReviewTaskDeleted"/>，HTTP API 与 MCP 走构造时注入的
+    /// 回调 —— 三条入口都不能漏，否则下一次同步会按对端复习计划把它重新建回来，
+    /// 用户看到的就是"删了又回来"。未开启同步 / 没填 Token 时由服务内部直接跳过。
+    /// 推送要走网络，这里绝不能占着调用线程（可能是 HttpListener 后台线程），丢给线程池。
+    /// </summary>
+    private void NotifyReviewDeletion(CalendarTask task)
+    {
+        if (!task.IsReviewTask)
+        {
+            return;
+        }
+
+        if (_mindMapSyncService is null)
+        {
+            TryStart(StartMindMapSyncService, "MindMapSync");
+        }
+
+        var service = _mindMapSyncService;
+        if (service is null)
+        {
+            return;
+        }
+
+        _ = System.Threading.Tasks.Task.Run(async () =>
+        {
+            try
+            {
+                await service.RegisterReviewDeletionAsync(task);
+            }
+            catch (Exception ex)
+            {
+                // 尽力而为：失败只影响对端清理，本机删除照旧
+                AppLog.Error(ex, "MainWindow.NotifyReviewDeletion");
+            }
+        });
+    }
+
     private void OnDataChangedFromApi()
     {
         // 批量接口会在极短时间内连续写入，先合并再刷新，避免高频重建 UI 与重复落盘。
@@ -931,6 +1084,7 @@ public partial class MainWindow : Window
         if (TaskFrom(sender) is { IsEditing: false } task)
         {
             task.BeginEdit();
+            FocusInlineTextBox(() => FindVisibleTextBoxByDataContext(task));
         }
     }
 
@@ -976,6 +1130,7 @@ public partial class MainWindow : Window
         else if (e.Key == Key.Escape)
         {
             task.CancelEdit();
+            EndTextEntry();
             e.Handled = true;
         }
     }
@@ -986,12 +1141,15 @@ public partial class MainWindow : Window
         {
             CommitEdit(task);
         }
+
+        EndTextEntry();
     }
 
     private void CommitEdit(TaskItemViewModel task)
     {
         var title = task.EditTitle?.Trim();
         task.IsEditing = false;
+        EndTextEntry();
         if (!string.IsNullOrWhiteSpace(title))
         {
             _viewModel?.RenameTask(task.Id, title);
@@ -1009,16 +1167,8 @@ public partial class MainWindow : Window
 
         cell.BeginAdd();
 
-        // 等新输入框进入可视树后再抢焦点
-        if (sender is Control ctl)
-        {
-            Dispatcher.UIThread.Post(() =>
-            {
-                var border = ctl.FindAncestorOfType<Border>();
-                var box = border?.GetVisualDescendants().OfType<TextBox>().FirstOrDefault();
-                box?.Focus();
-            }, DispatcherPriority.Loaded);
-        }
+        // 等新输入框进入可视树后再抢焦点（按 DataContext 精确匹配本格，避免抢到任务条目的编辑框）
+        FocusInlineTextBox(() => FindVisibleTextBoxByDataContext(cell));
     }
 
     private void InlineTaskTextBox_KeyDown(object? sender, KeyEventArgs e)
@@ -1036,6 +1186,7 @@ public partial class MainWindow : Window
         else if (e.Key == Key.Escape)
         {
             cell.CancelAdd();
+            EndTextEntry();
             e.Handled = true;
         }
     }
@@ -1046,12 +1197,15 @@ public partial class MainWindow : Window
         {
             CommitAdd(cell);
         }
+
+        EndTextEntry();
     }
 
     private void CommitAdd(DayCellViewModel cell)
     {
         var title = cell.DraftTitle?.Trim();
         cell.CancelAdd();
+        EndTextEntry();
         if (!string.IsNullOrWhiteSpace(title))
         {
             _viewModel?.AddTask(cell.Date, title);
@@ -1065,16 +1219,9 @@ public partial class MainWindow : Window
         _viewModel?.BeginAddTodayTask();
 
         // 等输入框进入可视树后再抢焦点（按 Tag 精确定位，避开条目内的编辑框）
-        if (sender is Control ctl)
-        {
-            Dispatcher.UIThread.Post(() =>
-            {
-                var panel = ctl.FindAncestorOfType<Border>();
-                var box = panel?.GetVisualDescendants().OfType<TextBox>()
-                    .FirstOrDefault(t => Equals(t.Tag, "TodayTaskDraftBox"));
-                box?.Focus();
-            }, DispatcherPriority.Loaded);
-        }
+        FocusInlineTextBox(() => this.GetVisualDescendants()
+            .OfType<TextBox>()
+            .FirstOrDefault(box => box.IsVisible && Equals(box.Tag, "TodayTaskDraftBox")));
     }
 
     private void TodayTaskTextBox_KeyDown(object? sender, KeyEventArgs e)
@@ -1087,6 +1234,7 @@ public partial class MainWindow : Window
         else if (e.Key == Key.Escape)
         {
             _viewModel?.CancelTodayTask();
+            EndTextEntry();
             e.Handled = true;
         }
     }
@@ -1097,6 +1245,8 @@ public partial class MainWindow : Window
         {
             CommitTodayAdd();
         }
+
+        EndTextEntry();
     }
 
     private void CommitTodayAdd()
@@ -1107,6 +1257,7 @@ public partial class MainWindow : Window
         }
 
         _viewModel.CommitTodayTask();
+        EndTextEntry();
         _ = SaveAsync();
     }
 
@@ -1122,6 +1273,7 @@ public partial class MainWindow : Window
         if (e.ClickCount >= 2 && TaskFrom(sender) is { IsEditing: false } task)
         {
             task.BeginEdit();
+            FocusInlineTextBox(() => FindVisibleTextBoxByDataContext(task));
             e.Handled = true;
         }
     }
@@ -1139,6 +1291,7 @@ public partial class MainWindow : Window
             if (!task.IsEditing)
             {
                 task.BeginEdit();
+                FocusInlineTextBox(() => FindVisibleTextBoxByDataContext(task));
             }
 
             e.Handled = true;

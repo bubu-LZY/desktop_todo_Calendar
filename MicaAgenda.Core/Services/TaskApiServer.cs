@@ -23,16 +23,27 @@ public sealed class TaskApiServer : IDisposable
     private readonly object _syncRoot;
     private readonly string _token;
     private readonly Action _onDataChanged;
+    private readonly Action<CalendarTask>? _onReviewTaskDeleted;
     private readonly HttpListener _listener = new();
     private CancellationTokenSource? _cts;
     private Task? _runTask;
 
-    public TaskApiServer(CalendarData data, object syncRoot, string token, Action onDataChanged)
+    /// <param name="onReviewTaskDeleted">
+    /// 删掉的任务如果属于 my-mindmap agent 的复习计划，回调通知它一起删除对应复习周期；
+    /// 缺省（null）表示不联动，行为与旧版一致。
+    /// </param>
+    public TaskApiServer(
+        CalendarData data,
+        object syncRoot,
+        string token,
+        Action onDataChanged,
+        Action<CalendarTask>? onReviewTaskDeleted = null)
     {
         _data = data;
         _syncRoot = syncRoot;
         _token = token;
         _onDataChanged = onDataChanged;
+        _onReviewTaskDeleted = onReviewTaskDeleted;
     }
 
     public int Port { get; private set; } = 17801;
@@ -337,15 +348,24 @@ public sealed class TaskApiServer : IDisposable
         }
 
         var results = new List<object>();
+        var deletedReviewTasks = new List<CalendarTask>();
         lock (_syncRoot)
         {
             foreach (var op in payload.Operations)
             {
-                results.Add(ApplyOperation(op));
+                results.Add(ApplyOperation(op, deletedReviewTasks));
             }
         }
 
         _onDataChanged();
+
+        // 通知对端删除对应复习周期：必须在锁外做（回调里会走网络），
+        // 也不能加 _onDataChanged —— 批量结尾统一保存一次就够了。
+        foreach (var removed in deletedReviewTasks)
+        {
+            _onReviewTaskDeleted?.Invoke(removed);
+        }
+
         await WriteJsonAsync(response, 200, new { results });
     }
 
@@ -412,7 +432,10 @@ public sealed class TaskApiServer : IDisposable
         });
     }
 
-    private object ApplyOperation(BatchOperation op)
+    /// <param name="deletedReviewTasks">
+    /// 本次批量里删掉的复习任务会追加到这里，由调用方在锁外统一通知对端。
+    /// </param>
+    private object ApplyOperation(BatchOperation op, List<CalendarTask> deletedReviewTasks)
     {
         try
         {
@@ -420,7 +443,7 @@ public sealed class TaskApiServer : IDisposable
             {
                 "add" or "create" => AddOperation(op),
                 "update" or "edit" => UpdateOperation(op),
-                "delete" or "remove" => DeleteOperation(op),
+                "delete" or "remove" => DeleteOperation(op, deletedReviewTasks),
                 "complete" => SetCompletionOperation(op, true),
                 "uncomplete" or "incomplete" => SetCompletionOperation(op, false),
                 _ => new { error = $"unknown action: {op.Action}" }
@@ -476,7 +499,7 @@ public sealed class TaskApiServer : IDisposable
         return ToDto(task);
     }
 
-    private object DeleteOperation(BatchOperation op)
+    private object DeleteOperation(BatchOperation op, List<CalendarTask> deletedReviewTasks)
     {
         var task = FindTask(op.Id ?? Guid.Empty);
         if (task is null)
@@ -485,6 +508,11 @@ public sealed class TaskApiServer : IDisposable
         }
 
         _data.Tasks.Remove(task);
+        if (task.IsReviewTask)
+        {
+            deletedReviewTasks.Add(task);
+        }
+
         return new { id = task.Id, deleted = true };
     }
 
@@ -539,12 +567,14 @@ public sealed class TaskApiServer : IDisposable
             // 绝不能在 lock 内同步等待网络 I/O（GetAwaiter().GetResult()）：
             // 客户端读得慢时响应写不出去，锁就一直不释放，会与 UI 线程互等造成死锁。
             bool deleted;
+            CalendarTask? removed = null;
             lock (_syncRoot)
             {
                 var task = FindTask(id);
                 deleted = task is not null;
                 if (deleted)
                 {
+                    removed = task;
                     _data.Tasks.Remove(task!);
                 }
             }
@@ -556,6 +586,10 @@ public sealed class TaskApiServer : IDisposable
             }
 
             _onDataChanged();
+            if (removed is not null && removed.IsReviewTask)
+            {
+                _onReviewTaskDeleted?.Invoke(removed);
+            }
             await WriteJsonAsync(response, 200, new { id, deleted = true });
             return;
         }

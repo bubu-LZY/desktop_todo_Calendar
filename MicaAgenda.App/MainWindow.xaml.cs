@@ -103,8 +103,8 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
-        FileLog.Write($"[STARTUP] MainWindow ctor - v3.2.3 - exe={Environment.ProcessPath ?? "unknown"}");
-        Title = "MicaAgenda v3.2.3";
+        FileLog.Write($"[STARTUP] MainWindow ctor - v3.3.0 - exe={Environment.ProcessPath ?? "unknown"}");
+        Title = "MicaAgenda v3.3.0";
 
         // 窗口初始化前同步加载配置，确保桌面嵌入/锁定在首帧即生效
         _config = _configStore.Load();
@@ -241,6 +241,7 @@ public partial class MainWindow : Window
         _loadedHolidayYear = holidayYear;
 
         _viewModel = new MainViewModel(data, holidays: holidays, syncRoot: _syncRoot);
+        _viewModel.ReviewTaskDeleted += NotifyReviewDeletion;
 
         // 先把内容挂上并渲染出来，首屏优先；
         // 下面那些与首屏无关的工作统一推迟到 Background 优先级，避免"启动卡两秒才显示全"。
@@ -304,7 +305,12 @@ public partial class MainWindow : Window
             return;
         }
 
-        _mcpServer = new McpServer(_viewModel.Data, _syncRoot, OnDataChangedFromApi, _config.ApiToken);
+        _mcpServer = new McpServer(
+            _viewModel.Data,
+            _syncRoot,
+            OnDataChangedFromApi,
+            _config.ApiToken,
+            NotifyReviewDeletion);
         _mcpServer.Start(_config.McpPort);
     }
 
@@ -393,7 +399,8 @@ public partial class MainWindow : Window
             _viewModel.Data,
             _syncRoot,
             _config.ApiToken,
-            OnDataChangedFromApi);
+            OnDataChangedFromApi,
+            NotifyReviewDeletion);
 
         if (_apiServer.Start(_config.ApiPort))
         {
@@ -2183,6 +2190,44 @@ public partial class MainWindow : Window
         {
             // 静默：my-mindmap agent 未启动/Token 错误时不影响日历本机操作
         }
+    }
+
+    /// <summary>
+    /// 复习任务被删除：通知 my-mindmap agent 一起删掉对应的复习周期。
+    ///
+    /// 界面删除走 <see cref="MainViewModel.ReviewTaskDeleted"/>，HTTP API 与 MCP 走构造时注入的回调 ——
+    /// 三条入口都要接，否则下一次同步会按对端复习计划把它重新建回来。
+    /// 推送要走网络，不能占着调用线程（可能是 HttpListener 后台线程），丢给线程池。
+    /// </summary>
+    private void NotifyReviewDeletion(CalendarTask task)
+    {
+        if (!task.IsReviewTask)
+        {
+            return;
+        }
+
+        if (_mindMapSyncService is null)
+        {
+            StartMindMapSyncService();
+        }
+
+        var service = _mindMapSyncService;
+        if (service is null)
+        {
+            return;
+        }
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await service.RegisterReviewDeletionAsync(task);
+            }
+            catch
+            {
+                // 尽力而为：失败只影响对端清理，本机删除照旧
+            }
+        });
     }
 
     /// <summary>任务后的小复选框：快速勾选/取消完成状态。</summary>

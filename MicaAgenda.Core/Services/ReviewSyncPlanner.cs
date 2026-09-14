@@ -57,10 +57,15 @@ internal static class ReviewSyncPlanner
     /// <param name="entries">对端复习计划快照。</param>
     /// <param name="localTasks">本地所有带复习前缀的任务（调用方必须先按前缀过滤）。</param>
     /// <param name="now">对端没给时间戳时用于兜底的时间基准。</param>
+    /// <param name="pendingDeletions">
+    /// 用户已删除、但还没被对端确认的复习任务配对键（见 <see cref="KeyOf"/>）。
+    /// 这些任务不参与创建与状态仲裁 —— 否则下一次同步就会把它们重新建回来。
+    /// </param>
     internal static ReviewSyncPlan Build(
         IReadOnlyList<ReviewSyncEntry> entries,
         IReadOnlyList<CalendarTask> localTasks,
-        DateTimeOffset now)
+        DateTimeOffset now,
+        IReadOnlyCollection<string>? pendingDeletions = null)
     {
         var creates = new List<ReviewSyncCreate>();
         var pulls = new List<ReviewSyncStatusApply>();
@@ -85,7 +90,8 @@ internal static class ReviewSyncPlanner
                 normalized = FallbackTitle;
             }
 
-            expectedKeys.Add($"{entry.Date:yyyy-MM-dd}::{normalized}");
+            var entryKey = $"{entry.Date:yyyy-MM-dd}::{normalized}";
+            expectedKeys.Add(entryKey);
 
             // 同一天同一标题可能有多条（历史版本重复推送留下的）。
             // 选一条正主（优先新前缀、其次最早创建），其余本次清掉，避免日历里越攒越多。
@@ -95,6 +101,21 @@ internal static class ReviewSyncPlanner
                 .ThenBy(t => t.CreatedAt)
                 .ThenBy(t => t.Id)
                 .ToList();
+
+            // 用户已经在日历里删掉了这条复习任务，只是还没被对端确认：既不要建回来，
+            // 也不要用对端状态去"修正"它。对端确认后待删记录会被清掉，这条分支自然失效。
+            if (pendingDeletions is not null && pendingDeletions.Contains(entryKey))
+            {
+                // 更早的同步可能已经把它建回来过：顺手清掉，避免「删了还留着一份」
+                foreach (var leftover in candidates)
+                {
+                    matchedIds.Add(leftover.Id);
+                    working.Remove(leftover);
+                    deletes.Add(new ReviewSyncDelete(leftover.Id, "用户已在日历中删除"));
+                }
+
+                continue;
+            }
 
             if (candidates.Count == 0)
             {

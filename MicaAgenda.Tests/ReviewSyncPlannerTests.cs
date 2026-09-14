@@ -280,4 +280,88 @@ public sealed class ReviewSyncPlannerTests
         var userTask = MakeTask("买菜", false, 1_000L);
         Assert.False(ReviewSyncPlanner.HasReviewPrefix(userTask.Title));
     }
+
+    // ===== 用户在日历里删掉复习任务：双向删除（不能"删了又回来"）=====
+
+    private static string KeyOfDay(string title, DateOnly? date = null) =>
+        ReviewSyncPlanner.KeyOf(date ?? Day, title);
+
+    [Fact]
+    public void KeyOf_IgnoresPrefixAndSurroundingWhitespace()
+    {
+        // 待删记录的标题不带前缀，日历任务的标题带前缀：两者必须算出同一个配对键
+        Assert.Equal(ReviewSyncPlanner.KeyOf(Day, "三角函数"), ReviewSyncPlanner.KeyOf(Day, "[MM复习] 三角函数"));
+        Assert.Equal(ReviewSyncPlanner.KeyOf(Day, "三角函数"), ReviewSyncPlanner.KeyOf(Day, "[复习]三角函数"));
+    }
+
+    /// <summary>
+    /// 用户已经删掉、本地还残留一份（更早的同步建回来的）时：顺手清干净，且绝不能重新建。
+    /// </summary>
+    [Fact]
+    public void Build_PendingDeletion_RemovesLeftoverAndSkipsCreate()
+    {
+        var leftover = MakeTask("[MM复习]三角函数", false, 1_000L);
+        var entries = new[] { new ReviewSyncEntry(Day, "三角函数", false, 2_000L) };
+
+        var plan = ReviewSyncPlanner.Build(entries, new[] { leftover }, Now, new[] { KeyOfDay("三角函数") });
+
+        Assert.Empty(plan.Creates);
+        Assert.Empty(plan.Pulls);
+        Assert.Empty(plan.Pushes);
+        var deleted = Assert.Single(plan.Deletes);
+        Assert.Equal(leftover.Id, deleted.TaskId);
+    }
+
+    /// <summary>
+    /// 用户删掉、本地已经没有这条任务时，同步不能按对端计划把它建回来 —— 这是用户看到的"删不掉"。
+    /// </summary>
+    [Fact]
+    public void Build_PendingDeletion_WithoutLocalTask_DoesNotRecreate()
+    {
+        var entries = new[] { new ReviewSyncEntry(Day, "三角函数", false, 2_000L) };
+
+        var plan = ReviewSyncPlanner.Build(entries, Array.Empty<CalendarTask>(), Now, new[] { KeyOfDay("三角函数") });
+
+        Assert.Empty(plan.Creates);
+        Assert.Empty(plan.Deletes);
+    }
+
+    [Fact]
+    public void Build_PendingDeletion_OnlyAffectsItsOwnKey()
+    {
+        var entries = new[]
+        {
+            new ReviewSyncEntry(Day, "三角函数", false, 2_000L),
+            new ReviewSyncEntry(Day, "立体几何", false, 2_000L)
+        };
+
+        var plan = ReviewSyncPlanner.Build(entries, Array.Empty<CalendarTask>(), Now, new[] { KeyOfDay("三角函数") });
+
+        var created = Assert.Single(plan.Creates);
+        Assert.Equal("立体几何", ReviewSyncPlanner.NormalizeTitle(created.Title));
+    }
+
+    /// <summary>
+    /// 同一天同名的另一条（对端仍存在）不该被误伤：待删记录只按「日期 + 标题」精确命中。
+    /// </summary>
+    [Fact]
+    public void Build_PendingDeletion_DoesNotAffectOtherDays()
+    {
+        var other = MakeTask("[MM复习]三角函数", false, 2_000L, date: Day.AddDays(1));
+        var entries = new[]
+        {
+            new ReviewSyncEntry(Day, "三角函数", false, 2_000L),
+            new ReviewSyncEntry(Day.AddDays(1), "三角函数", true, 3_000L)
+        };
+
+        var plan = ReviewSyncPlanner.Build(
+            entries,
+            new[] { other },
+            Now,
+            new[] { KeyOfDay("三角函数") });
+
+        // 第二天那条照常按 LWW 拉取对端状态，没有被"当天这条已删除"牵连
+        Assert.Empty(plan.Deletes);
+        Assert.Contains(plan.Pulls, p => p.TaskId == other.Id);
+    }
 }

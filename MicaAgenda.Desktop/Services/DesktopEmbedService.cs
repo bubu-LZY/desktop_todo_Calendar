@@ -67,6 +67,23 @@ public static class DesktopEmbedService
         SetWindowLong(handle, GwlExstyle, desired);
     }
 
+    /// <summary>
+    /// 把窗口提到前台。
+    ///
+    /// 只在 <see cref="SetNoActivateStyle"/> 已经放开激活、且用户刚点过本窗口时才有意义：
+    /// 被 WS_EX_NOACTIVATE 挡住的窗口即使点中了也不会成为前台窗口，键盘消息自然进不来。
+    /// 编辑行内输入框时先放开激活再调一次这里，输入框才真的能打字。
+    /// </summary>
+    public static void BringToForeground(IntPtr handle)
+    {
+        if (!IsWindows || handle == IntPtr.Zero)
+        {
+            return;
+        }
+
+        SetForegroundWindow(handle);
+    }
+
     /// <summary>将窗口推到 Z 序最底层（HWND_BOTTOM），使其位于所有普通窗口之下。</summary>
     public static void EmbedToDesktop(IntPtr handle)
     {
@@ -133,4 +150,7 @@ public static class DesktopEmbedService
 
     [DllImport("user32.dll", EntryPoint = "SetWindowLong", SetLastError = true)]
     private static extern int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);
+
+    [DllImport("user32.dll", EntryPoint = "SetForegroundWindow", SetLastError = true)]
+    private static extern bool SetForegroundWindow(IntPtr hWnd);
 }

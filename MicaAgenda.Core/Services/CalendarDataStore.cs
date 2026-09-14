@@ -137,5 +137,31 @@ public sealed class CalendarDataStore
         {
             task.Normalize(fallback);
         }
+
+        NormalizePendingReviewDeletions(data);
+    }
+
+    /// <summary>
+    /// 待删记录（用户在日历里删掉的复习任务，等着通知对端一起删）的自洽化：
+    /// 丢掉日期/标题缺失的脏数据、按「日期 + 标题」去重、清掉过老的记录。
+    ///
+    /// 去重是必须的：配对键就是「日期 + 标题」，重复记录会让同一条被反复推送；
+    /// 过期清理是兜底：对端长期不可达时记录只增不减，会把数据文件撑大。
+    /// </summary>
+    private static void NormalizePendingReviewDeletions(CalendarData data)
+    {
+        if (data.PendingReviewDeletions.Count == 0)
+        {
+            return;
+        }
+
+        var cutoff = DateTimeOffset.Now.AddDays(-90);
+        data.PendingReviewDeletions = data.PendingReviewDeletions
+            .Where(d => d.Date != default
+                        && !string.IsNullOrWhiteSpace(d.Title)
+                        && d.DeletedAt >= cutoff)
+            .GroupBy(d => ReviewSyncPlanner.KeyOf(d.Date, d.Title), StringComparer.Ordinal)
+            .Select(group => group.OrderByDescending(d => d.DeletedAt).First())
+            .ToList();
     }
 }

@@ -24,11 +24,19 @@ public sealed class McpServer : IDisposable
     private readonly Action _onDataChanged;
     private readonly HttpListener _listener = new();
     private readonly string _token;
+    // 复习任务被删除时通知宿主（同步删掉对端复习周期），可选：老调用方不需要双向删除
+    private readonly Action<CalendarTask>? _onReviewTaskDeleted;
     private CancellationTokenSource? _cts;
     private Task? _runTask;
 
-    public McpServer(CalendarData data, object syncRoot, Action onDataChanged, string token)
+    public McpServer(
+        CalendarData data,
+        object syncRoot,
+        Action onDataChanged,
+        string token,
+        Action<CalendarTask>? onReviewTaskDeleted = null)
     {
+        _onReviewTaskDeleted = onReviewTaskDeleted;
         _data = data;
         _syncRoot = syncRoot;
         _onDataChanged = onDataChanged;
@@ -453,11 +461,18 @@ public sealed class McpServer : IDisposable
 
     private object DeleteTask(Guid id)
     {
+        CalendarTask removed;
         lock (_syncRoot)
         {
-            var task = _data.Tasks.FirstOrDefault(t => t.Id == id)
+            removed = _data.Tasks.FirstOrDefault(t => t.Id == id)
                 ?? throw new KeyNotFoundException($"task not found: {id}");
-            _data.Tasks.Remove(task);
+            _data.Tasks.Remove(removed);
+        }
+
+        // 锁外通知宿主：复习任务要同步删掉对端的复习周期，否则会被下一次同步建回来
+        if (removed.IsReviewTask)
+        {
+            _onReviewTaskDeleted?.Invoke(removed);
         }
 
         _onDataChanged();
