@@ -5,7 +5,8 @@
         x:Class="MicaAgenda.Desktop.MainWindow"
         Width="980" Height="680"
         Title="{Binding Title}"
-        Background="#EDEFF4"
+        WindowDecorations="None"
+        Background="Transparent"
         x:CompileBindings="False">
 
   <Window.Resources>
@@ -437,95 +438,108 @@
     </Style>
   </Window.Styles>
 
-  <Grid RowDefinitions="Auto,*">
-    <!-- ===== 顶栏：日期信息 + 视图切换 + 背景/透明度 ===== -->
-    <Border Grid.Row="0" Padding="10,6" BorderBrush="#22000000" BorderThickness="0,0,0,1">
-      <StackPanel Spacing="5">
-        <DockPanel LastChildFill="False">
-          <StackPanel DockPanel.Dock="Left" Orientation="Horizontal" Spacing="12" VerticalAlignment="Center">
-            <TextBlock Text="{Binding TodayDisplay}" FontSize="14" FontWeight="SemiBold" Foreground="#111827" />
-            <TextBlock Text="{Binding TodayTaskCount}" FontSize="12" Foreground="#6B7280" />
-            <TextBlock Text="{Binding ThisWeekTaskCount}" FontSize="12" Foreground="#6B7280" />
+  <!-- 桌面挂件外壳：去掉系统标题栏（SystemDecorations=None）之后，
+       窗口本身完全透明，底色 / 圆角 / 细边框都画在这一层上 —— 与 WPF 宿主
+       （WindowStyle=None + AllowsTransparency）保持同一套外观。 -->
+  <Border x:Name="Shell"
+          CornerRadius="22"
+          BorderThickness="1"
+          BorderBrush="#28000000"
+          Background="#D8FFFFFF"
+          Padding="8"
+          ClipToBounds="True"
+          PointerPressed="Shell_PointerPressed"
+          PointerMoved="Shell_PointerMoved">
+    <Grid RowDefinitions="Auto,*">
+      <!-- ===== 顶栏：日期信息 + 视图切换 + 背景/透明度 ===== -->
+      <Border Grid.Row="0" Padding="10,6" BorderBrush="#22000000" BorderThickness="0,0,0,1">
+        <StackPanel Spacing="5">
+          <DockPanel LastChildFill="False">
+            <StackPanel DockPanel.Dock="Left" Orientation="Horizontal" Spacing="12" VerticalAlignment="Center">
+              <TextBlock Text="{Binding TodayDisplay}" FontSize="14" FontWeight="SemiBold" Foreground="#111827" />
+              <TextBlock Text="{Binding TodayTaskCount}" FontSize="12" Foreground="#6B7280" />
+              <TextBlock Text="{Binding ThisWeekTaskCount}" FontSize="12" Foreground="#6B7280" />
+            </StackPanel>
+            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
+              <Button Content="今天" Click="Today_Click" />
+              <Button Content="月视图" Click="MonthView_Click" />
+              <Button Content="周视图" Click="WeekView_Click" />
+              <Button Content="年视图" Click="YearView_Click" />
+              <Button Content="设置" Click="Settings_Click" />
+            </StackPanel>
+          </DockPanel>
+          <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+            <TextBlock Text="背景" FontSize="12" Foreground="#6B7280" VerticalAlignment="Center" />
+            <ComboBox x:Name="BackgroundModeBox" Width="112" FontSize="12" SelectionChanged="BackgroundMode_Changed">
+              <ComboBoxItem Content="毛玻璃" Tag="Glass" />
+              <ComboBoxItem Content="透明" Tag="Transparent" />
+              <ComboBoxItem Content="纯色" Tag="Solid" />
+              <ComboBoxItem Content="无背景" Tag="None" />
+              <ComboBoxItem Content="白雾玻璃" Tag="FrostedWhite" />
+              <ComboBoxItem Content="灰雾玻璃" Tag="FrostedGray" />
+              <ComboBoxItem Content="暗色磨砂" Tag="FrostedDark" />
+              <ComboBoxItem Content="蓝色亚克力" Tag="AcrylicBlue" />
+              <ComboBoxItem Content="薄荷玻璃" Tag="AcrylicMint" />
+              <ComboBoxItem Content="纸感浅白" Tag="PaperLight" />
+              <ComboBoxItem Content="石墨深色" Tag="Graphite" />
+            </ComboBox>
+            <TextBlock Text="透明度" FontSize="12" Foreground="#6B7280" VerticalAlignment="Center" Margin="8,0,0,0" />
+            <Slider x:Name="OpacitySlider" Width="96" Minimum="0.02" Maximum="1" VerticalAlignment="Center"
+                    ValueChanged="Opacity_Changed" />
           </StackPanel>
-          <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
-            <Button Content="今天" Click="Today_Click" />
-            <Button Content="月视图" Click="MonthView_Click" />
-            <Button Content="周视图" Click="WeekView_Click" />
-            <Button Content="年视图" Click="YearView_Click" />
-            <Button Content="设置" Click="Settings_Click" />
-          </StackPanel>
-        </DockPanel>
-        <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
-          <TextBlock Text="背景" FontSize="12" Foreground="#6B7280" VerticalAlignment="Center" />
-          <ComboBox x:Name="BackgroundModeBox" Width="112" FontSize="12" SelectionChanged="BackgroundMode_Changed">
-            <ComboBoxItem Content="毛玻璃" Tag="Glass" />
-            <ComboBoxItem Content="透明" Tag="Transparent" />
-            <ComboBoxItem Content="纯色" Tag="Solid" />
-            <ComboBoxItem Content="无背景" Tag="None" />
-            <ComboBoxItem Content="白雾玻璃" Tag="FrostedWhite" />
-            <ComboBoxItem Content="灰雾玻璃" Tag="FrostedGray" />
-            <ComboBoxItem Content="暗色磨砂" Tag="FrostedDark" />
-            <ComboBoxItem Content="蓝色亚克力" Tag="AcrylicBlue" />
-            <ComboBoxItem Content="薄荷玻璃" Tag="AcrylicMint" />
-            <ComboBoxItem Content="纸感浅白" Tag="PaperLight" />
-            <ComboBoxItem Content="石墨深色" Tag="Graphite" />
-          </ComboBox>
-          <TextBlock Text="透明度" FontSize="12" Foreground="#6B7280" VerticalAlignment="Center" Margin="8,0,0,0" />
-          <Slider x:Name="OpacitySlider" Width="96" Minimum="0.02" Maximum="1" VerticalAlignment="Center"
-                  ValueChanged="Opacity_Changed" />
         </StackPanel>
-      </StackPanel>
-    </Border>
+      </Border>
 
-    <!-- ===== 主体：左=月/周/年视图（按 ViewMode 切换），右=任务面板（三视图共享）===== -->
-    <Grid Grid.Row="1" ColumnDefinitions="*,216">
-      <Grid Grid.Column="0">
-      <!-- 月视图：连续月份时间轴 -->
-      <ScrollViewer IsVisible="{Binding Settings.ViewMode, Converter={StaticResource ViewModeEquals}, ConverterParameter=Month}"
-                    ScrollChanged="MonthScroll_ScrollChanged"
-                    VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-        <ItemsControl ItemsSource="{Binding TimelineMonths}" ItemTemplate="{StaticResource MonthBlockTemplate}" Margin="8" />
-      </ScrollViewer>
+      <!-- ===== 主体：左=月/周/年视图（按 ViewMode 切换），右=任务面板（三视图共享）===== -->
+      <Grid Grid.Row="1" ColumnDefinitions="*,216">
+        <Grid Grid.Column="0">
+        <!-- 月视图：连续月份时间轴 -->
+        <ScrollViewer IsVisible="{Binding Settings.ViewMode, Converter={StaticResource ViewModeEquals}, ConverterParameter=Month}"
+                      ScrollChanged="MonthScroll_ScrollChanged"
+                      VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+          <ItemsControl ItemsSource="{Binding TimelineMonths}" ItemTemplate="{StaticResource MonthBlockTemplate}" Margin="8" />
+        </ScrollViewer>
 
-      <!-- 周视图：星期标题 + 7 个日期格子 -->
-      <Grid IsVisible="{Binding Settings.ViewMode, Converter={StaticResource ViewModeEquals}, ConverterParameter=Week}"
-            RowDefinitions="Auto,*" Margin="8">
-        <UniformGrid Columns="7" Margin="1,0">
-          <TextBlock Text="日" HorizontalAlignment="Center" Foreground="#6B7280" FontSize="11" FontWeight="SemiBold" />
-          <TextBlock Text="一" HorizontalAlignment="Center" Foreground="#6B7280" FontSize="11" FontWeight="SemiBold" />
-          <TextBlock Text="二" HorizontalAlignment="Center" Foreground="#6B7280" FontSize="11" FontWeight="SemiBold" />
-          <TextBlock Text="三" HorizontalAlignment="Center" Foreground="#6B7280" FontSize="11" FontWeight="SemiBold" />
-          <TextBlock Text="四" HorizontalAlignment="Center" Foreground="#6B7280" FontSize="11" FontWeight="SemiBold" />
-          <TextBlock Text="五" HorizontalAlignment="Center" Foreground="#6B7280" FontSize="11" FontWeight="SemiBold" />
-          <TextBlock Text="六" HorizontalAlignment="Center" Foreground="#6B7280" FontSize="11" FontWeight="SemiBold" />
-        </UniformGrid>
-        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
-          <ItemsControl ItemsSource="{Binding VisibleDays}" ItemTemplate="{StaticResource DayCellTemplate}">
+        <!-- 周视图：星期标题 + 7 个日期格子 -->
+        <Grid IsVisible="{Binding Settings.ViewMode, Converter={StaticResource ViewModeEquals}, ConverterParameter=Week}"
+              RowDefinitions="Auto,*" Margin="8">
+          <UniformGrid Columns="7" Margin="1,0">
+            <TextBlock Text="日" HorizontalAlignment="Center" Foreground="#6B7280" FontSize="11" FontWeight="SemiBold" />
+            <TextBlock Text="一" HorizontalAlignment="Center" Foreground="#6B7280" FontSize="11" FontWeight="SemiBold" />
+            <TextBlock Text="二" HorizontalAlignment="Center" Foreground="#6B7280" FontSize="11" FontWeight="SemiBold" />
+            <TextBlock Text="三" HorizontalAlignment="Center" Foreground="#6B7280" FontSize="11" FontWeight="SemiBold" />
+            <TextBlock Text="四" HorizontalAlignment="Center" Foreground="#6B7280" FontSize="11" FontWeight="SemiBold" />
+            <TextBlock Text="五" HorizontalAlignment="Center" Foreground="#6B7280" FontSize="11" FontWeight="SemiBold" />
+            <TextBlock Text="六" HorizontalAlignment="Center" Foreground="#6B7280" FontSize="11" FontWeight="SemiBold" />
+          </UniformGrid>
+          <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+            <ItemsControl ItemsSource="{Binding VisibleDays}" ItemTemplate="{StaticResource DayCellTemplate}">
+              <ItemsControl.ItemsPanel>
+                <ItemsPanelTemplate>
+                  <UniformGrid Columns="7" />
+                </ItemsPanelTemplate>
+              </ItemsControl.ItemsPanel>
+            </ItemsControl>
+          </ScrollViewer>
+        </Grid>
+
+        <!-- 年视图：12 个月三列排布 -->
+        <ScrollViewer IsVisible="{Binding Settings.ViewMode, Converter={StaticResource ViewModeEquals}, ConverterParameter=Year}"
+                      VerticalScrollBarVisibility="Auto">
+          <ItemsControl ItemsSource="{Binding YearMonths}" ItemTemplate="{StaticResource YearMonthTemplate}" Margin="8">
             <ItemsControl.ItemsPanel>
               <ItemsPanelTemplate>
-                <UniformGrid Columns="7" />
+                <UniformGrid Columns="3" />
               </ItemsPanelTemplate>
             </ItemsControl.ItemsPanel>
           </ItemsControl>
         </ScrollViewer>
+        </Grid>
+        <!-- 右侧任务面板：今日任务 + 本周完成情况（月/周/年三视图共享同一份） -->
+        <ContentControl Grid.Column="1" Margin="0,8,8,8"
+                        Content="{Binding}"
+                        ContentTemplate="{StaticResource RightPanelTemplate}" />
       </Grid>
-
-      <!-- 年视图：12 个月三列排布 -->
-      <ScrollViewer IsVisible="{Binding Settings.ViewMode, Converter={StaticResource ViewModeEquals}, ConverterParameter=Year}"
-                    VerticalScrollBarVisibility="Auto">
-        <ItemsControl ItemsSource="{Binding YearMonths}" ItemTemplate="{StaticResource YearMonthTemplate}" Margin="8">
-          <ItemsControl.ItemsPanel>
-            <ItemsPanelTemplate>
-              <UniformGrid Columns="3" />
-            </ItemsPanelTemplate>
-          </ItemsControl.ItemsPanel>
-        </ItemsControl>
-      </ScrollViewer>
-      </Grid>
-      <!-- 右侧任务面板：今日任务 + 本周完成情况（月/周/年三视图共享同一份） -->
-      <ContentControl Grid.Column="1" Margin="0,8,8,8"
-                      Content="{Binding}"
-                      ContentTemplate="{StaticResource RightPanelTemplate}" />
     </Grid>
-  </Grid>
+  </Border>
 </Window>

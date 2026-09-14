@@ -1034,10 +1034,12 @@ public partial class MainWindow : Window
                 WindowTransparencyLevel.AcrylicBlur, WindowTransparencyLevel.Blur, WindowTransparencyLevel.Transparent
             },
             CalendarBackgroundMode.Transparent or CalendarBackgroundMode.None => new[] { WindowTransparencyLevel.Transparent },
-            _ => new[] { WindowTransparencyLevel.None },
+            // 窗口本身必须支持逐像素透明，圆角外沿才能透出桌面（与 WPF 宿主的 AllowsTransparency 对齐）。
+            _ => new[] { WindowTransparencyLevel.Transparent },
         };
 
-        Background = mode switch
+        // 底色画在外壳 Border 上而不是窗口上：窗口整块透明，圆角外沿才能透出桌面。
+        Shell.Background = mode switch
         {
             CalendarBackgroundMode.None => Brushes.Transparent,
             CalendarBackgroundMode.Transparent => Argb((byte)Math.Min((int)alpha, 150), 255, 255, 255),
@@ -1390,6 +1392,138 @@ public partial class MainWindow : Window
 
     private static bool IsLeftButton(PointerPressedEventArgs e, object? sender)
         => e.GetCurrentPoint(sender as Visual).Properties.IsLeftButtonPressed;
+
+    // ===== 无标题栏窗口的拖动 / 边缘缩放 =====
+    //
+    // 窗口用了 SystemDecorations=None（桌面挂件不该带系统标题栏），代价是系统不再提供
+    // 「拖标题栏移动窗口」和「拖边缘缩放」。这里在外壳上自己补回来，规则与 WPF 宿主一致：
+    //   · 锁定窗口（LockWindow）时两者都禁用；
+    //   · 落在按钮 / 输入框 / 下拉框 / 滑块 / 滚动条、或日历条目上时不拖窗口（否则点它们会变成拖窗口）；
+    //   · 距边缘 8px 内开始缩放，其余位置开始移动。
+
+    /// <summary>窗口边缘的命中宽度（与 WPF 宿主一致）。</summary>
+    private const double ResizeEdgeSize = 8;
+
+    private void Shell_PointerPressed(object? sender, PointerPressedEventArgs e)
+    {
+        if (_config.LockWindow || !e.GetCurrentPoint(this).Properties.IsLeftButtonPressed)
+        {
+            return;
+        }
+
+        if (IsInteractiveDragSource(e.Source))
+        {
+            return;
+        }
+
+        var edge = GetEdgeAtPosition(e.GetPosition(this));
+        if (edge is not null)
+        {
+            BeginResizeDrag(edge.Value, e);
+            e.Handled = true;
+            return;
+        }
+
+        try
+        {
+            BeginMoveDrag(e);
+            e.Handled = true;
+        }
+        catch (InvalidOperationException)
+        {
+            // 桌面嵌入 / 子窗口等状态下系统可能中断拖动，忽略即可（与 WPF 宿主同样兜底）。
+        }
+    }
+
+    private void Shell_PointerMoved(object? sender, PointerEventArgs e)
+    {
+        Shell.Cursor = _config.LockWindow
+            ? ArrowCursor
+            : GetEdgeAtPosition(e.GetPosition(this)) switch
+            {
+                WindowEdge.West or WindowEdge.East => new Cursor(StandardCursorType.SizeWestEast),
+                WindowEdge.North or WindowEdge.South => new Cursor(StandardCursorType.SizeNorthSouth),
+                WindowEdge.NorthWest or WindowEdge.SouthEast => new Cursor(StandardCursorType.TopLeftCorner),
+                WindowEdge.NorthEast or WindowEdge.SouthWest => new Cursor(StandardCursorType.TopRightCorner),
+                _ => ArrowCursor,
+            };
+    }
+
+    private static readonly Cursor ArrowCursor = new(StandardCursorType.Arrow);
+
+    /// <summary>光标位置命中的窗口边缘（用于缩放）；不在边缘上时返回 null。</summary>
+    private WindowEdge? GetEdgeAtPosition(Point position)
+    {
+        var left = position.X < ResizeEdgeSize;
+        var right = position.X > ClientSize.Width - ResizeEdgeSize;
+        var top = position.Y < ResizeEdgeSize;
+        var bottom = position.Y > ClientSize.Height - ResizeEdgeSize;
+
+        if (top && left)
+        {
+            return WindowEdge.NorthWest;
+        }
+
+        if (top && right)
+        {
+            return WindowEdge.NorthEast;
+        }
+
+        if (bottom && left)
+        {
+            return WindowEdge.SouthWest;
+        }
+
+        if (bottom && right)
+        {
+            return WindowEdge.SouthEast;
+        }
+
+        if (left)
+        {
+            return WindowEdge.West;
+        }
+
+        if (right)
+        {
+            return WindowEdge.East;
+        }
+
+        if (top)
+        {
+            return WindowEdge.North;
+        }
+
+        return bottom ? WindowEdge.South : null;
+    }
+
+    /// <summary>
+    /// 事件源是否落在「可交互的东西」上：按钮 / 输入框 / 下拉框 / 滑块 / 滚动条，
+    /// 或日历的格子、任务条目、月份卡片。这些位置不能触发窗口拖动。
+    /// </summary>
+    private static bool IsInteractiveDragSource(object? source)
+    {
+        if (source is not Visual visual)
+        {
+            return false;
+        }
+
+        foreach (var ancestor in visual.GetSelfAndVisualAncestors())
+        {
+            if (ancestor is Button or ToggleButton or TextBox or ComboBox or Slider or ScrollBar or Thumb
+                or ListBoxItem or MenuItem or TabItem or CalendarDatePicker)
+            {
+                return true;
+            }
+
+            if (ancestor is Control { DataContext: DayCellViewModel or TaskItemViewModel or MonthSummaryViewModel })
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
 
     // ===== 右侧面板：批量操作（破坏性，统一二次确认）=====
 
