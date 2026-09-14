@@ -77,9 +77,10 @@ public partial class MainWindow : Window
     // 判断"用户是否正在操作本窗口"一律以光标命中的窗口为准（见 IsCursorOverWindow），
     // 不用 MouseEnter/MouseLeave 标记——后者在被遮挡/失焦时可能不触发，会让窗口永远浮在顶层。
     //
-    // 间隔压到 100ms：用户从 mica 移到 Edge 后，下一个 tick 就沉底；体感"基本无缝"。
-    // 每秒 10 次只跑一次 WindowFromPoint + 一次 SetWindowPos，CPU 几乎可忽略。
-    private readonly DispatcherTimer _embedWatchdog = new() { Interval = TimeSpan.FromMilliseconds(33) };
+    // 间隔 200ms：用户从本程序移到其他窗口后，下一个 tick 就把自己压回底部，体感"基本无缝"。
+    // 早期版本压到 33ms（30 次/秒），每个 tick 都要走两次窗口样式/Z 序系统调用，属于纯浪费；
+    // 5 次/秒已经足够跟手，系统调用量降到 1/6。
+    private readonly DispatcherTimer _embedWatchdog = new() { Interval = TimeSpan.FromMilliseconds(200) };
 
     // SetWindowPos 常用 flag 组合
     private const uint SwpNomove = 0x0002;
@@ -102,8 +103,8 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
-        FileLog.Write($"[STARTUP] MainWindow ctor - v3.2.2 - exe={Environment.ProcessPath ?? "unknown"}");
-        Title = "MicaAgenda v3.2.2";
+        FileLog.Write($"[STARTUP] MainWindow ctor - v3.2.3 - exe={Environment.ProcessPath ?? "unknown"}");
+        Title = "MicaAgenda v3.2.3";
 
         // 窗口初始化前同步加载配置，确保桌面嵌入/锁定在首帧即生效
         _config = _configStore.Load();

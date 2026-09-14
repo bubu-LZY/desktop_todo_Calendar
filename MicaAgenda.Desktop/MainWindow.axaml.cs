@@ -199,7 +199,10 @@ public partial class MainWindow : Window
         if (!_embedWatchdogHooked)
         {
             _embedWatchdogHooked = true;
-            _embedWatchdog = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(33) };
+            // 看门狗只负责「窗口被系统抬到上面后重新压底」，33ms（30 次/秒）属于过度轮询：
+            // 每个 tick 都要走两次 SetWindowPos / SetWindowLong 系统调用，白白占用 UI 线程。
+            // 200ms（5 次/秒）足以在一瞬间纠正层级，系统调用量降到 1/6。
+            _embedWatchdog = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(200) };
             _embedWatchdog.Tick += (_, _) =>
             {
                 try

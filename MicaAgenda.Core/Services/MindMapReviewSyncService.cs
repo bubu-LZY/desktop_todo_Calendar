@@ -254,8 +254,13 @@ public sealed class MindMapReviewSyncService : IDisposable
     {
         try
         {
-            var url = $"{baseUrl}/api/desk-calendar/review-plan?token={Uri.EscapeDataString(token)}";
-            using var resp = await _http.GetAsync(url);
+            // Token 走 Authorization 请求头，而不是 URL 查询串：URL 会留在浏览器历史、
+            // Referer 与访问日志里，一旦泄露等于把这条同步通道交给旁观者。
+            // 对端（my-mindmap agent）的 /api/status 与 /api/desk-calendar/* 都同时接受
+            // Authorization: Bearer 与旧的 ?token=，所以对端不必同步升级。
+            using var request = new HttpRequestMessage(HttpMethod.Get, $"{baseUrl}/api/desk-calendar/review-plan");
+            request.Headers.TryAddWithoutValidation("Authorization", $"Bearer {token}");
+            using var resp = await _http.SendAsync(request);
             if (!resp.IsSuccessStatusCode)
             {
                 return (null, DescribeHttpFailure(resp.StatusCode));
@@ -323,17 +328,21 @@ public sealed class MindMapReviewSyncService : IDisposable
     {
         try
         {
+            // Token 只放请求头，不进请求体：请求体常被日志/抓包完整打印，而请求头可以只留摘要。
             var payload = new
             {
-                token,
                 title = task.Title,
                 date = task.Date.ToString("yyyy-MM-dd"),
                 isCompleted = task.IsCompleted,
                 updatedAt = task.StatusTimestamp
             };
             var json = JsonSerializer.Serialize(payload);
-            using var content = new StringContent(json, Encoding.UTF8, "application/json");
-            using var resp = await _http.PostAsync($"{baseUrl}/api/desk-calendar/status", content);
+            using var request = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/api/desk-calendar/status")
+            {
+                Content = new StringContent(json, Encoding.UTF8, "application/json")
+            };
+            request.Headers.TryAddWithoutValidation("Authorization", $"Bearer {token}");
+            using var resp = await _http.SendAsync(request);
             return resp.IsSuccessStatusCode;
         }
         catch

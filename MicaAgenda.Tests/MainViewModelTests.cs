@@ -551,6 +551,46 @@ public sealed class MainViewModelTests
     }
 
     [Fact]
+    public void RefreshClock_DoesNotRebuildCellsWithinSameDay()
+    {
+        var now = new DateTimeOffset(2026, 5, 10, 9, 0, 0, TimeSpan.Zero);
+        var viewModel = new MainViewModel(new CalendarData(), () => now);
+
+        // 年视图：12 个月共 365 个格子，每分钟无条件重建一次纯属浪费 CPU 与内存
+        viewModel.SetViewMode(CalendarViewMode.Year);
+        var yearCell = viewModel.YearMonths[0].Days[0];
+
+        now = now.AddMinutes(1);
+        viewModel.RefreshClock();
+
+        Assert.Same(yearCell, viewModel.YearMonths[0].Days[0]);
+
+        // 周视图同理
+        viewModel.SetViewMode(CalendarViewMode.Week);
+        var weekCell = viewModel.VisibleDays[0];
+
+        now = now.AddMinutes(1);
+        viewModel.RefreshClock();
+
+        Assert.Same(weekCell, viewModel.VisibleDays[0]);
+
+        // 跨天必须重建：今日高亮、日期行、"未完成 N 天"都要跟着走
+        now = now.AddDays(1);
+        viewModel.RefreshClock();
+
+        Assert.Equal(new DateOnly(2026, 5, 11), viewModel.Today);
+        Assert.NotSame(weekCell, viewModel.VisibleDays[0]);
+
+        viewModel.SetViewMode(CalendarViewMode.Year);
+        var nextYearCell = viewModel.YearMonths[0].Days[0];
+
+        now = now.AddDays(1);
+        viewModel.RefreshClock();
+
+        Assert.NotSame(nextYearCell, viewModel.YearMonths[0].Days[0]);
+    }
+
+    [Fact]
     public void DeleteTask_RemovesFromTodayTasksAndCalendarCells()
     {
         var now = new DateTimeOffset(2026, 5, 10, 9, 0, 0, TimeSpan.Zero);

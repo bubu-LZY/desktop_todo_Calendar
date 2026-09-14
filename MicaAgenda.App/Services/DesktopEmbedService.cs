@@ -51,16 +51,15 @@ public static class DesktopEmbedService
         }
 
         var exStyle = GetWindowLong(handle, GwlExstyle);
-        if (noActivate)
+        var desired = noActivate ? (exStyle | WsExNoactivate) : (exStyle & ~WsExNoactivate);
+        if (desired == exStyle)
         {
-            exStyle |= WsExNoactivate;
-        }
-        else
-        {
-            exStyle &= ~WsExNoactivate;
+            // 已经是目标样式就不重复写：SetWindowLong 每次都会触发一次窗口风格变更通知，
+            // 而看门狗每个 tick 都会调到这里，反复写同一个值纯属浪费（还可能引起重绘）。
+            return;
         }
 
-        SetWindowLong(handle, GwlExstyle, exStyle);
+        SetWindowLong(handle, GwlExstyle, desired);
     }
 
     /// <summary>

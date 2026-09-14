@@ -777,13 +777,21 @@ public sealed class MainViewModel : ViewModelBase
             return;
         }
 
-        if (Settings.ViewMode == CalendarViewMode.Month)
+        // 日历内容以「天」为粒度：任务、节假日、"今日"高亮、逾期天数在一天之内都不会变，
+        // 所以没跨天时只更新时钟文本与派生文本，不重建格子。
+        // 早期实现是每分钟无条件重建一次：月视图要遍历整条时间轴的每个格子并重绑任务，
+        // 年视图更是一次性重建 12 个月共 365 个格子（还得清空再逐个 Add 进集合），
+        // 每次都会引发一整轮 UI 刷新——而结果与上一分钟完全相同。
+        if (dayChanged)
         {
-            RefreshTimelineTasks();
-        }
-        else
-        {
-            RebuildCalendar();
+            if (Settings.ViewMode == CalendarViewMode.Month)
+            {
+                RefreshTimelineTasks();
+            }
+            else
+            {
+                RebuildCalendar();
+            }
         }
 
         // 让"未完成 N 天 / 逾期 N 天"这类与时间相关的文本跟着走。
