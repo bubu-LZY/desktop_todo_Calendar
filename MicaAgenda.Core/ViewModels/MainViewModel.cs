@@ -1054,7 +1054,7 @@ public sealed class MainViewModel : ViewModelBase
     /// <param name="title">新标题；空白串视为"不改标题"（编辑框被清空时不至于把任务名抹掉）。</param>
     /// <param name="time">新任务时刻；null / 09:00 按"没选"处理（= 当天 9:00）。</param>
     /// <param name="reminderLeadMinutes">新提醒档位；null = 不提醒，0 = 到时提醒。</param>
-    /// <returns>真的改到东西了返回 true（用于决定要不要提示"没有变化"）。</returns>
+    /// <returns>任务存在并已写回返回 true；找不到（刚被删掉）返回 false。</returns>
     public bool UpdateTask(Guid taskId, string title, TimeOnly? time, int? reminderLeadMinutes)
     {
         lock (_syncRoot)
