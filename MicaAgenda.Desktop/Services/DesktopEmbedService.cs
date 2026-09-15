@@ -16,6 +16,9 @@ public static class DesktopEmbedService
 {
     public static bool IsWindows => RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
 
+    /// <summary>AllowSetForegroundWindow 的 ASFW_ANY：把前台许可发给任意进程。</summary>
+    private const int AsfwAny = -1;
+
     private const int GwlExstyle = -20;
     private const int GwlStyle = -16;
     private const int WsExToolwindow = 0x00000080;
@@ -181,6 +184,29 @@ public static class DesktopEmbedService
         }
     }
 
+    /// <summary>
+    /// 把"允许抢占前台"的许可发给别的进程（ASFW_ANY）。
+    ///
+    /// 用在「重复启动被拦下」的时候：刚被拉起的那一份握着前台许可，但它马上要退出；
+    /// 先把这个许可交给已经在跑的那一份，它才有资格把窗口带到前台来（否则只会闪一下任务栏图标）。
+    /// </summary>
+    public static void AllowForegroundHandoff()
+    {
+        if (!IsWindows)
+        {
+            return;
+        }
+
+        try
+        {
+            AllowSetForegroundWindow(AsfwAny);
+        }
+        catch
+        {
+            // 许可给不出去无所谓：抢不到前台只是少一步贴心，不影响拦截重复启动。
+        }
+    }
+
     /// <summary>看门狗用的轻量组合：每个 tick 强制压底，防止窗口因激活浮到普通窗口之上。</summary>
     public static void EnsureEmbedded(IntPtr handle)
     {
@@ -210,6 +236,9 @@ public static class DesktopEmbedService
 
     [DllImport("user32.dll", EntryPoint = "GetWindowThreadProcessId", SetLastError = true)]
     private static extern uint GetWindowThreadProcessId(IntPtr hWnd, IntPtr lpdwProcessId);
+
+    [DllImport("user32.dll", EntryPoint = "AllowSetForegroundWindow")]
+    private static extern bool AllowSetForegroundWindow(int dwProcessId);
 
     [DllImport("user32.dll", EntryPoint = "AttachThreadInput", SetLastError = true)]
     private static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);

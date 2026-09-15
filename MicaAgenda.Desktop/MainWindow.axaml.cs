@@ -204,6 +204,31 @@ public partial class MainWindow : Window
         return _nativeHandle;
     }
 
+    /// <summary>
+    /// 又有人来启动程序了：把已经在跑的这个窗口叫到前面来，别让用户以为点了没反应。
+    ///
+    /// 先走一遍 Avalonia 的常规激活，再补一次带「借前台锁」的 RequestForeground ——
+    /// 嵌入桌面时窗口本来就压在底下，单靠 Activate 通常抢不到前台。
+    /// </summary>
+    internal void BringToFront()
+    {
+        try
+        {
+            Activate();
+
+            var hwnd = NativeHandle();
+            if (hwnd != IntPtr.Zero)
+            {
+                DesktopEmbedService.RequestForeground(hwnd);
+            }
+        }
+        catch (Exception ex)
+        {
+            // 抢不到前台只是少了点贴心，不影响主流程。
+            AppLog.Error(ex, "MainWindow.BringToFront");
+        }
+    }
+
     /// <summary>任何模式下都彻底去掉右上角关闭按钮（阻断 + 隐藏）。</summary>
     private void ApplyNoCloseButton()
     {
@@ -637,27 +662,35 @@ public partial class MainWindow : Window
 
         try
         {
-            // 开机自启动：把注册表里的启动项重新指向「当前这份 exe」。装了新版 / 换了安装目录之后，
-            // 旧版留下的启动项会指向已经不存在的旧宿主 exe，表现就是「勾了开机自启动但开机后没反应」；
-            // SetEnabled 同时会清掉安装包写的旧值名，避免同一个程序开机被拉起两次。
-            // 只在用户开着自启时对齐，不动「设置里没开自启」的情况，免得把安装包勾的自启悄悄删掉。
-            if (_config.AutoStart)
+            var taskRegistered = false;
+            if (_config.HighPriorityStartup)
             {
+                HighPriorityStartupService.ApplyProcessPriority(true);
+
+                var result = EnableHighPriorityTask();
+                taskRegistered = result.TaskRegistered;
+                if (!taskRegistered)
+                {
+                    AppLog.Error(null, "[STARTUP] 高优先级开机任务未登记：" + result.Message);
+                }
+            }
+
+            // 开机启动只保留一条路径（见 StartupPlan）：计划任务已经包办开机启动时，
+            // 注册表那条必须收掉 —— 旧版本两条都写，用户机器上留下来的结果就是
+            // 「一开机冒出两个程序」。这里顺手替老用户修掉，不用再进一次设置。
+            if (StartupPlan.ShouldWriteRunKey(_config.AutoStart, taskRegistered))
+            {
+                // 把注册表里的启动项重新指向「当前这份 exe」。装了新版 / 换了安装目录之后，
+                // 旧版留下的启动项会指向已经不存在的旧宿主 exe，表现就是「勾了开机自启动但开机后没反应」；
+                // SetEnabled 同时会清掉安装包写的旧值名。
                 AutoStartService.SetEnabled(true);
             }
-
-            if (!_config.HighPriorityStartup)
+            else if (taskRegistered)
             {
-                return;
+                AutoStartService.SetEnabled(false);
             }
 
-            HighPriorityStartupService.ApplyProcessPriority(true);
-
-            var result = EnableHighPriorityTask();
-            if (!result.TaskRegistered)
-            {
-                AppLog.Error(null, "[STARTUP] 高优先级开机任务未登记：" + result.Message);
-            }
+            // 其余情况（没开自启、也没有计划任务）不动注册表：那多半是安装包勾的自启，不该被悄悄删掉。
         }
         catch (Exception ex)
         {

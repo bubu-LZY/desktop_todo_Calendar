@@ -4,6 +4,7 @@ using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Markup.Xaml;
+using Avalonia.Threading;
 using MicaAgenda.App.Helpers;
 
 namespace MicaAgenda.Desktop;
@@ -28,6 +29,16 @@ public partial class App : Application
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
         {
             desktop.MainWindow = new MainWindow();
+
+            // 又有人来启动程序时，把已经在跑的这个窗口叫到前面来。
+            // 不然用户双击图标只会看到"什么都没发生"，以为程序坏了。
+            SingleInstanceGuard.Current?.ListenForActivation(() => Dispatcher.UIThread.Post(() =>
+            {
+                if (desktop.MainWindow is MainWindow window)
+                {
+                    window.BringToFront();
+                }
+            }));
         }
 
         base.OnFrameworkInitializationCompleted();

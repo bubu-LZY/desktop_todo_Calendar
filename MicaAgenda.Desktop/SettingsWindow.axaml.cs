@@ -705,16 +705,8 @@ public partial class SettingsWindow : Window
             return notes;
         }
 
-        try
-        {
-            AutoStartService.SetEnabled(autoStart);
-        }
-        catch (Exception ex)
-        {
-            AppLog.Error(ex, "AutoStartService");
-            notes.Add("写入开机自启注册表项失败：" + ex.Message);
-        }
-
+        // 先办「高优先级开机任务」：它登记成功的话就已经包办开机启动了，
+        // 决定了下面注册表那条到底写不写（两条都在 = 开机被拉起两个实例）。
         try
         {
             if (highPriority)
@@ -749,7 +741,21 @@ public partial class SettingsWindow : Window
             notes.Add("设置高优先级启动失败：" + ex.Message);
         }
 
-        await RefreshHighPriorityStatusAsync();
+        var taskRegistered = await Task.Run(HighPriorityStartupService.IsEnabled);
+
+        // 开机启动只留一条路径（见 StartupPlan）：计划任务已经登记时，
+        // 注册表那条既不再写、也要把旧的清掉 —— 留着就会在登录时被拉起两个实例。
+        try
+        {
+            AutoStartService.SetEnabled(StartupPlan.ShouldWriteRunKey(autoStart, taskRegistered));
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error(ex, "AutoStartService");
+            notes.Add("写入开机自启注册表项失败：" + ex.Message);
+        }
+
+        await RefreshHighPriorityStatusAsync(taskRegistered);
         return notes;
     }
 
@@ -767,7 +773,7 @@ public partial class SettingsWindow : Window
     /// 显示开机任务的真实状态：直接查询任务计划程序，而不是读配置里的「愿望值」。
     /// 查询要起一个 schtasks 进程，放到线程池里做，避免拖慢设置窗口打开。
     /// </summary>
-    private async Task RefreshHighPriorityStatusAsync()
+    private async Task RefreshHighPriorityStatusAsync(bool? known = null)
     {
         if (!OperatingSystem.IsWindows())
         {
@@ -776,7 +782,8 @@ public partial class SettingsWindow : Window
 
         try
         {
-            var registered = await Task.Run(HighPriorityStartupService.IsEnabled);
+            // 刚查过的就不要再起一次 schtasks 了（查询要拉起一个进程）。
+            var registered = known ?? await Task.Run(HighPriorityStartupService.IsEnabled);
             HighPriorityStatus.Text = registered
                 ? "开机任务：已登记（开机后会以高优先级启动）"
                 : "开机任务：未登记（勾选并保存后会请求管理员授权登记）";

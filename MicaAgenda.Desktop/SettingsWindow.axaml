@@ -240,6 +240,8 @@
                          Text="正在检查开机任务状态…" />
               <TextBlock Classes="hint" Margin="0,2,0,0"
                          Text="「开机自启动」不需要管理员权限；「高优先级启动」会登记一个开机计划任务，首次设置会弹出 UAC 授权框。" />
+              <TextBlock Classes="hint" Margin="0,2,0,0"
+                         Text="两条只保留一条：高优先级任务登记成功后，「开机自启动」的注册表项会自动让位——两条同时存在会让开机时启动两个程序。" />
             </StackPanel>
           </StackPanel>
         </Border>
