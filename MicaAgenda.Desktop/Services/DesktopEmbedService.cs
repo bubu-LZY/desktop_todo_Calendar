@@ -21,6 +21,7 @@ public static class DesktopEmbedService
 
     private const int GwlExstyle = -20;
     private const int GwlStyle = -16;
+    private const int GwHwndnext = 0x00000002;
     private const int WsExToolwindow = 0x00000080;
     private const int WsExAppwindow = 0x00040000;
     private const int WsExNoactivate = 0x08000000;
@@ -30,7 +31,6 @@ public static class DesktopEmbedService
     private const uint SwpNoactivate = 0x0010;
     private const uint SwpNozorder = 0x0004;
     private const uint SwpFramechanged = 0x0020;
-    private const uint SwpShowwindow = 0x0040;
     private static readonly IntPtr HwndBottom = new(1);
 
     /// <summary>
@@ -86,6 +86,15 @@ public static class DesktopEmbedService
         }
 
         SetNoActivateStyle(handle, true);
+
+        // 已在最底层就不必再 SetWindowPos：看门狗每个 tick 都会调到这，反复压底（尤其带
+        // SWP_SHOWWINDOW）会强制分层（透明）窗口整块重绘，在 Win10 上表现为频繁闪烁。
+        // GW_HWNDNEXT 返回空即说明它下面已经没有别的窗口了。
+        if (GetWindow(handle, GwHwndnext) == IntPtr.Zero)
+        {
+            return;
+        }
+
         SetWindowPos(
             handle,
             HwndBottom,
@@ -93,7 +102,7 @@ public static class DesktopEmbedService
             0,
             0,
             0,
-            SwpNomove | SwpNosize | SwpNoactivate | SwpShowwindow);
+            SwpNomove | SwpNosize | SwpNoactivate);
     }
 
     /// <summary>
@@ -224,6 +233,9 @@ public static class DesktopEmbedService
 
     [DllImport("user32.dll", EntryPoint = "GetWindowLong", SetLastError = true)]
     private static extern int GetWindowLong(IntPtr hWnd, int nIndex);
+
+    [DllImport("user32.dll", EntryPoint = "GetWindow", SetLastError = true)]
+    private static extern IntPtr GetWindow(IntPtr hWnd, int uCmd);
 
     [DllImport("user32.dll", EntryPoint = "SetWindowLong", SetLastError = true)]
     private static extern int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);

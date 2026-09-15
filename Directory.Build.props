@@ -2,6 +2,6 @@
   <!-- 单一版本号来源：应用标题 / 关于页 / 打包脚本从这里派生，避免各处漂移。
        CI 可用 /p:Version=... 覆盖。 -->
   <PropertyGroup>
-    <Version>4.4.2</Version>
+    <Version>4.4.3</Version>
   </PropertyGroup>
 </Project>

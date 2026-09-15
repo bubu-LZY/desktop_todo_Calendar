@@ -129,10 +129,6 @@ public partial class MainWindow : Window
         _saveTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(800) };
         _saveTimer.Tick += (_, _) =>
         {
-            // 顺手确认窗口外观没被宿主/系统改回去（"×"自己回来、嵌入失效）。
-            // 幂等：样式已是目标值时不做任何写入，代价只有一两次 GetWindowLong。
-            ReinforceWindowChrome();
-
             if (_viewModel?.IsDirty == true)
             {
                 _ = SaveAsync();
@@ -298,9 +294,14 @@ public partial class MainWindow : Window
         if (!_embedWatchdogHooked)
         {
             _embedWatchdogHooked = true;
-            // 33ms（30 次/秒）属于过度轮询：每个 tick 都要走两次窗口样式 / Z 序系统调用，
-            // 白白占用 UI 线程。200ms（5 次/秒）足以在一瞬间纠正，系统调用量降到 1/6。
-            _embedWatchdog = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(200) };
+            // 嵌入桌面模式需要高频压底 + 文本输入宽限期的 200ms 自愈；非嵌入模式只需偶尔把
+            // 偶发的「× 按钮自己回来」纠正一下，没必要 5 次/秒空转。之前非嵌入也以 200ms 轮询，
+            // 且每个 tick 都走窗口样式 / Z 序系统调用，与无边框透明分层窗口在 Win10 上的重绘叠加，
+            // 放大了整窗闪烁。
+            var interval = _config.EmbedDesktop
+                ? TimeSpan.FromMilliseconds(200)
+                : TimeSpan.FromMilliseconds(3000);
+            _embedWatchdog = new DispatcherTimer { Interval = interval };
             _embedWatchdog.Tick += (_, _) =>
             {
                 try
