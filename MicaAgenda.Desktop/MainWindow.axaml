@@ -732,20 +732,14 @@
           </StackPanel>
         </Border>
 
-        <!-- ===== 主体：左=月/周/年视图（按 ViewMode 切换），右=任务面板（三视图共享）===== -->
-        <Grid x:Name="NormalViewHost" Grid.Row="1" ColumnDefinitions="*,216">
-          <Grid Grid.Column="0">
-          <!-- 月视图：连续月份时间轴 -->
-          <ScrollViewer IsVisible="{Binding IsMonthView}"
-                        ScrollChanged="MonthScroll_ScrollChanged"
-                        VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-            <ItemsControl ItemsSource="{Binding TimelineMonths}" ItemTemplate="{StaticResource MonthBlockTemplate}" Margin="8" />
-          </ScrollViewer>
+        <!-- ===== 主体：按 ViewMode 切换 =====
+             月 / 年视图：左侧日历 + 右侧任务面板（两者共用同一份面板实例）；
+             周视图：顶部 7 个日期格子 + 下方任务面板（与老版本一致，面板占满剩余高度）。 -->
+        <Grid x:Name="NormalViewHost" Grid.Row="1">
 
-          <!-- 周视图：星期标题 + 7 个日期格子 -->
-          <Grid IsVisible="{Binding IsWeekView}"
-                RowDefinitions="Auto,*" Margin="8">
-            <UniformGrid Columns="7" Margin="1,0">
+          <!-- 周视图：星期标题 + 7 个日期格子 + 下方任务面板 -->
+          <Grid IsVisible="{Binding IsWeekView}" RowDefinitions="Auto,Auto,*" Margin="8">
+            <UniformGrid Grid.Row="0" Columns="7" Margin="1,0">
               <TextBlock Text="日" HorizontalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" FontSize="11" FontWeight="SemiBold" />
               <TextBlock Text="一" HorizontalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" FontSize="11" FontWeight="SemiBold" />
               <TextBlock Text="二" HorizontalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" FontSize="11" FontWeight="SemiBold" />
@@ -754,16 +748,30 @@
               <TextBlock Text="五" HorizontalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" FontSize="11" FontWeight="SemiBold" />
               <TextBlock Text="六" HorizontalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" FontSize="11" FontWeight="SemiBold" />
             </UniformGrid>
-            <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
-              <ItemsControl ItemsSource="{Binding VisibleDays}" ItemTemplate="{StaticResource DayCellTemplate}">
-                <ItemsControl.ItemsPanel>
-                  <ItemsPanelTemplate>
-                    <UniformGrid Columns="7" />
-                  </ItemsPanelTemplate>
-                </ItemsControl.ItemsPanel>
-              </ItemsControl>
-            </ScrollViewer>
+            <ItemsControl Grid.Row="1" ItemsSource="{Binding VisibleDays}" ItemTemplate="{StaticResource DayCellTemplate}">
+              <ItemsControl.ItemsPanel>
+                <ItemsPanelTemplate>
+                  <UniformGrid Columns="7" />
+                </ItemsPanelTemplate>
+              </ItemsControl.ItemsPanel>
+            </ItemsControl>
+            <!-- 占满剩余高度：拉伸窗口时这块跟着变大。
+                 不设 MinHeight —— 窗口偏矮时让面板自己收窄（内部有滚动条），
+                 免得撑破窗口底部把「已完成」那一段切掉。 -->
+            <ContentControl Grid.Row="2" Margin="0,8,0,0"
+                            Content="{Binding}"
+                            ContentTemplate="{StaticResource RightPanelTemplate}" />
           </Grid>
+
+          <!-- 月视图 / 年视图：左侧日历 + 右侧任务面板 -->
+          <Grid IsVisible="{Binding IsMonthOrYearView}" ColumnDefinitions="*,216">
+          <Grid Grid.Column="0">
+          <!-- 月视图：连续月份时间轴 -->
+          <ScrollViewer IsVisible="{Binding IsMonthView}"
+                        ScrollChanged="MonthScroll_ScrollChanged"
+                        VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+            <ItemsControl ItemsSource="{Binding TimelineMonths}" ItemTemplate="{StaticResource MonthBlockTemplate}" Margin="8" />
+          </ScrollViewer>
 
           <!-- 年视图：12 个月三列排布 -->
           <ScrollViewer IsVisible="{Binding IsYearView}"
@@ -777,10 +785,11 @@
             </ItemsControl>
           </ScrollViewer>
           </Grid>
-          <!-- 右侧任务面板：今日任务 + 本周完成情况（月/周/年三视图共享同一份） -->
+          <!-- 月 / 年视图的右侧任务面板（两者共用同一份；周视图用的是自己那份，在下面） -->
           <ContentControl Grid.Column="1" Margin="0,8,8,8"
                           Content="{Binding}"
                           ContentTemplate="{StaticResource RightPanelTemplate}" />
+          </Grid>
         </Grid>
 
         <!-- ===== 窄窗视图：窗口窄到放不下日历格子时，整个主体只剩「今日任务」这一块 =====

@@ -180,6 +180,7 @@ public sealed class MainViewModelTests
         Assert.True(viewModel.IsMonthView);
         Assert.False(viewModel.IsWeekView);
         Assert.False(viewModel.IsYearView);
+        Assert.True(viewModel.IsMonthOrYearView);
 
         var notified = new List<string?>();
         viewModel.PropertyChanged += (_, e) => notified.Add(e.PropertyName);
@@ -191,12 +192,18 @@ public sealed class MainViewModelTests
         Assert.False(viewModel.IsYearView);
         Assert.Contains(nameof(MainViewModel.IsWeekView), notified);
 
+        // 周视图的任务面板在日期格子下面，用的是另一套布局：
+        // 「左日历 + 右面板」那一块必须整块收起，否则右侧面板会从周视图底下透出来。
+        Assert.False(viewModel.IsMonthOrYearView);
+        Assert.Contains(nameof(MainViewModel.IsMonthOrYearView), notified);
+
         viewModel.SetViewMode(CalendarViewMode.Year);
 
         Assert.False(viewModel.IsMonthView);
         Assert.False(viewModel.IsWeekView);
         Assert.True(viewModel.IsYearView);
         Assert.Contains(nameof(MainViewModel.IsYearView), notified);
+        Assert.True(viewModel.IsMonthOrYearView);
 
         viewModel.SetViewMode(CalendarViewMode.Month);
 
@@ -204,6 +211,7 @@ public sealed class MainViewModelTests
         Assert.False(viewModel.IsWeekView);
         Assert.False(viewModel.IsYearView);
         Assert.Contains(nameof(MainViewModel.IsMonthView), notified);
+        Assert.True(viewModel.IsMonthOrYearView);
     }
 
     [Fact]

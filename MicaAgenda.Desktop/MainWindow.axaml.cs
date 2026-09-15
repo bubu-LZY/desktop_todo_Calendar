@@ -1538,6 +1538,15 @@ public partial class MainWindow : Window
 
     private static IBrush Argb(byte a, byte r, byte g, byte b) => new SolidColorBrush(Color.FromArgb(a, r, g, b));
 
+    /// <summary>
+    /// 周视图窗口的高度下限。
+    ///
+    /// 周视图是竖排的：顶部 7 个日期格子 + 下方任务面板。窗口太矮的话面板只剩一条缝，
+    /// 看起来就像"任务面板没了"。所以切到周视图时给个下限，装不下就自动长高 ——
+    /// 用户之后照旧可以拖右下角随便改，改完会被记下来。
+    /// </summary>
+    private const double WeekMinHeight = 500;
+
     private WindowBounds GetBoundsForView(CalendarViewMode mode)
     {
         if (_viewModel is null)
@@ -1555,7 +1564,11 @@ public partial class MainWindow : Window
             _ => fallback
         };
 
-        return new WindowBounds(fallback.Left, fallback.Top, sizeSource.Width, sizeSource.Height);
+        var height = mode == CalendarViewMode.Week
+            ? Math.Max(sizeSource.Height, WeekMinHeight)
+            : sizeSource.Height;
+
+        return new WindowBounds(fallback.Left, fallback.Top, sizeSource.Width, height);
     }
 
     private void Window_SizeChanged(object? sender, SizeChangedEventArgs e)

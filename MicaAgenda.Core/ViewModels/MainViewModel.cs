@@ -80,6 +80,13 @@ public sealed class MainViewModel : ViewModelBase
     public bool IsWeekView => Settings.ViewMode == CalendarViewMode.Week;
     public bool IsYearView => Settings.ViewMode == CalendarViewMode.Year;
 
+    /// <summary>
+    /// 月 / 年视图共用的那一套「左侧日历 + 右侧任务面板」布局是否在显示。
+    /// 周视图不一样：它的任务面板在日期格子**下面**、占满剩余高度（老版本就是这个排布），
+    /// 所以周视图下这套布局要整块收起，免得右侧面板从周视图底下透出来。
+    /// </summary>
+    public bool IsMonthOrYearView => Settings.ViewMode != CalendarViewMode.Week;
+
     /// <summary>今日任务面板数据源（独立于日历格子中的 ViewModel 实例，互不干扰）。</summary>
     public ObservableCollection<TaskItemViewModel> TodayTasks { get; }
 
@@ -1127,6 +1134,7 @@ public sealed class MainViewModel : ViewModelBase
         OnPropertyChanged(nameof(IsMonthView));
         OnPropertyChanged(nameof(IsWeekView));
         OnPropertyChanged(nameof(IsYearView));
+        OnPropertyChanged(nameof(IsMonthOrYearView));
 
         // 切换视图时清除选中状态，让右侧面板回到今日任务
         ClearCellSelection();
