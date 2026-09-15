@@ -29,11 +29,15 @@ public sealed class ReminderGateTests
         // 从「不提醒」切到真的提醒档 + 没通道 → 提示
         Assert.True(ReminderGate.ShouldWarnOnLeadChange(empty, ReminderLeadCatalog.NoneLabel, "提前30分钟"));
 
+        // 「到时提醒」也算真的提醒档：到点一样推，没通道一样送不出去
+        Assert.True(ReminderGate.ShouldWarnOnLeadChange(empty, ReminderLeadCatalog.NoneLabel, ReminderLeadCatalog.OnTimeLabel));
+
         // 通道配好了 → 不提示
         Assert.False(ReminderGate.ShouldWarnOnLeadChange(configured, ReminderLeadCatalog.NoneLabel, "提前30分钟"));
 
         // 档位之间来回换（已经是提醒档了）→ 不再重复提示
         Assert.False(ReminderGate.ShouldWarnOnLeadChange(empty, "提前10分钟", "提前30分钟"));
+        Assert.False(ReminderGate.ShouldWarnOnLeadChange(empty, ReminderLeadCatalog.OnTimeLabel, "提前30分钟"));
 
         // 选回「不提醒」→ 不提示
         Assert.False(ReminderGate.ShouldWarnOnLeadChange(empty, "提前30分钟", ReminderLeadCatalog.NoneLabel));

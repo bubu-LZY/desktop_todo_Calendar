@@ -961,7 +961,8 @@ public partial class MainWindow : Window
                 : result.TagName!;
             var question =
                 $"检测到新版本 {latestText}（当前 {service.CurrentVersionText}）。\n\n" +
-                $"要现在下载更新吗？安装包约 {FormatSize(result.Asset.SizeBytes)}，会在后台下载，\n" +
+                $"要现在下载更新吗？安装包约 {ByteText.FormatSize(result.Asset.SizeBytes)}，" +
+                "会在后台下载并显示实时进度，中途可以取消。\n" +
                 "下载完成后再问你一次要不要重启安装。";
 
             var (accepted, skipToday) = await AskUpdateAsync(question);
@@ -976,16 +977,11 @@ public partial class MainWindow : Window
             }
 
             // 后台下载：不挡界面、不占模态。用户可以在下载期间继续用日历。
-            string installerPath;
-            try
+            // 带进度条 + 失败原地重试；用户点「取消」或关掉进度窗时返回 null。
+            var installerPath = await DownloadUpdateWithProgressAsync(service, result.Asset, latestText);
+            if (installerPath is null)
             {
-                installerPath = await service.DownloadAsync(result.Asset);
-            }
-            catch (Exception ex)
-            {
-                AppLog.Error(ex, "MainWindow.UpdateDownload");
-                await ShowMessageAsync("下载失败", "更新包下载失败：" + ex.Message + "\n\n可以稍后再试一次。");
-                return "下载失败：" + ex.Message;
+                return "已取消更新下载";
             }
 
             var restart = await ConfirmAsync(
@@ -1012,6 +1008,64 @@ public partial class MainWindow : Window
         finally
         {
             _updateFlowRunning = false;
+        }
+    }
+
+    /// <summary>
+    /// 带进度条、可失败重试的下载。返回下载好的安装包路径；用户取消 / 关掉进度窗时返回 null。
+    ///
+    /// 更新包 50MB 上下，干等没有任何反馈是用户明确抱怨过的点，所以这里补齐三件事：
+    /// 实时进度（百分比 + 已下载 / 总大小）、失败原地重试（不用再走一遍「检查更新」）、
+    /// 以及一个屏幕居中置顶的非模态浮窗（设置面板开着时也不会被压到后面点不动）。
+    /// </summary>
+    private async Task<string?> DownloadUpdateWithProgressAsync(
+        UpdateService service,
+        UpdateAsset asset,
+        string versionText)
+    {
+        var window = new UpdateProgressWindow(versionText, asset.SizeBytes);
+        // 令牌先取出来：循环里每轮都要用，不必依赖窗口对象还活着
+        var token = window.Token;
+        window.Show();
+
+        try
+        {
+            while (true)
+            {
+                try
+                {
+                    var path = await service.DownloadAsync(asset, window.Progress, token);
+                    window.ShowCompleted();
+
+                    // 让 100% 先画出来再关窗，否则进度条来不及出现就消失了
+                    await Task.Delay(250);
+                    return path;
+                }
+                catch (OperationCanceledException)
+                {
+                    // 用户取消 / 关窗：不算失败，安静退出
+                    return null;
+                }
+                catch (Exception ex)
+                {
+                    AppLog.Error(ex, "MainWindow.UpdateDownload");
+
+                    // 失败停在原地等用户选「重试」还是「关闭」，重试就是再下一遍，不重头检查版本
+                    window.ShowFailed(ex.Message);
+                    if (!await window.WaitForRetryAsync())
+                    {
+                        return null;
+                    }
+                }
+            }
+        }
+        finally
+        {
+            // 用户自己关掉的窗不要再关一遍
+            if (window.IsVisible)
+            {
+                window.Close();
+            }
         }
     }
 
@@ -1090,7 +1144,18 @@ public partial class MainWindow : Window
         yes.Click += (_, _) => { accepted = true; win.Close(); };
         no.Click += (_, _) => { accepted = false; win.Close(); };
 
-        await win.ShowDialog(this);
+        // 和 ShowMessageAsync 一样打上"有模态框开着"：否则这框一抢焦点，
+        // 「焦点离开表单就提交草稿」的逻辑会当场把行内输入收掉。
+        _modalDialogOpen = true;
+        try
+        {
+            await win.ShowDialog(this);
+        }
+        finally
+        {
+            _modalDialogOpen = false;
+        }
+
         return (accepted, skipBox.IsChecked == true);
     }
 
@@ -1105,6 +1170,8 @@ public partial class MainWindow : Window
             SizeToContent = SizeToContent.Height,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
             CanResize = false,
+            // 同 ConfirmAsync：设置面板会压在置底的主窗体上，不置顶就会被挡住点不到
+            Topmost = true,
             Content = new StackPanel
             {
                 Margin = new Thickness(16),
@@ -1132,17 +1199,6 @@ public partial class MainWindow : Window
         {
             _modalDialogOpen = false;
         }
-    }
-
-    private static string FormatSize(long bytes)
-    {
-        if (bytes <= 0)
-        {
-            return "未知大小";
-        }
-
-        var mb = bytes / 1024d / 1024d;
-        return mb >= 1 ? $"{mb:0.#} MB" : $"{bytes / 1024d:0} KB";
     }
 
     /// <summary>
@@ -1850,14 +1906,45 @@ public partial class MainWindow : Window
         }
     }
 
+    /// <summary>
+    /// 右键任务 →「编辑」：打开编辑窗口，任务内容 / 任务时间 / 提醒时间一次改完。
+    ///
+    /// 以前这里只是把标题就地换成输入框（<c>task.BeginEdit()</c>），任务时刻和提醒时间
+    /// 既没有控件也没有入口 —— 用户报的「编辑时改不了提醒时间和任务时间」就是这一条。
+    /// 行内改标题的能力保留（双击任务条仍是就地改名，见 <see cref="TodayTaskItem_PointerPressed"/>）。
+    /// </summary>
     private void EditTask_Click(object? sender, RoutedEventArgs e)
     {
-        if (TaskFrom(sender) is { IsEditing: false } task)
+        if (TaskFrom(sender) is not { } item)
         {
-            CommitPendingEdits();
-            task.BeginEdit();
-            _editingTask = task;
-            FocusInlineTextBox(() => FindVisibleTextBoxByDataContext(task));
+            return;
+        }
+
+        // 开编辑窗口前先把别的草稿收尾，避免两个输入态叠在一起
+        CommitPendingEdits();
+
+        var dialog = new TaskEditWindow(item.Model, _config);
+        dialog.Closed += (_, _) =>
+        {
+            _modalDialogOpen = false;
+            if (dialog.Saved)
+            {
+                _viewModel?.UpdateTask(item.Id, dialog.EditedTitle, dialog.EditedTime, dialog.EditedLeadMinutes);
+            }
+        };
+
+        // 弹窗期间挡住「焦点离开表单就提交草稿」的逻辑
+        _modalDialogOpen = true;
+
+        // 嵌入桌面模式下主窗体置底且不激活，模态显示会被一起压底／抢不到激活；
+        // 与设置窗口同一策略，改非模态打开，收尾统一走 Closed 回调。
+        if (_config.EmbedDesktop)
+        {
+            dialog.Show();
+        }
+        else
+        {
+            _ = dialog.ShowDialog(this);
         }
     }
 
@@ -2496,6 +2583,9 @@ public partial class MainWindow : Window
             SizeToContent = SizeToContent.Height,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
             CanResize = false,
+            // 必须置顶：这个框常常是「设置面板 → 检查更新」链路里弹的，而设置面板压在
+            // 置底嵌入的主窗体之上 —— 不置顶就会被设置面板盖住，用户点不到「确定」（用户上报的 bug）。
+            Topmost = true,
             Content = new StackPanel
             {
                 Margin = new Thickness(16),

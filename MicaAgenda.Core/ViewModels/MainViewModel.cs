@@ -987,7 +987,8 @@ public sealed class MainViewModel : ViewModelBase
     }
 
     /// <param name="reminderLeadMinutes">
-    /// 提前提醒量（分钟）；null = 不提醒。以任务时刻为锚点：任务 15:00 + 提前 30 分钟＝14:30 推。
+    /// 提前提醒量（分钟）；null = 不提醒，0 = 「到时提醒」（任务时刻那一刻推）。
+    /// 以任务时刻为锚点：任务 15:00 + 提前 30 分钟＝14:30 推。
     /// </param>
     /// <param name="time">
     /// 任务时刻（几点几分）；null 或正好 09:00 都按"没选"处理（= 当天默认时刻 9:00）。
@@ -1002,7 +1003,8 @@ public sealed class MainViewModel : ViewModelBase
                 Title = title.Trim(),
                 CreatedAt = _nowProvider(),
                 Time = NormalizeTaskTime(time),
-                ReminderLeadMinutes = reminderLeadMinutes is > 0 ? reminderLeadMinutes : null
+                // 0 是「到时提醒」，要如实存下来；只有负数（以及没选）才算「不提醒」。
+                ReminderLeadMinutes = NormalizeReminderLead(reminderLeadMinutes)
             };
             _data.Tasks.Add(task);
             IsDirty = true;
@@ -1019,6 +1021,13 @@ public sealed class MainViewModel : ViewModelBase
     private static TimeOnly? NormalizeTaskTime(TimeOnly? time)
         => time is null || time == CalendarTask.DefaultTime ? null : time;
 
+    /// <summary>
+    /// 落盘前的提醒档位归一化：只有负数（没有意义的提前量）算「不提醒」存 null。
+    /// 0 必须原样保留 —— 它是「到时提醒」，和 null（不提醒）是两种不同行为。
+    /// </summary>
+    private static int? NormalizeReminderLead(int? reminderLeadMinutes)
+        => reminderLeadMinutes is < 0 ? null : reminderLeadMinutes;
+
     public void RenameTask(Guid taskId, string title)
     {
         lock (_syncRoot)
@@ -1032,6 +1041,50 @@ public sealed class MainViewModel : ViewModelBase
             task.Title = title.Trim();
             IsDirty = true;
             RebuildCalendar();
+        }
+    }
+
+    /// <summary>
+    /// 编辑任务：标题 / 任务时刻 / 提醒档位一次改完。
+    ///
+    /// 时刻或档位真的变了就作废原来的一次性提醒标记（<see cref="CalendarTask.ResetReminder"/>）：
+    /// 按旧时刻推过的提醒不能挡住新时刻 —— 否则「把 9 点改成 15 点」之后当天再也不会响。
+    /// 只改标题不动提醒，避免顺手把已经推过的提醒又推一遍。
+    /// </summary>
+    /// <param name="title">新标题；空白串视为"不改标题"（编辑框被清空时不至于把任务名抹掉）。</param>
+    /// <param name="time">新任务时刻；null / 09:00 按"没选"处理（= 当天 9:00）。</param>
+    /// <param name="reminderLeadMinutes">新提醒档位；null = 不提醒，0 = 到时提醒。</param>
+    /// <returns>真的改到东西了返回 true（用于决定要不要提示"没有变化"）。</returns>
+    public bool UpdateTask(Guid taskId, string title, TimeOnly? time, int? reminderLeadMinutes)
+    {
+        lock (_syncRoot)
+        {
+            var task = FindTask(taskId);
+            if (task is null)
+            {
+                return false;
+            }
+
+            var newTitle = title.Trim();
+            var newTime = NormalizeTaskTime(time);
+            var newLead = NormalizeReminderLead(reminderLeadMinutes);
+
+            if (newTitle.Length > 0)
+            {
+                task.Title = newTitle;
+            }
+
+            var scheduleChanged = task.Time != newTime || task.ReminderLeadMinutes != newLead;
+            task.Time = newTime;
+            task.ReminderLeadMinutes = newLead;
+            if (scheduleChanged)
+            {
+                task.ResetReminder();
+            }
+
+            IsDirty = true;
+            RebuildCalendar();
+            return true;
         }
     }
 

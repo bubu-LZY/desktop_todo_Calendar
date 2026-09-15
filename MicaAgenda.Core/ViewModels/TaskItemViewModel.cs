@@ -239,8 +239,10 @@ public sealed class TaskItemViewModel : ViewModelBase
             if (_task.ReminderLeadMinutes is { } lead)
             {
                 var anchor = _task.Time ?? CalendarTask.DefaultTime;
+                // 提前量 0 就是「到时提醒」：不提前，任务时刻那一刻推
+                var leadText = lead > 0 ? $"提前 {Helpers.TimeText.FormatLead(lead)}" : "到时提醒";
                 sb.AppendLine(
-                    $"提醒：{_task.ReminderTriggerAt():HH:mm}（提前 {Helpers.TimeText.FormatLead(lead)}，任务时刻 {anchor:HH:mm}）");
+                    $"提醒：{_task.ReminderTriggerAt():HH:mm}（{leadText}，任务时刻 {anchor:HH:mm}）");
             }
 
             sb.Append($"创建：{_task.CreatedAt:MM/dd HH:mm}");

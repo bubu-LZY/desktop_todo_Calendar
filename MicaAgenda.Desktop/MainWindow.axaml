@@ -340,6 +340,7 @@
             <MenuItem Header="取消重要" Click="UnimportantTask_Click"
                       IsVisible="{Binding IsImportant}" />
             <Separator />
+            <MenuItem Header="编辑" Click="EditTask_Click" />
             <MenuItem Header="删除" Click="DeleteTask_Click" />
           </ContextMenu>
         </Border.ContextMenu>
@@ -376,6 +377,7 @@
             <MenuItem Header="取消重要" Click="UnimportantTask_Click"
                       IsVisible="{Binding IsImportant}" />
             <Separator />
+            <MenuItem Header="编辑" Click="EditTask_Click" />
             <MenuItem Header="删除" Click="DeleteTask_Click" />
           </ContextMenu>
         </Border.ContextMenu>
@@ -442,7 +444,7 @@
                         SelectedItem="{Binding TodayTaskLead}"
                         SelectionChanged="TaskLeadBox_SelectionChanged" />
             </Grid>
-            <TextBlock Text="提醒按「任务时间」往前推；选「不提醒」就不推送。"
+            <TextBlock Text="提醒按「任务时间」往前推；「到时提醒」＝到点那一刻推，「不提醒」＝完全不推。"
                        FontSize="9.5" TextWrapping="Wrap"
                        Foreground="{DynamicResource MutedTextBrush}" />
             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="4">

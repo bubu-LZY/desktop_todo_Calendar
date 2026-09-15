@@ -25,15 +25,16 @@ public static class ReminderGate
     public static bool HasDeliveryChannel(AppConfig? config)
         => IsFeishuConfigured(config) || !string.IsNullOrWhiteSpace(config?.WeComWebhook);
 
-    /// <summary>
-    /// 这次「提醒时间」下拉的切换要不要弹提示：
-    /// 从「不提醒」切到一个真的提醒档位、而当前没有任何推送通道时提示一次。
-    ///
-    /// 只在"第一次从无到有"时提示：档位之间来回换（提前 3 分钟 → 提前 10 分钟）
-    /// 不再重复弹，否则连着点几下会弹出一串同样的话。
-    /// </summary>
-    public static bool ShouldWarnOnLeadChange(AppConfig? config, string? previousLabel, string? newLabel)
-        => !HasDeliveryChannel(config)
-           && ReminderLeadCatalog.ToMinutes(newLabel) is > 0
-           && ReminderLeadCatalog.ToMinutes(previousLabel) is null;
+/// <summary>
+/// 这次「提醒时间」下拉的切换要不要弹提示：
+/// 从「不提醒」切到一个真的提醒档位、而当前没有任何推送通道时提示一次。
+/// 「到时提醒」（提前量 0）也算真的提醒档位 —— 它到点一样推，没通道一样送不出去。
+///
+/// 只在"第一次从无到有"时提示：档位之间来回换（提前 3 分钟 → 提前 10 分钟）
+/// 不再重复弹，否则连着点几下会弹出一串同样的话。
+/// </summary>
+public static bool ShouldWarnOnLeadChange(AppConfig? config, string? previousLabel, string? newLabel)
+    => !HasDeliveryChannel(config)
+       && ReminderLeadCatalog.ToMinutes(newLabel) is not null
+       && ReminderLeadCatalog.ToMinutes(previousLabel) is null;
 }

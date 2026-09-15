@@ -1,0 +1,93 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="MicaAgenda.Desktop.TaskEditWindow"
+        Title="编辑任务"
+        Width="420"
+        SizeToContent="Height"
+        CanResize="False"
+        WindowStartupLocation="CenterOwner"
+        Background="#F7F8FA"
+        FontSize="13"
+        x:CompileBindings="False">
+
+  <!-- 右键任务 →「编辑」。原先只是把标题就地变成输入框，任务时刻与提醒时间根本没地方改
+       （用户上报的 bug）；这里给全三个字段，确认后一次性写回。 -->
+  <Window.Styles>
+    <Style Selector="TextBlock.fieldLabel">
+      <Setter Property="Foreground" Value="#6B7280" />
+      <Setter Property="VerticalAlignment" Value="Center" />
+      <Setter Property="Margin" Value="0,0,10,0" />
+    </Style>
+    <Style Selector="TextBlock.hint">
+      <Setter Property="Foreground" Value="#9CA3AF" />
+      <Setter Property="FontSize" Value="12" />
+      <Setter Property="TextWrapping" Value="Wrap" />
+    </Style>
+    <Style Selector="TextBox.inputBox">
+      <Setter Property="Padding" Value="8,6" />
+      <Setter Property="BorderBrush" Value="#D1D5DB" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="Background" Value="#FFFFFF" />
+      <Setter Property="CornerRadius" Value="7" />
+      <Setter Property="VerticalContentAlignment" Value="Center" />
+    </Style>
+    <Style Selector="ComboBox">
+      <Setter Property="CornerRadius" Value="7" />
+      <Setter Property="Padding" Value="10,6" />
+      <Setter Property="VerticalContentAlignment" Value="Center" />
+      <Setter Property="HorizontalContentAlignment" Value="Left" />
+    </Style>
+    <Style Selector="Button.actionButton">
+      <Setter Property="Padding" Value="14,7" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="BorderBrush" Value="#D1D5DB" />
+      <Setter Property="Background" Value="#FFFFFF" />
+      <Setter Property="CornerRadius" Value="7" />
+      <Setter Property="Cursor" Value="Hand" />
+    </Style>
+    <Style Selector="Button.primaryButton">
+      <Setter Property="Padding" Value="14,7" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="Background" Value="#2563EB" />
+      <Setter Property="Foreground" Value="#FFFFFF" />
+      <Setter Property="BorderBrush" Value="#2563EB" />
+      <Setter Property="CornerRadius" Value="7" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+      <Setter Property="Cursor" Value="Hand" />
+    </Style>
+  </Window.Styles>
+
+  <StackPanel Margin="18" Spacing="12">
+    <TextBlock x:Name="DateText" FontSize="12" Foreground="#6B7280" />
+
+    <StackPanel Spacing="6">
+      <TextBlock Text="任务内容" FontSize="12" Foreground="#6B7280" />
+      <TextBox x:Name="TitleBox" Classes="inputBox" AcceptsReturn="False"
+               PlaceholderText="任务内容" />
+    </StackPanel>
+
+    <Grid ColumnDefinitions="Auto,*">
+      <TextBlock Grid.Column="0" Classes="fieldLabel" Text="任务时间" />
+      <TimePicker Grid.Column="1" x:Name="TimeBox" HorizontalAlignment="Left"
+                  ClockIdentifier="24HourClock" UseSeconds="False"
+                  ToolTip.Tip="任务时刻，默认 09:00" />
+    </Grid>
+
+    <Grid ColumnDefinitions="Auto,*">
+      <TextBlock Grid.Column="0" Classes="fieldLabel" Text="提醒时间" />
+      <ComboBox Grid.Column="1" x:Name="LeadBox" HorizontalAlignment="Left" MinWidth="130"
+                SelectionChanged="LeadBox_SelectionChanged" />
+    </Grid>
+
+    <TextBlock Classes="hint"
+               Text="提醒按「任务时间」往前推；选「到时提醒」就是任务时间到点那一刻推，「不提醒」则完全不推。" />
+
+    <!-- 提醒是走 webhook 推的：没配通道时在这里直接说清楚，而不是等用户选完了再弹一个框 -->
+    <TextBlock x:Name="WarnText" Classes="hint" Foreground="#B45309" IsVisible="False" />
+
+    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
+      <Button x:Name="CancelButton" Classes="actionButton" Content="取消" Click="Cancel_Click" />
+      <Button x:Name="SaveButton" Classes="primaryButton" Content="保存" Click="Save_Click" />
+    </StackPanel>
+  </StackPanel>
+</Window>
