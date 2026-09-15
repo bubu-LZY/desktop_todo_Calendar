@@ -330,6 +330,133 @@ public sealed class MainViewModelTests
         Assert.Equal("班 劳动节后补班", Assert.Single(makeupDay.Holidays).BadgeText);
     }
 
+    // ===== 点「今天」回到今天 =====
+    //
+    // 背景（用户反馈的 bug：点「今天」之后哪个视图都不跳回今天）：
+    // 桌面端月视图是一条可无限滚动的时间轴，"当前看的是哪个月"由滚动位置表达；
+    // 年视图同样靠滚动位置表达"看的是哪一段"；而滚动浏览并不会改 SelectedDate，
+    // 所以 SelectedDate 平时一直就等于今天。原先 GoToday 只写 SelectedDate = Today，
+    // 值没变 → SetProperty 判定无需通知 → 重建、滚动信号全部跳过 → 点了毫无反应。
+
+    [Theory]
+    [InlineData(CalendarViewMode.Month)]
+    [InlineData(CalendarViewMode.Week)]
+    [InlineData(CalendarViewMode.Year)]
+    public void GoToday_AlwaysNotifiesViewToScrollBackToAnchor(CalendarViewMode mode)
+    {
+        var viewModel = new MainViewModel(
+            new CalendarData(),
+            () => new DateTimeOffset(2026, 5, 10, 9, 0, 0, TimeSpan.Zero));
+        viewModel.SetViewMode(mode);
+
+        var rebuilt = 0;
+        viewModel.TimelineRebuilt += () => rebuilt++;
+
+        viewModel.GoToday();
+
+        Assert.True(rebuilt > 0, "点「今天」在任何视图下都要给视图一次滚回今天的信号");
+        Assert.Equal(new DateOnly(2026, 5, 1), viewModel.TimelineAnchor);
+    }
+
+    [Fact]
+    public void GoToday_WhenAlreadyOnToday_StillNotifiesViewToScrollBack()
+    {
+        var viewModel = new MainViewModel(
+            new CalendarData(),
+            () => new DateTimeOffset(2026, 5, 10, 9, 0, 0, TimeSpan.Zero));
+
+        // 往前滚 5 个月浏览：滚动只改滚动位置，SelectedDate 仍是今天
+        for (var i = 0; i < 5; i++)
+        {
+            viewModel.ExtendTimelineForward();
+        }
+
+        var rebuilt = 0;
+        viewModel.TimelineRebuilt += () => rebuilt++;
+
+        viewModel.GoToday();
+
+        Assert.Equal(new DateOnly(2026, 5, 10), viewModel.SelectedDate);
+        Assert.True(rebuilt > 0, "SelectedDate 本来就等于今天时，也要把视图拉回锚点月");
+    }
+
+    [Fact]
+    public void GoToday_RestoresTimelineAroundTodayAfterScrollingFarAway()
+    {
+        var viewModel = new MainViewModel(
+            new CalendarData(),
+            () => new DateTimeOffset(2026, 5, 10, 9, 0, 0, TimeSpan.Zero));
+
+        // 一路往前滚：超过 TimelineMaxMonths 上限后，今天所在月会被裁掉
+        for (var i = 0; i < MainViewModel.TimelineMaxMonths; i++)
+        {
+            viewModel.ExtendTimelineForward();
+        }
+
+        Assert.DoesNotContain(viewModel.TimelineMonths, block => block.Year == 2026 && block.Month == 5);
+
+        viewModel.GoToday();
+
+        Assert.Contains(viewModel.TimelineMonths, block => block.Year == 2026 && block.Month == 5);
+        Assert.Contains(
+            viewModel.TimelineMonths.SelectMany(block => block.Days),
+            day => day.Date == new DateOnly(2026, 5, 10) && day.IsToday);
+        Assert.Equal(new DateOnly(2026, 5, 1), viewModel.TimelineAnchor);
+    }
+
+    [Fact]
+    public void GoToday_ClearsCellSelectionAndBringsPanelBackToToday()
+    {
+        var viewModel = new MainViewModel(
+            new CalendarData(),
+            () => new DateTimeOffset(2026, 5, 10, 9, 0, 0, TimeSpan.Zero));
+
+        viewModel.SelectCell(new DateOnly(2026, 5, 20));
+        Assert.Equal(new DateOnly(2026, 5, 20), viewModel.PanelDate);
+
+        viewModel.GoToday();
+
+        Assert.Null(viewModel.SelectedCellDate);
+        Assert.Equal(new DateOnly(2026, 5, 10), viewModel.PanelDate);
+        Assert.Equal("今日任务", viewModel.PanelHeader);
+    }
+
+    [Fact]
+    public void GoToday_FromWeekView_ShowsWeekContainingToday()
+    {
+        var viewModel = new MainViewModel(
+            new CalendarData(),
+            () => new DateTimeOffset(2026, 5, 10, 9, 0, 0, TimeSpan.Zero));
+        viewModel.SetViewMode(CalendarViewMode.Week);
+        viewModel.MoveNext();
+        viewModel.MoveNext();
+        Assert.DoesNotContain(viewModel.VisibleDays, day => day.Date == new DateOnly(2026, 5, 10));
+
+        viewModel.GoToday();
+
+        Assert.Equal(new DateOnly(2026, 5, 10), viewModel.SelectedDate);
+        Assert.Contains(viewModel.VisibleDays, day => day.Date == new DateOnly(2026, 5, 10) && day.IsToday);
+        Assert.Equal(new DateOnly(2026, 5, 1), viewModel.TimelineAnchor);
+    }
+
+    [Fact]
+    public void GoToday_FromYearView_ShowsYearContainingToday()
+    {
+        var viewModel = new MainViewModel(
+            new CalendarData(),
+            () => new DateTimeOffset(2026, 5, 10, 9, 0, 0, TimeSpan.Zero));
+        viewModel.SetViewMode(CalendarViewMode.Year);
+        viewModel.MoveNext();
+        Assert.Equal(2027, viewModel.SelectedDate.Year);
+
+        viewModel.GoToday();
+
+        Assert.Equal(2026, viewModel.SelectedDate.Year);
+        Assert.Contains(
+            viewModel.YearMonths.SelectMany(month => month.Days),
+            day => day.Date == new DateOnly(2026, 5, 10) && day.IsToday);
+    }
+
     // ===== 今日任务面板 =====
 
     [Fact]

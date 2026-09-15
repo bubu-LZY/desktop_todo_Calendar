@@ -55,6 +55,12 @@ public partial class MainWindow : Window
     private DateTime _lastExtend = DateTime.MinValue;
 
     /// <summary>
+    /// 正在以程序方式把视口滚到锚点月（点「今天」、换月、首屏定位）。
+    /// 这种滚动不是用户在浏览，不能拿去判断"滚到尽头了，该扩展时间轴了"。
+    /// </summary>
+    private bool _programmaticScroll;
+
+    /// <summary>
     /// 窄窗阈值：窗口窄到放不下日历格子时，主体切换成「只有今日任务」的视图。
     /// 与 WPF 宿主 MicaAgenda.App 的 NarrowLayoutThreshold 取同一个值（460dp）。
     /// </summary>
@@ -166,7 +172,15 @@ public partial class MainWindow : Window
             _viewModel = new MainViewModel(data, holidays: holidays, syncRoot: _syncRoot);
             _viewModel.ReviewTaskDeleted += NotifyReviewDeletion;
             _viewModel.ReviewTaskStatusChanged += OnReviewTaskStatusChanged;
+            // 时间轴 / 年视图结构每次重建（换月、点「今天」）后都要把视口拉回锚点月。
+            // 桌面端以前完全没订阅这个事件，而月/年视图的"正在看哪个月"是由滚动位置表达的，
+            // 于是点「今天」只改了 ViewModel 状态、画面一动不动。
+            _viewModel.TimelineRebuilt += OnTimelineRebuilt;
             DataContext = _viewModel;
+
+            // 首屏也要定位一次：时间轴是以今天为中心往前多铺了一个月，
+            // 不想办法滚一下，第一眼看到的是上个月。
+            Dispatcher.UIThread.Post(() => ScrollViewportToAnchor(0), DispatcherPriority.Loaded);
 
             // 先把开机启动相关的诉求落实到本次运行（Windows 专属）。
             ApplyStartupOptions();
@@ -2516,6 +2530,13 @@ public partial class MainWindow : Window
             return;
         }
 
+        // 定位到锚点月引发的滚动不参与边缘扩展判定，
+        // 否则点「今天」往回跳会被当成"滚到顶了"，反手又插进一个月。
+        if (_programmaticScroll)
+        {
+            return;
+        }
+
         if (DateTime.UtcNow - _lastExtend < TimeSpan.FromMilliseconds(350))
         {
             return;
@@ -2549,5 +2570,159 @@ public partial class MainWindow : Window
             _lastExtend = DateTime.UtcNow;
             _viewModel.ExtendTimelineForward();
         }
+    }
+
+    // ===== 把视口定位到锚点月（点「今天」/ 换月 / 首屏）=====
+
+    /// <summary>
+    /// 结构重建后把视口滚回锚点月。
+    ///
+    /// 月视图是一条可以无限滚下去的时间轴、年视图是一整年 12 个月的滚动列表，
+    /// "现在看的是哪一段"是由**滚动位置**表达的，而滚动浏览并不会改 ViewModel 的日期。
+    /// 所以"点今天要跳回今天"这件事，ViewModel 只能发信号，真正滚的是这里。
+    /// </summary>
+    private void OnTimelineRebuilt()
+    {
+        Dispatcher.UIThread.Post(() => ScrollViewportToAnchor(0), DispatcherPriority.Loaded);
+    }
+
+    /// <summary>
+    /// 重试次数上限。刚切视图 / 首帧布局尚未跑完时，月份容器还没生成，
+    /// 需要等下一帧；但绝不能无限重试，否则就是一个死循环。
+    /// </summary>
+    private const int MaxScrollAttempts = 5;
+
+    private void ScrollViewportToAnchor(int attempt)
+    {
+        if (_viewModel is null)
+        {
+            return;
+        }
+
+        bool done;
+        try
+        {
+            var anchor = _viewModel.TimelineAnchor;
+            done = _viewModel.Settings.ViewMode switch
+            {
+                CalendarViewMode.Month => ScrollMonthBlockToTop(anchor),
+                CalendarViewMode.Year => ScrollYearMonthToTop(anchor),
+                // 周视图没有可滚动的月份列表，视图本身已随 SelectedDate 重建
+                _ => true
+            };
+        }
+        catch (Exception ex)
+        {
+            // 定位失败不该影响主流程（这条路径首屏就会跑一次），记日志后作罢。
+            AppLog.Error(ex, "MainWindow.ScrollViewportToAnchor");
+            return;
+        }
+
+        if (!done && attempt < MaxScrollAttempts)
+        {
+            Dispatcher.UIThread.Post(() => ScrollViewportToAnchor(attempt + 1), DispatcherPriority.Loaded);
+        }
+    }
+
+    /// <summary>把月视图时间轴滚到指定月份块的顶边。返回 false 表示容器尚未生成，调用方应重试。</summary>
+    private bool ScrollMonthBlockToTop(DateOnly month)
+    {
+        if (MonthScrollViewer is null || MonthItemsControl is null || _viewModel is null)
+        {
+            return true;
+        }
+
+        var block = _viewModel.TimelineMonths
+            .FirstOrDefault(b => b.Year == month.Year && b.Month == month.Month);
+        if (block is null)
+        {
+            return true;
+        }
+
+        var container = FindContainer(MonthItemsControl, block);
+        if (container is null)
+        {
+            return false;
+        }
+
+        if (container.TranslatePoint(new Point(0, 0), MonthItemsControl) is not { } origin)
+        {
+            return false;
+        }
+
+        SetScrollOffset(MonthScrollViewer, origin.Y);
+        return true;
+    }
+
+    /// <summary>把年视图滚到锚点月的顶边。返回 false 表示容器尚未生成，调用方应重试。</summary>
+    private bool ScrollYearMonthToTop(DateOnly anchor)
+    {
+        if (YearScrollViewer is null || YearItemsControl is null || _viewModel is null)
+        {
+            return true;
+        }
+
+        // 年份对不上时（视图停在别的年份）不要瞎滚，否则会滚到"同月但不同年"那一格。
+        if (_viewModel.SelectedDate.Year != anchor.Year)
+        {
+            return true;
+        }
+
+        var target = _viewModel.YearMonths.FirstOrDefault(m => m.Month == anchor.Month);
+        if (target is null)
+        {
+            return true;
+        }
+
+        var container = FindContainer(YearItemsControl, target);
+        if (container is null)
+        {
+            return false;
+        }
+
+        if (container.TranslatePoint(new Point(0, 0), YearItemsControl) is not { } origin)
+        {
+            return false;
+        }
+
+        // 年视图是 3 列 × 4 行的宫格，留 8px 顶距，免得月份标题贴着上边缘。
+        SetScrollOffset(YearScrollViewer, origin.Y - 8);
+        return true;
+    }
+
+    /// <summary>
+    /// 按内容偏移做程序化滚动。
+    /// 不走 BringIntoView：后者会触发 RequestBringIntoView，在这个无限滚动的
+    /// 时间轴里会连带引起自动扩展，表现为"点一下今天，月份自己又长了一截"。
+    /// </summary>
+    private void SetScrollOffset(ScrollViewer viewer, double y)
+    {
+        _programmaticScroll = true;
+        viewer.Offset = new Vector(viewer.Offset.X, Math.Max(0, y));
+
+        // 必须在下一帧无条件复位，不能指望 ScrollChanged 去消费这个标记：
+        // 目标偏移与当前相同时压根不会触发 ScrollChanged，标记就会残留，
+        // 之后用户真的滚到边缘时会被误判成程序化滚动，时间轴再也不扩展了。
+        Dispatcher.UIThread.Post(() => _programmaticScroll = false, DispatcherPriority.Loaded);
+    }
+
+    /// <summary>
+    /// 找到 ItemsControl 中承载指定数据项的那个容器控件。
+    ///
+    /// 月/年视图用的都是非虚拟化的 ItemsControl，容器在一次布局后全部已生成；
+    /// 前序遍历里第一个 DataContext 命中该项的元素就是它自己的容器
+    /// （容器一定排在自己的子元素前面）。
+    /// </summary>
+    private static Control? FindContainer(ItemsControl itemsControl, object item)
+    {
+        foreach (var visual in itemsControl.GetVisualDescendants())
+        {
+            if (visual is Control control && ReferenceEquals(control.DataContext, item))
+            {
+                return control;
+            }
+        }
+
+        return null;
     }
 }

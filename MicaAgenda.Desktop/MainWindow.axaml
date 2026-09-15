@@ -767,16 +767,18 @@
           <Grid IsVisible="{Binding IsMonthOrYearView}" ColumnDefinitions="*,216">
           <Grid Grid.Column="0">
           <!-- 月视图：连续月份时间轴 -->
-          <ScrollViewer IsVisible="{Binding IsMonthView}"
+          <ScrollViewer x:Name="MonthScrollViewer"
+                        IsVisible="{Binding IsMonthView}"
                         ScrollChanged="MonthScroll_ScrollChanged"
                         VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-            <ItemsControl ItemsSource="{Binding TimelineMonths}" ItemTemplate="{StaticResource MonthBlockTemplate}" Margin="8" />
+            <ItemsControl x:Name="MonthItemsControl" ItemsSource="{Binding TimelineMonths}" ItemTemplate="{StaticResource MonthBlockTemplate}" Margin="8" />
           </ScrollViewer>
 
           <!-- 年视图：12 个月三列排布 -->
-          <ScrollViewer IsVisible="{Binding IsYearView}"
+          <ScrollViewer x:Name="YearScrollViewer"
+                        IsVisible="{Binding IsYearView}"
                         VerticalScrollBarVisibility="Auto">
-            <ItemsControl ItemsSource="{Binding YearMonths}" ItemTemplate="{StaticResource YearMonthTemplate}" Margin="8">
+            <ItemsControl x:Name="YearItemsControl" ItemsSource="{Binding YearMonths}" ItemTemplate="{StaticResource YearMonthTemplate}" Margin="8">
               <ItemsControl.ItemsPanel>
                 <ItemsPanelTemplate>
                   <UniformGrid Columns="3" />

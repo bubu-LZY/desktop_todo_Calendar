@@ -1171,9 +1171,49 @@ public sealed class MainViewModel : ViewModelBase
         };
     }
 
+    /// <summary>
+    /// 回到今天。
+    ///
+    /// 这里**不能**只写 <c>SelectedDate = Today</c>：月视图是一条可无限滚动的时间轴、
+    /// 年视图是一整年 12 个月的滚动列表，"现在看的是哪一段"是由**滚动位置**表达的，
+    /// 而滚动浏览并不会改 SelectedDate（它平时一直就等于今天）。
+    /// 于是 SelectedDate 的 setter 里 SetProperty 判定"值没变"直接短路，
+    /// 重建与滚动信号全被跳过 —— 表现就是点了「今天」什么都没发生。
+    ///
+    /// 所以这里强制走完三件事：锚点归位到今天所在月（今天已被时间轴裁掉时也能恢复）、
+    /// 清空格子选中让右侧面板回到今日任务、**无条件**给视图一次滚回今天的信号。
+    /// </summary>
     public void GoToday()
     {
-        SelectedDate = Today;
+        // 直接写字段：绕过 SetProperty 的"值未变就跳过"，日历重建在本方法里显式做。
+        var dateChanged = _selectedDate != _today;
+        _selectedDate = _today;
+        if (dateChanged)
+        {
+            OnPropertyChanged(nameof(SelectedDate));
+        }
+
+        ClearCellSelection();
+
+        // 锚点归位。注意 ExtendTimelineBack/Forward 只追加月份块、不动锚点，
+        // 所以"滚远了"之后锚点还是旧值，必须在这里覆盖。
+        _timelineAnchor = new DateOnly(_today.Year, _today.Month, 1);
+
+        if (Settings.ViewMode == CalendarViewMode.Month)
+        {
+            // 今天可能早被 TimelineMaxMonths 裁到时间轴之外，必须重建结构。
+            // BuildTimeline 内部会发 TimelineRebuilt。
+            BuildTimeline();
+            // 锚点此时已等于今天所在月，所以这里只会走增量刷新与派生属性通知。
+            RebuildCalendar();
+        }
+        else
+        {
+            RebuildCalendar();
+            // 周/年视图是照 SelectedDate 重建的，结构本身没问题，
+            // 但滚动位置还要靠这一下信号才会拉回今天。
+            TimelineRebuilt?.Invoke();
+        }
     }
 
     public void SetHolidays(IEnumerable<ChinaHoliday> holidays)
