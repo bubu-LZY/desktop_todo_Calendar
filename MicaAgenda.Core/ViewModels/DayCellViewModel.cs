@@ -5,8 +5,12 @@ namespace MicaAgenda.App.ViewModels;
 
 public sealed class DayCellViewModel : ViewModelBase
 {
+    /// <summary>快速添加时默认的任务时刻：当天 9:00，与 <see cref="CalendarTask.DefaultTime"/> 一致。</summary>
+    private static readonly TimeSpan DefaultDraftTime = CalendarTask.DefaultTime.ToTimeSpan();
+
     private bool _isAddingTask;
     private string _draftTitle = string.Empty;
+    private TimeSpan _draftTime = DefaultDraftTime;
     private string _reminderLead = Helpers.ReminderLeadCatalog.NoneLabel;
     private bool _isSelected;
 
@@ -63,6 +67,25 @@ public sealed class DayCellViewModel : ViewModelBase
         set => SetProperty(ref _draftTitle, value);
     }
 
+    /// <summary>
+    /// 格子里快速添加时选的任务时刻（日期右边那个时间选择器）。
+    /// 清空选择就回到当天 9:00 —— 与"没选时间"是同一种含义。
+    /// </summary>
+    public TimeSpan? DraftTime
+    {
+        get => _draftTime;
+        set
+        {
+            if (SetProperty(ref _draftTime, value ?? DefaultDraftTime))
+            {
+                OnPropertyChanged(nameof(DraftTimeOnly));
+            }
+        }
+    }
+
+    /// <summary>草稿任务时刻对应的 <see cref="TimeOnly"/>（落盘时用它）。</summary>
+    public TimeOnly DraftTimeOnly => TimeOnly.FromTimeSpan(_draftTime);
+
     /// <summary>格子里快速添加时可选的「提醒时间」档位（与右侧面板同一份）。</summary>
     public IReadOnlyList<string> ReminderLeadOptions => Helpers.ReminderLeadCatalog.Labels;
 
@@ -80,16 +103,22 @@ public sealed class DayCellViewModel : ViewModelBase
 
     public void BeginAdd()
     {
-        DraftTitle = string.Empty;
-        ReminderLead = Helpers.ReminderLeadCatalog.NoneLabel;
+        ResetDraft();
         IsAddingTask = true;
     }
 
     public void CancelAdd()
     {
-        DraftTitle = string.Empty;
-        ReminderLead = Helpers.ReminderLeadCatalog.NoneLabel;
+        ResetDraft();
         IsAddingTask = false;
+    }
+
+    /// <summary>把草稿恢复成"刚打开表单"的样子：内容空、时刻 9:00、提醒不提醒。</summary>
+    private void ResetDraft()
+    {
+        DraftTitle = string.Empty;
+        DraftTime = DefaultDraftTime;
+        ReminderLead = Helpers.ReminderLeadCatalog.NoneLabel;
     }
 
     /// <summary>
@@ -130,6 +159,7 @@ public sealed class DayCellViewModel : ViewModelBase
         // 否则用户正在输入的草稿 / 正在改的标题会被静默吞掉。
         var wasAdding = IsAddingTask;
         var draft = DraftTitle;
+        var draftTime = DraftTime;
         var editing = Tasks.FirstOrDefault(task => task.IsEditing);
         var editingId = editing?.Id;
         var editingText = editing?.EditTitle;
@@ -193,6 +223,7 @@ public sealed class DayCellViewModel : ViewModelBase
         if (wasAdding)
         {
             DraftTitle = draft;
+            DraftTime = draftTime;
             IsAddingTask = true;
         }
 

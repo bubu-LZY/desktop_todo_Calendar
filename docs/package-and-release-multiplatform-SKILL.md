@@ -377,7 +377,7 @@ dpkg-deb --build debroot "dist/<App>_<ver>_amd64.deb"
 ```
 
 ```powershell
-& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DMyAppVersion=4.2.0 setup.iss
+& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DMyAppVersion=4.3.0 setup.iss
 ```
 
 ### 4.3 本地 Windows 快速验证（每次发版前可选但推荐）

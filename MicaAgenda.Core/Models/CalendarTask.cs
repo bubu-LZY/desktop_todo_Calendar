@@ -19,15 +19,15 @@ public sealed class CalendarTask
     public DateTimeOffset? UpdatedAt { get; set; }
 
     /// <summary>
-    /// 所有任务的基准时刻：任务都在这一时刻「开始」。
-    /// UI 上已经没有「时间」输入框了 —— 用户只选「提前多久提醒」，
-    /// 提前量从这个基准时刻往前推。
+    /// 没给任务选时间时用的默认时刻（当天 9:00）。
+    /// 「提前多久提醒」与「逾期未完成」都以任务时刻为锚点。
     /// </summary>
     public static readonly TimeOnly DefaultTime = new(9, 0);
 
     /// <summary>
     /// 任务当天的具体时间点（几点几分）。null = 用 <see cref="DefaultTime"/>（当天 9:00）。
-    /// 新任务不再由用户填写，一律走默认时刻；老数据里存过的时间继续生效。
+    /// 添加任务时在日期右边选；不选就存 null，行为上等同当天 9:00 ——
+    /// 这样与 my-mindmap agent 同步过来的复习任务（那边没有时间概念）保持同一份数据形态。
     /// </summary>
     public TimeOnly? Time { get; set; }
 
@@ -154,9 +154,20 @@ public sealed class CalendarTask
     /// 没设提前量返回 null（= 这条任务不提醒）。
     /// </summary>
     public DateTime? ReminderTriggerAt()
-        => ReminderLeadMinutes is not { } lead
-            ? null
-            : Date.ToDateTime(Time ?? DefaultTime).AddMinutes(-lead);
+        => ReminderLeadMinutes is not { } lead ? null : ScheduledAt.AddMinutes(-lead);
+
+    /// <summary>
+    /// 任务时刻 = 任务当天 + <see cref="Time"/>；没设时间就是当天 <see cref="DefaultTime"/>（9:00）。
+    /// 「提前多久提醒」和「逾期未完成」都以它为准。
+    /// </summary>
+    public DateTime ScheduledAt => Date.ToDateTime(Time ?? DefaultTime);
+
+    /// <summary>
+    /// 此刻是否已经过了任务时刻（未完成才算逾期）。
+    /// 没设时间的任务按当天 9:00 判定：今天 9:00 的任务，到 10:00 还没勾就会进「逾期未完成」。
+    /// 右侧三组（逾期未完成 / 未完成 / 已完成）与批量删除、批量完成都用这个口径。
+    /// </summary>
+    public bool IsOverdueAt(DateTime nowLocal) => !IsCompleted && nowLocal >= ScheduledAt;
 
     /// <summary>当天补发窗口的右端（当天 23:59:59）：超过它就不再补推，避免开机时蹦出一堆陈旧提醒。</summary>
     private DateTime ReminderWindowEnd => Date.ToDateTime(new TimeOnly(23, 59, 59));

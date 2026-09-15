@@ -28,6 +28,7 @@ public sealed class MainViewModel : ViewModelBase
     private bool _isAddingTodayTask;
     private string _todayTaskDraft = string.Empty;
     private string _todayTaskLead = ReminderNoneLabel;
+    private TimeSpan? _todayTaskTime = CalendarTask.DefaultTime.ToTimeSpan();
 
     /// <summary>本周三个分组共用的 VM 实例池（按任务 Id），保证跨组移动时实例不销毁。</summary>
     private readonly Dictionary<Guid, TaskItemViewModel> _weekVmPool = new();
@@ -305,6 +306,25 @@ public sealed class MainViewModel : ViewModelBase
     /// </summary>
     public int? TodayTaskReminderLead => Helpers.ReminderLeadCatalog.ToMinutes(_todayTaskLead);
 
+    /// <summary>
+    /// 面板快速添加时选的任务时刻（默认当天 9:00）。
+    /// 清空选择就回到 9:00 —— 「没选时间」和「就是 9 点」在这里是同一种含义。
+    /// </summary>
+    public TimeSpan? TodayTaskTime
+    {
+        get => _todayTaskTime;
+        set
+        {
+            if (SetProperty(ref _todayTaskTime, value ?? CalendarTask.DefaultTime.ToTimeSpan()))
+            {
+                OnPropertyChanged(nameof(TodayTaskTimeOnly));
+            }
+        }
+    }
+
+    /// <summary>草稿任务时刻对应的 <see cref="TimeOnly"/>（落盘时用它）。</summary>
+    public TimeOnly TodayTaskTimeOnly => TimeOnly.FromTimeSpan(_todayTaskTime ?? CalendarTask.DefaultTime.ToTimeSpan());
+
     /// <summary>展开今日任务的快速输入框。</summary>
     public void BeginAddTodayTask()
     {
@@ -323,22 +343,27 @@ public sealed class MainViewModel : ViewModelBase
 
     /// <summary>
     /// 提交今日任务的快速输入，返回新建的任务（草稿为空则返回 null）。
-    /// 任务不再有「时间」输入：基准时刻固定为当天 9:00，用户只选提前提醒量。
+    /// 任务的时刻由表单里选（默认当天 9:00），提前提醒量相对它往前推。
     /// </summary>
     public CalendarTask? CommitTodayTask()
     {
         var title = TodayTaskDraft.Trim();
         var lead = TodayTaskReminderLead;
+        var time = TodayTaskTimeOnly;
 
         TodayTaskDraft = string.Empty;
         ResetLeadLabel();
         IsAddingTodayTask = false;
 
-        return string.IsNullOrWhiteSpace(title) ? null : AddTask(_panelDate, title, lead);
+        return string.IsNullOrWhiteSpace(title) ? null : AddTask(_panelDate, title, lead, time);
     }
 
-    /// <summary>提醒下拉回到「不提醒」。</summary>
-    private void ResetLeadLabel() => TodayTaskLead = ReminderNoneLabel;
+    /// <summary>草稿恢复成"刚展开"的样子：提醒回到「不提醒」、任务时刻回到当天 9:00。</summary>
+    private void ResetLeadLabel()
+    {
+        TodayTaskLead = ReminderNoneLabel;
+        TodayTaskTime = CalendarTask.DefaultTime.ToTimeSpan();
+    }
 
     /// <summary>切换面板展示的日期并刷新任务清单。</summary>
     private void SetPanelDate(DateOnly date)
@@ -535,15 +560,18 @@ public sealed class MainViewModel : ViewModelBase
 
     /// <summary>
     /// 清空"逾期未完成"组的全部任务。返回删除数。
+    /// 与 <see cref="RefreshWeekTasks"/> 同一个口径（过了任务时刻就算逾期），
+    /// 否则按钮删掉的集合会跟界面上显示的那一组对不上。
     /// </summary>
-    public int ClearOverdueTasks() => BulkRemove(t => !t.IsCompleted && t.Date < Today);
+    public int ClearOverdueTasks() => BulkRemove(t => IsOverdueTask(t, _nowProvider().LocalDateTime));
 
-    /// <summary>清空"未完成"组的全部任务（只删本周内还没到的那些）。返回删除数。</summary>
+    /// <summary>清空"未完成"组的全部任务（只删本周内还没到点的那些）。返回删除数。</summary>
     public int ClearOpenTasks()
     {
         var weekStart = GetWeekStart(Today);
         var weekEnd = weekStart.AddDays(6);
-        return BulkRemove(t => !t.IsCompleted && t.Date >= weekStart && t.Date <= weekEnd && t.Date >= Today);
+        var nowLocal = _nowProvider().LocalDateTime;
+        return BulkRemove(t => IsOpenTask(t, nowLocal, weekStart, weekEnd));
     }
 
     /// <summary>清空"已完成"组的全部任务（本周内已完成的所有任务）。返回删除数。</summary>
@@ -558,7 +586,7 @@ public sealed class MainViewModel : ViewModelBase
     public int MarkOverdueCompleted()
     {
         var now = _nowProvider();
-        return BulkUpdate(t => !t.IsCompleted && t.Date < Today, t => t.MarkCompleted(now));
+        return BulkUpdate(t => IsOverdueTask(t, now.LocalDateTime), t => t.MarkCompleted(now));
     }
 
     /// <summary>把"未完成"组的全部任务标记为已完成。返回处理数。</summary>
@@ -568,7 +596,7 @@ public sealed class MainViewModel : ViewModelBase
         var weekEnd = weekStart.AddDays(6);
         var now = _nowProvider();
         return BulkUpdate(
-            t => !t.IsCompleted && t.Date >= weekStart && t.Date <= weekEnd && t.Date >= Today,
+            t => IsOpenTask(t, now.LocalDateTime, weekStart, weekEnd),
             t => t.MarkCompleted(now));
     }
 
@@ -635,18 +663,22 @@ public sealed class MainViewModel : ViewModelBase
         var weekStart = GetWeekStart(Today);
         var weekEnd = weekStart.AddDays(6);
 
+        // 逾期与否看"任务时刻"（日期 + 时间，没设时间按当天 9:00）：
+        // 今天 9:00 的任务到 10:00 还没勾就算逾期，今天 23:00 的还留在「未完成」。
+        var nowLocal = _nowProvider().LocalDateTime;
+
         List<CalendarTask> open;
         List<CalendarTask> overdue;
         List<CalendarTask> completed;
         lock (_syncRoot)
         {
             open = _data.Tasks
-                .Where(t => !t.IsCompleted && t.Date >= weekStart && t.Date <= weekEnd && t.Date >= Today)
+                .Where(t => IsOpenTask(t, nowLocal, weekStart, weekEnd))
                 .OrderBy(t => t.Date)
                 .ThenBy(t => t.CreatedAt)
                 .ToList();
             overdue = _data.Tasks
-                .Where(t => !t.IsCompleted && t.Date < Today)
+                .Where(t => IsOverdueTask(t, nowLocal))
                 .OrderBy(t => t.Date)
                 .ThenBy(t => t.CreatedAt)
                 .ToList();
@@ -681,6 +713,21 @@ public sealed class MainViewModel : ViewModelBase
         OnPropertyChanged(nameof(WeekRange));
         OnPropertyChanged(nameof(WeekSummary));
     }
+
+    /// <summary>
+    /// 「逾期未完成」：未完成，且已经过了任务时刻（日期 + 时间，没设时间按当天 9:00）。
+    /// 右侧三组、清空/批量完成的按钮都走这一个口径，界面显示的与按钮作用到的才是同一批任务。
+    /// </summary>
+    private static bool IsOverdueTask(CalendarTask task, DateTime nowLocal) => task.IsOverdueAt(nowLocal);
+
+    /// <summary>
+    /// 「未完成」：落在本周窗口内、未完成、而且还没到任务时刻。
+    /// </summary>
+    private static bool IsOpenTask(CalendarTask task, DateTime nowLocal, DateOnly weekStart, DateOnly weekEnd)
+        => !task.IsCompleted
+           && !IsOverdueTask(task, nowLocal)
+           && task.Date >= weekStart
+           && task.Date <= weekEnd;
 
     /// <summary>任务是否落在本周：计划日期在本周，或实际完成时刻在本周。</summary>
     private static bool IsInWeek(CalendarTask task, DateOnly weekStart, DateOnly weekEnd)
@@ -921,9 +968,12 @@ public sealed class MainViewModel : ViewModelBase
     }
 
     /// <param name="reminderLeadMinutes">
-    /// 提前提醒量（分钟）；null = 不提醒。锚点是当天 9:00，所以提前 30 分钟＝当天 08:30 推。
+    /// 提前提醒量（分钟）；null = 不提醒。以任务时刻为锚点：任务 15:00 + 提前 30 分钟＝14:30 推。
     /// </param>
-    public CalendarTask AddTask(DateOnly date, string title, int? reminderLeadMinutes = null)
+    /// <param name="time">
+    /// 任务时刻（几点几分）；null 或正好 09:00 都按"没选"处理（= 当天默认时刻 9:00）。
+    /// </param>
+    public CalendarTask AddTask(DateOnly date, string title, int? reminderLeadMinutes = null, TimeOnly? time = null)
     {
         lock (_syncRoot)
         {
@@ -932,6 +982,7 @@ public sealed class MainViewModel : ViewModelBase
                 Date = date,
                 Title = title.Trim(),
                 CreatedAt = _nowProvider(),
+                Time = NormalizeTaskTime(time),
                 ReminderLeadMinutes = reminderLeadMinutes is > 0 ? reminderLeadMinutes : null
             };
             _data.Tasks.Add(task);
@@ -940,6 +991,14 @@ public sealed class MainViewModel : ViewModelBase
             return task;
         }
     }
+
+    /// <summary>
+    /// 落盘前的任务时刻归一化：没选、或正好是当天默认时刻（9:00）都记 null。
+    /// 免得同一条任务因为"显式选了 9:00"和"没选"而存成两种形态，
+    /// 也让与 my-mindmap agent 同步来的复习任务（那边没有时间）保持同一种写法。
+    /// </summary>
+    private static TimeOnly? NormalizeTaskTime(TimeOnly? time)
+        => time is null || time == CalendarTask.DefaultTime ? null : time;
 
     public void RenameTask(Guid taskId, string title)
     {

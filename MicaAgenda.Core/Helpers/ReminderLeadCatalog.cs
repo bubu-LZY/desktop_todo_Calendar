@@ -4,8 +4,8 @@ namespace MicaAgenda.App.Helpers;
 /// 「提醒时间」下拉的固定档位。右侧面板与日期格子内的快速添加共用这一份，
 /// 避免两处各写一份、慢慢跑偏。
 ///
-/// 锚点是任务当天的 9:00（<see cref="Models.CalendarTask.DefaultTime"/>）：
-/// 选「提前30分钟」＝当天 08:30 推提醒。
+/// 锚点是任务的时刻（任务当天 + 你在日期右边选的那个时间，没选就是当天 9:00）：
+/// 选「提前30分钟」＝任务时刻往前 30 分钟推提醒。
 /// </summary>
 public static class ReminderLeadCatalog
 {

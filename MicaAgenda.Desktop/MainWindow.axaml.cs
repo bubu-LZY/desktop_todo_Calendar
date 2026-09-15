@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Linq;
 using System.Runtime.Versioning;
 using System.Threading.Tasks;
@@ -65,6 +66,13 @@ public partial class MainWindow : Window
     /// <summary>正在行内改标题的那条任务（同上：点别处要自动落盘）。</summary>
     private TaskItemViewModel? _editingTask;
 
+    /// <summary>
+    /// 有模态提示窗开着（例如"还没配飞书"）。
+    /// 弹窗会把焦点从表单上抢走，若不挡住，「焦点离开表单就提交」的逻辑会当场把草稿提交、表单收起来，
+    /// 用户点完"确定"回来发现表单已经没了。
+    /// </summary>
+    private bool _modalDialogOpen;
+
     // 布局 pass 里改可见性会再触发一轮布局；用标记 + Post 推到下一帧，挡掉重入。
     private bool _responsiveLayoutPending;
 
@@ -91,9 +99,13 @@ public partial class MainWindow : Window
     private bool _apiRefreshPending;
     private readonly object _apiRefreshLock = new();
 
+    /// <summary>窗口最外圈那四条不可见的缩放热区（见 MainWindow.axaml），光标要逐个写上去。</summary>
+    private readonly Control[] _resizeGrips;
+
     public MainWindow()
     {
         InitializeComponent();
+        _resizeGrips = [ResizeEdgeTop, ResizeEdgeBottom, ResizeEdgeLeft, ResizeEdgeRight];
         _config = _configStore.Load();
 
         // 桌面小部件不允许用「×」或 Alt+F4 / Cmd+W 关闭：任何模式下都阻断关闭。
@@ -1044,7 +1056,15 @@ public partial class MainWindow : Window
         };
 
         ok.Click += (_, _) => win.Close();
-        await win.ShowDialog(this);
+        _modalDialogOpen = true;
+        try
+        {
+            await win.ShowDialog(this);
+        }
+        finally
+        {
+            _modalDialogOpen = false;
+        }
     }
 
     private static string FormatSize(long bytes)
@@ -1771,6 +1791,7 @@ public partial class MainWindow : Window
     {
         var title = cell.DraftTitle?.Trim();
         var lead = cell.DraftReminderLead;
+        var time = cell.DraftTimeOnly;   // CancelAdd 会把草稿清掉，先取值
         cell.CancelAdd();
         if (ReferenceEquals(_pendingAddCell, cell))
         {
@@ -1780,7 +1801,7 @@ public partial class MainWindow : Window
         // 以前这里没有落盘：格子里加完任务要等下一次别的改动才写文件。
         if (!string.IsNullOrWhiteSpace(title))
         {
-            _viewModel?.AddTask(cell.Date, title, lead);
+            _viewModel?.AddTask(cell.Date, title, lead, time);
             _ = SaveAsync();
         }
     }
@@ -1861,9 +1882,12 @@ public partial class MainWindow : Window
             }
         }
 
+        // TimePicker 的弹出层（时钟面板）挂在它自己的宿主里，但逻辑树能追回 TimePicker，
+        // 点它同样不能把草稿提交掉。
         return e.Source is Visual source
                && (source.GetSelfAndVisualAncestors().Any(a => a is Popup)
-                   || source.GetSelfAndLogicalAncestors().Any(a => a is Control { Tag: "CellAddForm" } or Popup));
+                   || source.GetSelfAndLogicalAncestors()
+                       .Any(a => a is Control { Tag: "CellAddForm" } or Popup or TimePicker));
     }
 
     private bool TryGetCellAddFormBounds(out Rect rect)
@@ -1939,7 +1963,7 @@ public partial class MainWindow : Window
     /// <summary>表单失去全部焦点才提交；焦点还在表单里（点下拉、切换输入框）就保持展开。</summary>
     private void CommitTodayAddIfFocusLeftForm()
     {
-        if (_viewModel?.IsAddingTodayTask != true || IsFocusInsideAddTaskForm())
+        if (_viewModel?.IsAddingTodayTask != true || IsFocusInsideAddTaskForm() || _modalDialogOpen)
         {
             return;
         }
@@ -1962,6 +1986,51 @@ public partial class MainWindow : Window
     }
 
     private void CommitTodayTask_Click(object? sender, RoutedEventArgs e) => CommitTodayAdd();
+
+    /// <summary>
+    /// 右侧面板的「提醒时间」换档：选了真的提醒档、但飞书还没配好 → 说清楚这条提醒送不出去。
+    ///
+    /// 只认「从『不提醒』切到某个提醒档」这一次（见 <see cref="ReminderGate.ShouldWarnOnLeadChange"/>），
+    /// 档位之间来回换不重复弹。
+    /// IsEffectivelyVisible 这层判断是因为面板模板在宿主里有两份实例（右侧面板 + 窄窗视图），
+    /// 两边绑的是同一个 TodayTaskLead，改一次会同时回调 —— 不挡一下会弹出两个一模一样的窗。
+    /// </summary>
+    private void TaskLeadBox_SelectionChanged(object? sender, SelectionChangedEventArgs e)
+    {
+        if (_viewModel?.IsAddingTodayTask != true || sender is not Control { IsEffectivelyVisible: true })
+        {
+            return;
+        }
+
+        WarnIfFeishuNotConfigured(FirstLeadLabel(e.RemovedItems), FirstLeadLabel(e.AddedItems));
+    }
+
+    /// <summary>日期格子里那张悬浮表单的「提醒时间」换档，判断与提示同上。</summary>
+    private void CellLeadBox_SelectionChanged(object? sender, SelectionChangedEventArgs e)
+    {
+        if (sender is not Control { DataContext: DayCellViewModel cell } || !cell.IsAddingTask)
+        {
+            return;
+        }
+
+        WarnIfFeishuNotConfigured(FirstLeadLabel(e.RemovedItems), FirstLeadLabel(e.AddedItems));
+    }
+
+    /// <summary>下拉的变更项里取出档位文案（Avalonia 给的 AddedItems/RemovedItems 是 IList）。</summary>
+    private static string? FirstLeadLabel(IList items)
+        => items.Count > 0 ? items[0] as string : null;
+
+    /// <summary>提醒是走 webhook 推的：飞书没配好就提醒用户"这条提醒到点也不会响"。</summary>
+    private void WarnIfFeishuNotConfigured(string? previousLabel, string? newLabel)
+    {
+        // 飞书 webhook 在 AppConfig 里（日历数据那份 CalendarSettings 不管提醒）。
+        if (!ReminderGate.ShouldWarnOnLeadChange(_config, previousLabel, newLabel))
+        {
+            return;
+        }
+
+        _ = ShowMessageAsync("提醒无法送达", ReminderGate.FeishuMissingMessage);
+    }
 
     private void CancelTodayTask_Click(object? sender, RoutedEventArgs e) => _viewModel?.CancelTodayTask();
 
@@ -2072,7 +2141,7 @@ public partial class MainWindow : Window
 
     private void Shell_PointerMoved(object? sender, PointerEventArgs e)
     {
-        Shell.Cursor = _config.LockWindow
+        ApplyResizeCursor(_config.LockWindow
             ? ArrowCursor
             : GetEdgeAtPosition(e.GetPosition(this)) switch
             {
@@ -2081,7 +2150,23 @@ public partial class MainWindow : Window
                 WindowEdge.NorthWest or WindowEdge.SouthEast => new Cursor(StandardCursorType.TopLeftCorner),
                 WindowEdge.NorthEast or WindowEdge.SouthWest => new Cursor(StandardCursorType.TopRightCorner),
                 _ => ArrowCursor,
-            };
+            });
+    }
+
+    /// <summary>
+    /// 把光标写到「指针底下那一圈」的每个元素上。
+    ///
+    /// 光标必须逐元素设置：它不会从窗口往下继承，而外壳 Border 与四条缩放热区（见 MainWindow.axaml）
+    /// 是同级节点、各自都是独立的命中目标 —— 只写在其中一个上，指针落到另一个上面时图标就不会变，
+    /// 用户看到的就是"角落里没有斜着的缩放图标"。
+    /// </summary>
+    private void ApplyResizeCursor(Cursor cursor)
+    {
+        Shell.Cursor = cursor;
+        foreach (var grip in _resizeGrips)
+        {
+            grip.Cursor = cursor;
+        }
     }
 
     private static readonly Cursor ArrowCursor = new(StandardCursorType.Arrow);

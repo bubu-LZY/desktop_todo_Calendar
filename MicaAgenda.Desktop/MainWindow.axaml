@@ -191,8 +191,18 @@
             <Border Classes="panel" CornerRadius="8" Padding="8,7" BorderThickness="1" Width="216"
                     Tag="CellAddForm">
               <StackPanel Spacing="5">
-                <TextBlock Text="{Binding Header}" FontSize="11" FontWeight="SemiBold"
-                           Foreground="{DynamicResource PrimaryTextBrush}" />
+                <!-- 表头：左边日期，右边直接选「几点」。
+                     选中的时刻就是这条任务的时刻；下面的「提醒时间」相对它往前推。 -->
+                <DockPanel LastChildFill="False">
+                  <TextBlock DockPanel.Dock="Left" Text="{Binding Header}" FontSize="11" FontWeight="SemiBold"
+                             Foreground="{DynamicResource PrimaryTextBrush}" VerticalAlignment="Center" />
+                  <TimePicker DockPanel.Dock="Right" Tag="CellTimeBox" Width="116" MinWidth="0" MinHeight="24"
+                              FontSize="10.5"
+                              HorizontalAlignment="Right" VerticalAlignment="Center"
+                              ClockIdentifier="24HourClock" UseSeconds="False"
+                              SelectedTime="{Binding DraftTime, Mode=TwoWay}"
+                              ToolTip.Tip="任务时刻，默认 09:00" />
+                </DockPanel>
                 <TextBox Tag="CellDraftBox" Text="{Binding DraftTitle}"
                          Padding="4,3" FontSize="11.5" MinHeight="22"
                          PlaceholderText="任务内容，回车添加"
@@ -200,10 +210,11 @@
                 <Grid ColumnDefinitions="Auto,*">
                   <TextBlock Grid.Column="0" Text="提醒时间" FontSize="10.5" Margin="0,0,5,0"
                              Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center" />
-                  <ComboBox Grid.Column="1" HorizontalAlignment="Left" MinWidth="112" FontSize="10.5"
+                  <ComboBox Grid.Column="1" Tag="CellLeadBox" HorizontalAlignment="Left" MinWidth="112" FontSize="10.5"
                             MinHeight="24" Padding="6,1"
                             ItemsSource="{Binding ReminderLeadOptions}"
-                            SelectedItem="{Binding ReminderLead}" />
+                            SelectedItem="{Binding ReminderLead}"
+                            SelectionChanged="CellLeadBox_SelectionChanged" />
                 </Grid>
                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="4">
                   <Button Content="取消" FontSize="10.5" Padding="8,2" MinHeight="0"
@@ -403,9 +414,9 @@
               <TextBlock Text="{Binding TodayTaskSummary}" FontSize="10.5" Foreground="{DynamicResource MutedTextBrush}" Margin="0,2,0,0" />
             </StackPanel>
           </DockPanel>
-          <!-- ===== 快速添加表单：标题 + 提醒时间 + 确定 =====
-               任务没有「时间」输入框：基准时刻固定为任务当天 9:00，用户只选「提前多久提醒」，
-               提醒时刻 = 当天 9:00 − 提前量。下拉只有一列固定档位，不需要再让用户自己算。
+          <!-- ===== 快速添加表单：任务内容 + 任务时刻 + 提醒时间 + 确定 =====
+               先选任务时刻（日期由面板头上的日期决定，默认 09:00），再选「提前多久提醒」，
+               提醒时刻 = 任务时刻 − 提前量。下拉只有一列固定档位，不需要再让用户自己算。
                用 Tag 而不是 x:Name 定位：这段在 DataTemplate 内部，x:Name 生成不了字段
                （模板有自己的命名空间），宿主里既有右侧面板又有窄窗视图两份实例。 -->
           <StackPanel Grid.Row="1" Tag="AddTaskForm" IsVisible="{Binding IsAddingTodayTask}"
@@ -415,14 +426,24 @@
                      PlaceholderText="输入任务，回车添加"
                      KeyDown="TodayTaskTextBox_KeyDown" LostFocus="TodayTaskTextBox_LostFocus" />
             <Grid ColumnDefinitions="Auto,*">
+              <TextBlock Grid.Column="0" Text="任务时间" FontSize="10.5" Margin="0,0,5,0"
+                         Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center" />
+              <TimePicker Grid.Column="1" Tag="TodayTimeBox" HorizontalAlignment="Left" Width="140" MinWidth="0"
+                          MinHeight="24" FontSize="10.5" Padding="4,0"
+                          ClockIdentifier="24HourClock" UseSeconds="False"
+                          SelectedTime="{Binding TodayTaskTime, Mode=TwoWay}"
+                          ToolTip.Tip="任务时刻，默认 09:00" />
+            </Grid>
+            <Grid ColumnDefinitions="Auto,*">
               <TextBlock Grid.Column="0" Text="提醒时间" FontSize="10.5" Margin="0,0,5,0"
                          Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center" />
               <ComboBox Grid.Column="1" Tag="TaskLeadBox" HorizontalAlignment="Left" MinWidth="112"
                         FontSize="10.5" MinHeight="24" Padding="6,1"
                         ItemsSource="{Binding ReminderLeadOptions}"
-                        SelectedItem="{Binding TodayTaskLead}" />
+                        SelectedItem="{Binding TodayTaskLead}"
+                        SelectionChanged="TaskLeadBox_SelectionChanged" />
             </Grid>
-            <TextBlock Text="任务固定当天 9:00 开始，提醒按提前量往前推；选「不提醒」就不推送。"
+            <TextBlock Text="提醒按「任务时间」往前推；选「不提醒」就不推送。"
                        FontSize="9.5" TextWrapping="Wrap"
                        Foreground="{DynamicResource MutedTextBrush}" />
             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="4">
@@ -665,111 +686,128 @@
   <!-- 桌面挂件外壳：去掉系统标题栏（SystemDecorations=None）之后，
        窗口本身完全透明，底色 / 圆角 / 细边框都画在这一层上 —— 与 WPF 宿主
        （WindowStyle=None + AllowsTransparency）保持同一套外观。 -->
-  <Border x:Name="Shell"
-          CornerRadius="22"
-          BorderThickness="1"
-          BorderBrush="{DynamicResource WindowEdgeBrush}"
-          Background="#D8FFFFFF"
-          Padding="8"
-          ClipToBounds="True"
-          PointerPressed="Shell_PointerPressed"
-          PointerMoved="Shell_PointerMoved">
-    <Grid RowDefinitions="Auto,*">
-      <!-- ===== 顶栏：日期信息 + 视图切换 + 背景/透明度 ===== -->
-      <Border Grid.Row="0" Padding="10,6" BorderBrush="{DynamicResource CellBorderBrush}" BorderThickness="0,0,0,1">
-        <StackPanel Spacing="5">
-          <DockPanel LastChildFill="False">
-            <StackPanel DockPanel.Dock="Left" Orientation="Horizontal" Spacing="12" VerticalAlignment="Center">
-              <TextBlock Text="{Binding TodayDisplay}" FontSize="14" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryTextBrush}" />
-              <TextBlock Text="{Binding TodayTaskCount}" FontSize="12" Foreground="{DynamicResource MutedTextBrush}" />
-              <TextBlock Text="{Binding ThisWeekTaskCount}" FontSize="12" Foreground="{DynamicResource MutedTextBrush}" />
+  <Grid>
+    <Border x:Name="Shell"
+            CornerRadius="22"
+            BorderThickness="1"
+            BorderBrush="{DynamicResource WindowEdgeBrush}"
+            Background="#D8FFFFFF"
+            Padding="8"
+            ClipToBounds="True"
+            PointerPressed="Shell_PointerPressed"
+            PointerMoved="Shell_PointerMoved">
+      <Grid RowDefinitions="Auto,*">
+        <!-- ===== 顶栏：日期信息 + 视图切换 + 背景/透明度 ===== -->
+        <Border Grid.Row="0" Padding="10,6" BorderBrush="{DynamicResource CellBorderBrush}" BorderThickness="0,0,0,1">
+          <StackPanel Spacing="5">
+            <DockPanel LastChildFill="False">
+              <StackPanel DockPanel.Dock="Left" Orientation="Horizontal" Spacing="12" VerticalAlignment="Center">
+                <TextBlock Text="{Binding TodayDisplay}" FontSize="14" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryTextBrush}" />
+                <TextBlock Text="{Binding TodayTaskCount}" FontSize="12" Foreground="{DynamicResource MutedTextBrush}" />
+                <TextBlock Text="{Binding ThisWeekTaskCount}" FontSize="12" Foreground="{DynamicResource MutedTextBrush}" />
+              </StackPanel>
+              <StackPanel x:Name="ViewSwitchPanel" DockPanel.Dock="Right" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
+                <Button Classes="toolbar" Content="今天" Click="Today_Click" />
+                <Button Classes="toolbar" Content="月视图" Click="MonthView_Click" />
+                <Button Classes="toolbar" Content="周视图" Click="WeekView_Click" />
+                <Button Classes="toolbar" Content="年视图" Click="YearView_Click" />
+                <Button Classes="toolbar" Content="设置" Click="Settings_Click" />
+              </StackPanel>
+            </DockPanel>
+            <StackPanel x:Name="ViewControlsPanel" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+              <TextBlock Text="背景" FontSize="12" Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center" />
+              <ComboBox x:Name="BackgroundModeBox" Width="112" FontSize="12" SelectionChanged="BackgroundMode_Changed">
+                <ComboBoxItem Content="无背景" Tag="None" />
+                <ComboBoxItem Content="白雾玻璃" Tag="FrostedWhite" />
+                <ComboBoxItem Content="灰雾玻璃" Tag="FrostedGray" />
+                <ComboBoxItem Content="暗色磨砂" Tag="FrostedDark" />
+                <ComboBoxItem Content="蓝色亚克力" Tag="AcrylicBlue" />
+                <ComboBoxItem Content="薄荷玻璃" Tag="AcrylicMint" />
+                <ComboBoxItem Content="纸感浅白" Tag="PaperLight" />
+                <ComboBoxItem Content="石墨深色" Tag="Graphite" />
+              </ComboBox>
+              <TextBlock Text="透明度" FontSize="12" Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center" Margin="8,0,0,0" />
+              <Slider x:Name="OpacitySlider" Width="96" Minimum="0.02" Maximum="1" VerticalAlignment="Center"
+                      ValueChanged="Opacity_Changed" />
             </StackPanel>
-            <StackPanel x:Name="ViewSwitchPanel" DockPanel.Dock="Right" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
-              <Button Classes="toolbar" Content="今天" Click="Today_Click" />
-              <Button Classes="toolbar" Content="月视图" Click="MonthView_Click" />
-              <Button Classes="toolbar" Content="周视图" Click="WeekView_Click" />
-              <Button Classes="toolbar" Content="年视图" Click="YearView_Click" />
-              <Button Classes="toolbar" Content="设置" Click="Settings_Click" />
-            </StackPanel>
-          </DockPanel>
-          <StackPanel x:Name="ViewControlsPanel" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
-            <TextBlock Text="背景" FontSize="12" Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center" />
-            <ComboBox x:Name="BackgroundModeBox" Width="112" FontSize="12" SelectionChanged="BackgroundMode_Changed">
-              <ComboBoxItem Content="无背景" Tag="None" />
-              <ComboBoxItem Content="白雾玻璃" Tag="FrostedWhite" />
-              <ComboBoxItem Content="灰雾玻璃" Tag="FrostedGray" />
-              <ComboBoxItem Content="暗色磨砂" Tag="FrostedDark" />
-              <ComboBoxItem Content="蓝色亚克力" Tag="AcrylicBlue" />
-              <ComboBoxItem Content="薄荷玻璃" Tag="AcrylicMint" />
-              <ComboBoxItem Content="纸感浅白" Tag="PaperLight" />
-              <ComboBoxItem Content="石墨深色" Tag="Graphite" />
-            </ComboBox>
-            <TextBlock Text="透明度" FontSize="12" Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center" Margin="8,0,0,0" />
-            <Slider x:Name="OpacitySlider" Width="96" Minimum="0.02" Maximum="1" VerticalAlignment="Center"
-                    ValueChanged="Opacity_Changed" />
           </StackPanel>
-        </StackPanel>
-      </Border>
+        </Border>
 
-      <!-- ===== 主体：左=月/周/年视图（按 ViewMode 切换），右=任务面板（三视图共享）===== -->
-      <Grid x:Name="NormalViewHost" Grid.Row="1" ColumnDefinitions="*,216">
-        <Grid Grid.Column="0">
-        <!-- 月视图：连续月份时间轴 -->
-        <ScrollViewer IsVisible="{Binding Settings.ViewMode, Converter={StaticResource ViewModeEquals}, ConverterParameter=Month}"
-                      ScrollChanged="MonthScroll_ScrollChanged"
-                      VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-          <ItemsControl ItemsSource="{Binding TimelineMonths}" ItemTemplate="{StaticResource MonthBlockTemplate}" Margin="8" />
-        </ScrollViewer>
+        <!-- ===== 主体：左=月/周/年视图（按 ViewMode 切换），右=任务面板（三视图共享）===== -->
+        <Grid x:Name="NormalViewHost" Grid.Row="1" ColumnDefinitions="*,216">
+          <Grid Grid.Column="0">
+          <!-- 月视图：连续月份时间轴 -->
+          <ScrollViewer IsVisible="{Binding Settings.ViewMode, Converter={StaticResource ViewModeEquals}, ConverterParameter=Month}"
+                        ScrollChanged="MonthScroll_ScrollChanged"
+                        VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+            <ItemsControl ItemsSource="{Binding TimelineMonths}" ItemTemplate="{StaticResource MonthBlockTemplate}" Margin="8" />
+          </ScrollViewer>
 
-        <!-- 周视图：星期标题 + 7 个日期格子 -->
-        <Grid IsVisible="{Binding Settings.ViewMode, Converter={StaticResource ViewModeEquals}, ConverterParameter=Week}"
-              RowDefinitions="Auto,*" Margin="8">
-          <UniformGrid Columns="7" Margin="1,0">
-            <TextBlock Text="日" HorizontalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" FontSize="11" FontWeight="SemiBold" />
-            <TextBlock Text="一" HorizontalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" FontSize="11" FontWeight="SemiBold" />
-            <TextBlock Text="二" HorizontalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" FontSize="11" FontWeight="SemiBold" />
-            <TextBlock Text="三" HorizontalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" FontSize="11" FontWeight="SemiBold" />
-            <TextBlock Text="四" HorizontalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" FontSize="11" FontWeight="SemiBold" />
-            <TextBlock Text="五" HorizontalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" FontSize="11" FontWeight="SemiBold" />
-            <TextBlock Text="六" HorizontalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" FontSize="11" FontWeight="SemiBold" />
-          </UniformGrid>
-          <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
-            <ItemsControl ItemsSource="{Binding VisibleDays}" ItemTemplate="{StaticResource DayCellTemplate}">
+          <!-- 周视图：星期标题 + 7 个日期格子 -->
+          <Grid IsVisible="{Binding Settings.ViewMode, Converter={StaticResource ViewModeEquals}, ConverterParameter=Week}"
+                RowDefinitions="Auto,*" Margin="8">
+            <UniformGrid Columns="7" Margin="1,0">
+              <TextBlock Text="日" HorizontalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" FontSize="11" FontWeight="SemiBold" />
+              <TextBlock Text="一" HorizontalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" FontSize="11" FontWeight="SemiBold" />
+              <TextBlock Text="二" HorizontalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" FontSize="11" FontWeight="SemiBold" />
+              <TextBlock Text="三" HorizontalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" FontSize="11" FontWeight="SemiBold" />
+              <TextBlock Text="四" HorizontalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" FontSize="11" FontWeight="SemiBold" />
+              <TextBlock Text="五" HorizontalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" FontSize="11" FontWeight="SemiBold" />
+              <TextBlock Text="六" HorizontalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" FontSize="11" FontWeight="SemiBold" />
+            </UniformGrid>
+            <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+              <ItemsControl ItemsSource="{Binding VisibleDays}" ItemTemplate="{StaticResource DayCellTemplate}">
+                <ItemsControl.ItemsPanel>
+                  <ItemsPanelTemplate>
+                    <UniformGrid Columns="7" />
+                  </ItemsPanelTemplate>
+                </ItemsControl.ItemsPanel>
+              </ItemsControl>
+            </ScrollViewer>
+          </Grid>
+
+          <!-- 年视图：12 个月三列排布 -->
+          <ScrollViewer IsVisible="{Binding Settings.ViewMode, Converter={StaticResource ViewModeEquals}, ConverterParameter=Year}"
+                        VerticalScrollBarVisibility="Auto">
+            <ItemsControl ItemsSource="{Binding YearMonths}" ItemTemplate="{StaticResource YearMonthTemplate}" Margin="8">
               <ItemsControl.ItemsPanel>
                 <ItemsPanelTemplate>
-                  <UniformGrid Columns="7" />
+                  <UniformGrid Columns="3" />
                 </ItemsPanelTemplate>
               </ItemsControl.ItemsPanel>
             </ItemsControl>
           </ScrollViewer>
+          </Grid>
+          <!-- 右侧任务面板：今日任务 + 本周完成情况（月/周/年三视图共享同一份） -->
+          <ContentControl Grid.Column="1" Margin="0,8,8,8"
+                          Content="{Binding}"
+                          ContentTemplate="{StaticResource RightPanelTemplate}" />
         </Grid>
 
-        <!-- 年视图：12 个月三列排布 -->
-        <ScrollViewer IsVisible="{Binding Settings.ViewMode, Converter={StaticResource ViewModeEquals}, ConverterParameter=Year}"
-                      VerticalScrollBarVisibility="Auto">
-          <ItemsControl ItemsSource="{Binding YearMonths}" ItemTemplate="{StaticResource YearMonthTemplate}" Margin="8">
-            <ItemsControl.ItemsPanel>
-              <ItemsPanelTemplate>
-                <UniformGrid Columns="3" />
-              </ItemsPanelTemplate>
-            </ItemsControl.ItemsPanel>
-          </ItemsControl>
-        </ScrollViewer>
-        </Grid>
-        <!-- 右侧任务面板：今日任务 + 本周完成情况（月/周/年三视图共享同一份） -->
-        <ContentControl Grid.Column="1" Margin="0,8,8,8"
+        <!-- ===== 窄窗视图：窗口窄到放不下日历格子时，整个主体只剩「今日任务」这一块 =====
+             与 WPF 宿主 MicaAgenda.App 的 NarrowTaskOnlyView 同一行为：顶栏的视图切换 /
+             背景 / 透明度一起收起（否则按了按钮画面没反应，反而更迷惑）。 -->
+        <ContentControl x:Name="NarrowTaskOnlyView" Grid.Row="1" IsVisible="False"
+                        HorizontalAlignment="Stretch" VerticalAlignment="Stretch"
+                        Margin="8,8,8,8"
                         Content="{Binding}"
                         ContentTemplate="{StaticResource RightPanelTemplate}" />
       </Grid>
+    </Border>
 
-      <!-- ===== 窄窗视图：窗口窄到放不下日历格子时，整个主体只剩「今日任务」这一块 =====
-           与 WPF 宿主 MicaAgenda.App 的 NarrowTaskOnlyView 同一行为：顶栏的视图切换 /
-           背景 / 透明度一起收起（否则按了按钮画面没反应，反而更迷惑）。 -->
-      <ContentControl x:Name="NarrowTaskOnlyView" Grid.Row="1" IsVisible="False"
-                      HorizontalAlignment="Stretch" VerticalAlignment="Stretch"
-                      Margin="8,8,8,8"
-                      Content="{Binding}"
-                      ContentTemplate="{StaticResource RightPanelTemplate}" />
-    </Grid>
-  </Border>
+    <!-- ===== 边缘 / 角落缩放热区 =====
+         窗口是 SystemDecorations=None 的无边框窗体，系统不再提供"拖边缘缩放"。
+         外壳 Border 的圆角（22px）会把四个角落排除在命中范围之外 —— 角落处指针落不到 Shell 上，
+         PointerPressed/PointerMoved 都不会触发，于是右下角既没有斜向光标、也拖不动。
+         这里用四条不可见（alpha=1，肉眼无差）的矩形条补出整圈热区，盖在圆角外壳之上：
+         四个角落虽然视觉上是圆的，但仍然能拿到指针事件，斜着拖也能缩放。 -->
+    <Border x:Name="ResizeEdgeTop" VerticalAlignment="Top" Height="8" Background="#01000000"
+            PointerPressed="Shell_PointerPressed" PointerMoved="Shell_PointerMoved" />
+    <Border x:Name="ResizeEdgeBottom" VerticalAlignment="Bottom" Height="8" Background="#01000000"
+            PointerPressed="Shell_PointerPressed" PointerMoved="Shell_PointerMoved" />
+    <Border x:Name="ResizeEdgeLeft" HorizontalAlignment="Left" Width="8" Background="#01000000"
+            PointerPressed="Shell_PointerPressed" PointerMoved="Shell_PointerMoved" />
+    <Border x:Name="ResizeEdgeRight" HorizontalAlignment="Right" Width="8" Background="#01000000"
+            PointerPressed="Shell_PointerPressed" PointerMoved="Shell_PointerMoved" />
+  </Grid>
 </Window>

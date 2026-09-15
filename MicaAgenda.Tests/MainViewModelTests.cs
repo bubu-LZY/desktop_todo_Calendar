@@ -64,7 +64,10 @@ public sealed class MainViewModelTests
             [
                 new CalendarTask { Id = Guid.NewGuid(), Date = new DateOnly(2026, 5, 10), Title = "逾期1", CreatedAt = now },
                 new CalendarTask { Id = Guid.NewGuid(), Date = new DateOnly(2026, 5, 10), Title = "逾期已完成", IsCompleted = true, CreatedAt = now },
-                new CalendarTask { Id = Guid.NewGuid(), Date = new DateOnly(2026, 5, 15), Title = "今日", CreatedAt = now },
+                // 今天没选时间 = 当天 9:00，此刻（10:00）已经过点，所以算逾期。
+                new CalendarTask { Id = Guid.NewGuid(), Date = new DateOnly(2026, 5, 15), Title = "今日已过点", CreatedAt = now },
+                // 今天但还没到点：留在「未完成」，一键清空逾期时不能把它也带走。
+                new CalendarTask { Id = Guid.NewGuid(), Date = new DateOnly(2026, 5, 15), Time = new TimeOnly(23, 0), Title = "今日未到点", CreatedAt = now },
                 new CalendarTask { Id = Guid.NewGuid(), Date = new DateOnly(2026, 5, 16), Title = "未来", CreatedAt = now },
             ]
         };
@@ -72,9 +75,11 @@ public sealed class MainViewModelTests
 
         var removed = viewModel.ClearOverdueTasks();
 
-        Assert.Equal(1, removed);
+        Assert.Equal(2, removed);
         Assert.Equal(3, data.Tasks.Count);
         Assert.DoesNotContain(data.Tasks, t => t.Title == "逾期1");
+        Assert.DoesNotContain(data.Tasks, t => t.Title == "今日已过点");
+        Assert.Contains(data.Tasks, t => t.Title == "今日未到点");
     }
 
     [Fact]
@@ -86,7 +91,7 @@ public sealed class MainViewModelTests
             Tasks =
             [
                 new CalendarTask { Id = Guid.NewGuid(), Date = new DateOnly(2026, 5, 10), Title = "逾期未完成", CreatedAt = now },
-                new CalendarTask { Id = Guid.NewGuid(), Date = new DateOnly(2026, 5, 13), Title = "本周", CreatedAt = now },
+                new CalendarTask { Id = Guid.NewGuid(), Date = new DateOnly(2026, 5, 13), Time = new TimeOnly(23, 0), Title = "本周", CreatedAt = now },
                 new CalendarTask { Id = Guid.NewGuid(), Date = new DateOnly(2026, 5, 16), Title = "本周2", CreatedAt = now },
             ]
         };
@@ -895,7 +900,7 @@ public sealed class MainViewModelTests
         var now = new DateTimeOffset(2026, 5, 15, 10, 0, 0, TimeSpan.Zero);
         var overdueReview = new CalendarTask { Id = Guid.NewGuid(), Date = new DateOnly(2026, 5, 10), Title = "[MM复习]三角函数", CreatedAt = now };
         var overdueUser = new CalendarTask { Id = Guid.NewGuid(), Date = new DateOnly(2026, 5, 12), Title = "买菜", CreatedAt = now };
-        var todayUser = new CalendarTask { Id = Guid.NewGuid(), Date = new DateOnly(2026, 5, 15), Title = "今日", CreatedAt = now };
+        var todayUser = new CalendarTask { Id = Guid.NewGuid(), Date = new DateOnly(2026, 5, 15), Time = new TimeOnly(23, 0), Title = "今日", CreatedAt = now };
         var data = new CalendarData { Tasks = [overdueReview, overdueUser, todayUser] };
         var viewModel = new MainViewModel(data, () => now);
 
@@ -927,6 +932,95 @@ public sealed class MainViewModelTests
         // 只回推复习任务，且只回推这次真的被改动的那些
         Assert.Equal(new[] { overdueReview.Id, overdueLegacy.Id }, changed.Select(task => task.Id));
     }
+
+    /// <summary>
+    /// 逾期与否看「任务时刻」（日期 + 时间），不只看日期：
+    /// 今天 9:00 且此刻已过 = 逾期；今天 23:00 = 还留在「未完成」；没设时间 = 当天 9:00。
+    /// </summary>
+    [Fact]
+    public void OverdueFollowsTaskTimeNotJustTheDate()
+    {
+        var now = new DateTimeOffset(2026, 5, 15, 10, 0, 0, TimeSpan.Zero);
+        var data = new CalendarData
+        {
+            Tasks =
+            [
+                new CalendarTask { Id = Guid.NewGuid(), Date = new DateOnly(2026, 5, 15), Time = new TimeOnly(9, 0), Title = "今天9点", CreatedAt = now },
+                new CalendarTask { Id = Guid.NewGuid(), Date = new DateOnly(2026, 5, 15), Time = new TimeOnly(23, 0), Title = "今天23点", CreatedAt = now },
+                new CalendarTask { Id = Guid.NewGuid(), Date = new DateOnly(2026, 5, 15), Title = "今天没设时间", CreatedAt = now },
+            ]
+        };
+        var viewModel = new MainViewModel(data, () => now);
+
+        var overdue = viewModel.WeekOverdueTasks.Select(task => task.Title).ToList();
+        var open = viewModel.WeekOpenTasks.Select(task => task.Title).ToList();
+
+        Assert.Contains("今天9点", overdue);
+        Assert.Contains("今天没设时间", overdue);
+        Assert.DoesNotContain("今天23点", overdue);
+
+        Assert.Contains("今天23点", open);
+        Assert.DoesNotContain("今天9点", open);
+    }
+
+    /// <summary>没设时间 / 正好 9:00 都存成 null，让"没选"和"就是 9 点"在数据里是同一种形态。</summary>
+    [Fact]
+    public void AddTask_StoresChosenTimeAndTreatsNineAsUnset()
+    {
+        var data = new CalendarData();
+        var viewModel = new MainViewModel(data, () => new DateTimeOffset(2026, 5, 10, 9, 0, 0, TimeSpan.Zero));
+
+        viewModel.AddTask(new DateOnly(2026, 5, 12), "下午的会", time: new TimeOnly(15, 30));
+        viewModel.AddTask(new DateOnly(2026, 5, 12), "正好九点", time: new TimeOnly(9, 0));
+        viewModel.AddTask(new DateOnly(2026, 5, 12), "没选时刻");
+
+        Assert.Equal(new TimeOnly(15, 30), data.Tasks[0].Time);
+        Assert.Null(data.Tasks[1].Time);
+        Assert.Null(data.Tasks[2].Time);
+        Assert.Equal(new DateTime(2026, 5, 12, 15, 30, 0), data.Tasks[0].ScheduledAt);
+        Assert.Equal(new DateTime(2026, 5, 12, 9, 0, 0), data.Tasks[2].ScheduledAt);
+    }
+
+    /// <summary>提醒时刻 = 任务时刻 − 提前量；没设提前量就不提醒。</summary>
+    [Fact]
+    public void ReminderTriggerFollowsTaskTime()
+    {
+        var task = new CalendarTask
+        {
+            Id = Guid.NewGuid(),
+            Date = new DateOnly(2026, 5, 12),
+            Time = new TimeOnly(15, 0),
+            Title = "复习",
+            ReminderLeadMinutes = 30,
+            CreatedAt = DateTimeOffset.Now,
+        };
+
+        Assert.Equal(new DateTime(2026, 5, 12, 14, 30, 0), task.ReminderTriggerAt());
+
+        task.ReminderLeadMinutes = null;
+        Assert.Null(task.ReminderTriggerAt());
+    }
+
+    /// <summary>没到点的任务不算逾期；勾掉之后也不该再进逾期组。</summary>
+    [Fact]
+    public void IsOverdueAt_RespectsCompletionAndTaskTime()
+    {
+        var task = new CalendarTask
+        {
+            Id = Guid.NewGuid(),
+            Date = new DateOnly(2026, 5, 12),
+            Time = new TimeOnly(15, 0),
+            Title = "复习",
+            CreatedAt = DateTimeOffset.Now,
+        };
+
+        Assert.False(task.IsOverdueAt(new DateTime(2026, 5, 12, 14, 59, 0)));
+        Assert.True(task.IsOverdueAt(new DateTime(2026, 5, 12, 15, 0, 0)));
+
+        task.MarkCompleted(DateTimeOffset.Now);
+        Assert.False(task.IsOverdueAt(new DateTime(2026, 5, 13, 9, 0, 0)));
+    }
+
     [Fact]
     public void DeleteTask_UnknownIdRaisesNothing()
     {

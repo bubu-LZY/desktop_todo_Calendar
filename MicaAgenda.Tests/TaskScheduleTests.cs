@@ -21,7 +21,7 @@ public sealed class TaskScheduleTests
 
         var task = viewModel.AddTask(new DateOnly(2026, 5, 12), "组会汇报", 60);
 
-        // 任务不再由用户填时间：Time 留空，基准时刻走当天 9:00
+        // 没选时间：Time 留空，锚点走当天 9:00
         Assert.Null(task.Time);
         Assert.Equal(60, task.ReminderLeadMinutes);
         Assert.Equal(new DateTime(2026, 5, 12, 8, 0, 0), task.ReminderTriggerAt());
@@ -62,6 +62,20 @@ public sealed class TaskScheduleTests
         Assert.Equal(new DateTime(2026, 5, 10, 14, 0, 0), task.ReminderTriggerAt());
     }
 
+    /// <summary>选了任务时刻后，提醒量从那个时刻往前推（不再是固定当天 9:00）。</summary>
+    [Fact]
+    public void AddTask_WithChosenTime_AnchorsReminderToThatTime()
+    {
+        var data = new CalendarData();
+        var viewModel = new MainViewModel(data, () => new DateTimeOffset(2026, 5, 10, 9, 0, 0, TimeSpan.Zero));
+
+        var task = viewModel.AddTask(new DateOnly(2026, 5, 12), "下午的评审", 30, new TimeOnly(15, 0));
+
+        Assert.Equal(new TimeOnly(15, 0), task.Time);
+        Assert.Equal(new DateTime(2026, 5, 12, 14, 30, 0), task.ReminderTriggerAt());
+        Assert.Equal(new DateTime(2026, 5, 12, 15, 0, 0), task.ScheduledAt);
+    }
+
     [Fact]
     public void CommitTodayTask_CarriesLeadFromTheForm()
     {
@@ -71,18 +85,21 @@ public sealed class TaskScheduleTests
         viewModel.BeginAddTodayTask();
         viewModel.TodayTaskDraft = "写周报";
         viewModel.TodayTaskLead = "提前1个小时";
+        viewModel.TodayTaskTime = new TimeSpan(14, 0, 0);
 
         var task = viewModel.CommitTodayTask();
 
         Assert.NotNull(task);
         Assert.Equal(60, task!.ReminderLeadMinutes);
-        Assert.Null(task.Time);
+        Assert.Equal(new TimeOnly(14, 0), task.Time);
+        Assert.Equal(new DateTime(2026, 5, 10, 13, 0, 0), task.ReminderTriggerAt());
         Assert.Equal(new DateOnly(2026, 5, 10), task.Date);
 
-        // 提交后表单清空，下次添加不会带着上一条的提前量
+        // 提交后表单清空，下次添加不会带着上一条的提前量和时刻
         Assert.False(viewModel.IsAddingTodayTask);
         Assert.Null(viewModel.TodayTaskReminderLead);
         Assert.Equal("不提醒", viewModel.TodayTaskLead);
+        Assert.Equal(CalendarTask.DefaultTime, viewModel.TodayTaskTimeOnly);
     }
 
     [Theory]
@@ -139,6 +156,33 @@ public sealed class TaskScheduleTests
         Assert.Equal("不提醒", cell.ReminderLead);
         Assert.Equal(string.Empty, cell.DraftTitle);
         Assert.Null(cell.DraftReminderLead);
+    }
+
+    /// <summary>
+    /// 日期格子里的快速添加也要能选「任务时刻」，默认当天 9:00，
+    /// 并且开始 / 取消都要把它复位（否则下一条任务会莫名带着上一次选的时间）。
+    /// </summary>
+    [Fact]
+    public void DayCellQuickAdd_CarriesDraftTimeAndResetsIt()
+    {
+        var cell = new DayCellViewModel(new DateOnly(2026, 9, 15), isInCurrentMonth: true, isToday: true, [], []);
+
+        Assert.Equal(CalendarTask.DefaultTime, cell.DraftTimeOnly);
+
+        cell.DraftTime = new TimeSpan(15, 30, 0);
+        Assert.Equal(new TimeOnly(15, 30), cell.DraftTimeOnly);
+
+        // 取消 → 回到当天 9:00
+        cell.CancelAdd();
+        Assert.Equal(CalendarTask.DefaultTime, cell.DraftTimeOnly);
+
+        // 清空选择（TimePicker 允许清成 null）→ 也当 9:00
+        cell.DraftTime = null;
+        Assert.Equal(CalendarTask.DefaultTime, cell.DraftTimeOnly);
+
+        cell.DraftTime = new TimeSpan(8, 5, 0);
+        cell.BeginAdd();
+        Assert.Equal(CalendarTask.DefaultTime, cell.DraftTimeOnly);
     }
 
     private static CalendarTask ScheduledTask(TimeOnly? time, int? lead)
