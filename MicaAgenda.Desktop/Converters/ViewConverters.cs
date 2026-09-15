@@ -19,16 +19,6 @@ public sealed class TaskTitleOpacityConverter : IValueConverter
         => throw new NotSupportedException();
 }
 
-/// <summary>把视图模式枚举和参数字符串比较，相等返回 true —— 用于三个视图容器的 IsVisible 切换。</summary>
-public sealed class EnumEqualsConverter : IValueConverter
-{
-    public object? Convert(object? value, Type targetType, object? parameter, CultureInfo culture)
-        => value is not null && string.Equals(value.ToString(), parameter?.ToString(), StringComparison.Ordinal);
-
-    public object? ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture)
-        => throw new NotSupportedException();
-}
-
 /// <summary>布尔取反，用于"编辑态隐藏普通标题/显示输入框"这类互斥可见性。</summary>
 public sealed class InverseBoolConverter : IValueConverter
 {

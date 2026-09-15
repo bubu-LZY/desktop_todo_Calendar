@@ -170,6 +170,43 @@ public sealed class MainViewModelTests
     }
 
     [Fact]
+    public void ViewFlagsFollowTheActiveViewMode()
+    {
+        var data = new CalendarData();
+        var viewModel = new MainViewModel(data, () => new DateTimeOffset(2026, 5, 10, 9, 0, 0, TimeSpan.Zero));
+
+        // 界面上三个视图容器直接绑这三个布尔值（绑嵌套的 Settings.ViewMode 刷不动），
+        // 任何时刻必须**恰好**有一个是 true，否则要么叠着画、要么整片空白。
+        Assert.True(viewModel.IsMonthView);
+        Assert.False(viewModel.IsWeekView);
+        Assert.False(viewModel.IsYearView);
+
+        var notified = new List<string?>();
+        viewModel.PropertyChanged += (_, e) => notified.Add(e.PropertyName);
+
+        viewModel.SetViewMode(CalendarViewMode.Week);
+
+        Assert.False(viewModel.IsMonthView);
+        Assert.True(viewModel.IsWeekView);
+        Assert.False(viewModel.IsYearView);
+        Assert.Contains(nameof(MainViewModel.IsWeekView), notified);
+
+        viewModel.SetViewMode(CalendarViewMode.Year);
+
+        Assert.False(viewModel.IsMonthView);
+        Assert.False(viewModel.IsWeekView);
+        Assert.True(viewModel.IsYearView);
+        Assert.Contains(nameof(MainViewModel.IsYearView), notified);
+
+        viewModel.SetViewMode(CalendarViewMode.Month);
+
+        Assert.True(viewModel.IsMonthView);
+        Assert.False(viewModel.IsWeekView);
+        Assert.False(viewModel.IsYearView);
+        Assert.Contains(nameof(MainViewModel.IsMonthView), notified);
+    }
+
+    [Fact]
     public void RefreshHeightProperties_DoesNotRebuildVisibleDayCells()
     {
         var data = new CalendarData

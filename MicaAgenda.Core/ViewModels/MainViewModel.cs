@@ -68,6 +68,18 @@ public sealed class MainViewModel : ViewModelBase
     public ObservableCollection<DayCellViewModel> VisibleDays { get; }
     public ObservableCollection<MonthSummaryViewModel> YearMonths { get; }
 
+    /// <summary>
+    /// 三个月/周/年视图容器的可见性，给 XAML 直接绑。
+    ///
+    /// 以前 XAML 绑的是 <c>Settings.ViewMode</c> 这种「嵌套属性路径」，而中间那层
+    /// <see cref="Models.CalendarSettings"/> 是纯 POCO（没实现 INotifyPropertyChanged），
+    /// 视图模式改了这一层路径刷不动 —— 表现就是点了「周视图 / 年视图」画面纹丝不动、
+    /// 一直停在月视图上。改成绑单层布尔值，通知一定送得到。
+    /// </summary>
+    public bool IsMonthView => Settings.ViewMode == CalendarViewMode.Month;
+    public bool IsWeekView => Settings.ViewMode == CalendarViewMode.Week;
+    public bool IsYearView => Settings.ViewMode == CalendarViewMode.Year;
+
     /// <summary>今日任务面板数据源（独立于日历格子中的 ViewModel 实例，互不干扰）。</summary>
     public ObservableCollection<TaskItemViewModel> TodayTasks { get; }
 
@@ -1109,6 +1121,12 @@ public sealed class MainViewModel : ViewModelBase
 
         Settings.ViewMode = viewMode;
         OnPropertyChanged(nameof(Settings));
+
+        // 视图容器的可见性绑的是下面这三个单层布尔值（见属性注释），
+        // 换视图时必须一起通知，否则画面不会跟着切。
+        OnPropertyChanged(nameof(IsMonthView));
+        OnPropertyChanged(nameof(IsWeekView));
+        OnPropertyChanged(nameof(IsYearView));
 
         // 切换视图时清除选中状态，让右侧面板回到今日任务
         ClearCellSelection();
