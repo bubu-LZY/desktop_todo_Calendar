@@ -81,6 +81,10 @@ public partial class MainWindow : Window
     private BackupService? _backupService;
     private ReportService? _reportService;
     private MindMapReviewSyncService? _mindMapSyncService;
+    private UpdateService? _updateService;
+    // 更新流程一次只跑一条：自动检查与设置面板的手动「检查更新」可能同时按下，
+    // 撞在一起会弹两个窗、下两份包。
+    private bool _updateFlowRunning;
     private TaskApiServer? _apiServer;
 
     // API/MCP/同步在后台线程改数据后，合并刷新（防高频重建 UI 与重复落盘）。
@@ -145,6 +149,13 @@ public partial class MainWindow : Window
 
             // 应用已保存的视觉设置：背景模式 / 透明度 / 按视图记忆的窗口位置尺寸 + 同步工具栏控件。
             ApplySettingsToWindow();
+
+            // 启动后自动查一次新版本（默认开启）。延迟几秒：先让首屏和「嵌入桌面」的置底
+            // 稳定下来，再谈弹窗，免得开机瞬间就被一个对话框糊住。
+            if (_config.AutoCheckUpdate)
+            {
+                _ = CheckForUpdatesAfterStartupAsync();
+            }
         }
         catch (Exception ex)
         {
@@ -489,6 +500,7 @@ public partial class MainWindow : Window
                 _ = SaveAsync();
             },
             HolidayRefreshRequested = () => _ = RefreshHolidaysAsync(),
+            UpdateCheckRequested = () => RunUpdateFlowAsync(manual: true),
             ApplyRequested = OnConfigApplied
         };
 
@@ -662,7 +674,10 @@ public partial class MainWindow : Window
         TryStart(StartBackupService, "Backup");
         TryStart(StartReportService, "Report");
         TryStart(StartMindMapSyncService, "MindMapSync");
+        TryStart(StartUpdateService, "Update");
     }
+
+    private void StartUpdateService() => _updateService ??= new UpdateService();
 
     private void TryStart(Action start, string name)
     {
@@ -786,6 +801,262 @@ public partial class MainWindow : Window
 
     /// <summary>其它入口（托盘菜单等）：用已保存的配置同步一次。</summary>
     internal System.Threading.Tasks.Task<string> SyncMindMapNowAsync() => SyncMindMapNowAsync(null, null);
+
+    // ===== 版本更新 =====
+
+    private async System.Threading.Tasks.Task CheckForUpdatesAfterStartupAsync()
+    {
+        try
+        {
+            await System.Threading.Tasks.Task.Delay(TimeSpan.FromSeconds(4));
+            if (_updateFlowRunning)
+            {
+                return;
+            }
+
+            await RunUpdateFlowAsync(manual: false);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error(ex, "MainWindow.UpdateAutoCheck");
+        }
+    }
+
+    /// <summary>用户是不是选了「今日内不再提示更新」。</summary>
+    private bool IsUpdateSkippedToday() =>
+        string.Equals(_config.UpdateSkipDate, DateTime.Today.ToString("yyyy-MM-dd"), StringComparison.Ordinal);
+
+    private void SetUpdateSkipToday(bool skip)
+    {
+        _config.UpdateSkipDate = skip ? DateTime.Today.ToString("yyyy-MM-dd") : string.Empty;
+        _ = _configStore.SaveAsync(_config);
+    }
+
+    /// <summary>
+    /// 「检查更新 → 询问 → 后台下载 → 提示重启」全流程。设置面板的手动检查与启动时的自动检查
+    /// 共用这一段，两条路的文案与行为才不会跑偏。
+    ///
+    /// <paramref name="manual"/> = true 表示用户主动点了「检查更新」：任何结果都要有回执；
+    /// false 表示启动时的自动检查：已是最新 / 检查失败 / 用户选了「今日内不再提示」都安静收场。
+    /// </summary>
+    private async System.Threading.Tasks.Task<string> RunUpdateFlowAsync(bool manual)
+    {
+        if (_updateFlowRunning)
+        {
+            return "正在检查更新…";
+        }
+
+        if (_updateService is null)
+        {
+            TryStart(StartUpdateService, "Update");
+        }
+
+        var service = _updateService;
+        if (service is null)
+        {
+            return "更新服务不可用";
+        }
+
+        _updateFlowRunning = true;
+        try
+        {
+            // 自动检查时先看「今日内不再提示」：连这次网络请求都省掉。
+            if (!manual && IsUpdateSkippedToday())
+            {
+                return "今日内不再提示更新";
+            }
+
+            var result = await service.CheckAsync();
+            if (!result.Succeeded || !result.UpdateAvailable || result.Asset is null)
+            {
+                if (manual)
+                {
+                    await ShowMessageAsync("检查更新", result.Message);
+                }
+
+                return result.Message;
+            }
+
+            var latestText = string.IsNullOrWhiteSpace(result.TagName)
+                ? "v" + UpdateService.Normalize(result.LatestVersion!)
+                : result.TagName!;
+            var question =
+                $"检测到新版本 {latestText}（当前 {service.CurrentVersionText}）。\n\n" +
+                $"要现在下载更新吗？安装包约 {FormatSize(result.Asset.SizeBytes)}，会在后台下载，\n" +
+                "下载完成后再问你一次要不要重启安装。";
+
+            var (accepted, skipToday) = await AskUpdateAsync(question);
+            if (skipToday)
+            {
+                SetUpdateSkipToday(true);
+            }
+
+            if (!accepted)
+            {
+                return $"已跳过 {latestText}";
+            }
+
+            // 后台下载：不挡界面、不占模态。用户可以在下载期间继续用日历。
+            string installerPath;
+            try
+            {
+                installerPath = await service.DownloadAsync(result.Asset);
+            }
+            catch (Exception ex)
+            {
+                AppLog.Error(ex, "MainWindow.UpdateDownload");
+                await ShowMessageAsync("下载失败", "更新包下载失败：" + ex.Message + "\n\n可以稍后再试一次。");
+                return "下载失败：" + ex.Message;
+            }
+
+            var restart = await ConfirmAsync(
+                "下载完成",
+                $"{latestText} 已经下载完成。\n\n要现在重启并完成更新吗？程序会自动关闭、静默安装，装好后自己重新打开。");
+            if (!restart)
+            {
+                return "更新包已下载：" + installerPath;
+            }
+
+            await ApplyUpdateAndExitAsync(installerPath);
+            return "正在重启完成更新…";
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error(ex, "MainWindow.UpdateFlow");
+            if (manual)
+            {
+                await ShowMessageAsync("检查更新", "检查更新失败：" + ex.Message);
+            }
+
+            return "检查更新失败：" + ex.Message;
+        }
+        finally
+        {
+            _updateFlowRunning = false;
+        }
+    }
+
+    /// <summary>
+    /// 交接给安装包，然后把程序关掉。
+    ///
+    /// 关之前必须先把数据落盘：安装程序会 taskkill 掉本进程，防抖保存里的脏数据没机会再写。
+    /// 重启交给 UpdateService 里的 cmd 助手负责（它 wait 安装程序结束，再 start 本程序）。
+    /// </summary>
+    private async System.Threading.Tasks.Task ApplyUpdateAndExitAsync(string installerPath)
+    {
+        var exe = Environment.ProcessPath;
+        if (string.IsNullOrWhiteSpace(exe))
+        {
+            await ShowMessageAsync("无法自动更新", "找不到当前程序路径，请手动运行下载好的安装包：\n" + installerPath);
+            return;
+        }
+
+        try
+        {
+            UpdateService.LaunchInstallerAndRestart(installerPath, exe);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error(ex, "MainWindow.UpdateLaunchInstaller");
+            await ShowMessageAsync("无法自动更新", "启动安装程序失败：" + ex.Message + "\n\n请手动运行：" + installerPath);
+            return;
+        }
+
+        // 走正常退出流程（落盘 + 释放服务 + 收掉托盘图标），别留下一个点不动的托盘残影。
+        ExitApplication();
+    }
+
+    /// <summary>「发现新版本」询问框：是 / 否 + 「今日内不再提示更新」。</summary>
+    private async System.Threading.Tasks.Task<(bool Accepted, bool SkipToday)> AskUpdateAsync(string message)
+    {
+        var accepted = false;
+        var skipBox = new CheckBox
+        {
+            Content = "今日内不再提示更新",
+            IsChecked = false,
+            Margin = new Thickness(0, 12, 0, 0)
+        };
+        var yes = new Button { Content = "更新", MinWidth = 72 };
+        var no = new Button { Content = "稍后", MinWidth = 72 };
+
+        var win = new Window
+        {
+            Title = "发现新版本",
+            Width = 420,
+            SizeToContent = SizeToContent.Height,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            CanResize = false,
+            // 这条询问可能是启动后自动弹的（用户没点任何东西）：必须浮在最上面，
+            // 否则「嵌入桌面」把主窗口压到最底层时，用户根本看不到这个框。
+            Topmost = true,
+            Content = new StackPanel
+            {
+                Margin = new Thickness(16),
+                Spacing = 14,
+                Children =
+                {
+                    new TextBlock { Text = message, TextWrapping = TextWrapping.Wrap },
+                    skipBox,
+                    new StackPanel
+                    {
+                        Orientation = Orientation.Horizontal,
+                        HorizontalAlignment = HorizontalAlignment.Right,
+                        Spacing = 8,
+                        Children = { yes, no }
+                    }
+                }
+            }
+        };
+
+        yes.Click += (_, _) => { accepted = true; win.Close(); };
+        no.Click += (_, _) => { accepted = false; win.Close(); };
+
+        await win.ShowDialog(this);
+        return (accepted, skipBox.IsChecked == true);
+    }
+
+    /// <summary>单个「确定」的消息框（Avalonia 无内置 MessageBox）。</summary>
+    private async System.Threading.Tasks.Task ShowMessageAsync(string title, string message)
+    {
+        var ok = new Button { Content = "确定", MinWidth = 72 };
+        var win = new Window
+        {
+            Title = title,
+            Width = 420,
+            SizeToContent = SizeToContent.Height,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            CanResize = false,
+            Content = new StackPanel
+            {
+                Margin = new Thickness(16),
+                Spacing = 14,
+                Children =
+                {
+                    new TextBlock { Text = message, TextWrapping = TextWrapping.Wrap },
+                    new StackPanel
+                    {
+                        Orientation = Orientation.Horizontal,
+                        HorizontalAlignment = HorizontalAlignment.Right,
+                        Children = { ok }
+                    }
+                }
+            }
+        };
+
+        ok.Click += (_, _) => win.Close();
+        await win.ShowDialog(this);
+    }
+
+    private static string FormatSize(long bytes)
+    {
+        if (bytes <= 0)
+        {
+            return "未知大小";
+        }
+
+        var mb = bytes / 1024d / 1024d;
+        return mb >= 1 ? $"{mb:0.#} MB" : $"{bytes / 1024d:0} KB";
+    }
 
     /// <summary>
     /// 复习任务在日历里被勾选 / 取消后，立刻把状态与「状态最后变更时间」推给 my-mindmap agent
@@ -943,6 +1214,8 @@ public partial class MainWindow : Window
         _reportService = null;
         TryDispose(() => _mindMapSyncService?.Dispose(), "MindMapSync");
         _mindMapSyncService = null;
+        TryDispose(() => _updateService?.Dispose(), "Update");
+        _updateService = null;
     }
 
     private static void TryDispose(Action dispose, string name)

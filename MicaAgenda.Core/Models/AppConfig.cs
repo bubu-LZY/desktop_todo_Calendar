@@ -98,6 +98,15 @@ public sealed class AppConfig
     // 极不友好（看着像"无响应"）；需要的人去设置里勾选即可。</summary>
     public bool EmbedDesktop { get; set; } = false;
 
+    /// <summary>启动时自动向 GitHub Releases 检查新版本（默认开启；关掉后只能手动点「检查更新」）。</summary>
+    public bool AutoCheckUpdate { get; set; } = true;
+
+    /// <summary>
+    /// 「今日内不再提示更新」记住的那一天（本地日期 yyyy-MM-dd）。
+    /// 为空或不是今天时照常提示；是今天就静默跳过自动检查的弹窗（手动点「检查更新」仍会提示）。
+    /// </summary>
+    public string UpdateSkipDate { get; set; } = string.Empty;
+
     /// <summary>
     /// 复制一份配置快照。设置窗口与主窗体共用同一个 AppConfig 实例，保存时是「就地改写」，
     /// 所以主窗体要判断"哪些设置项变了"必须先拿到改写前的快照——否则新旧值永远相同，

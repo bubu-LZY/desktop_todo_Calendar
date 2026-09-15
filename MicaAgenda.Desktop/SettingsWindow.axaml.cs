@@ -47,6 +47,9 @@ public partial class SettingsWindow : Window
     /// <summary>请求主窗体立即执行一次 my-mindmap 同步，返回结果文本。</summary>
     public Func<string?, string?, Task<string>>? MindMapSyncRequested { get; set; }
 
+    /// <summary>请求主窗体走一遍「检查更新 → 询问 → 后台下载 → 提示重启」流程，返回结果文本。</summary>
+    public Func<Task<string>>? UpdateCheckRequested { get; set; }
+
     // Avalonia XAML 编译器要求根类型存在公共无参构造函数（仅供编译期/设计期）；
     // 运行时一律使用下面的有参构造注入依赖。
     public SettingsWindow()
@@ -107,6 +110,10 @@ public partial class SettingsWindow : Window
             // 非 Windows：整块隐藏，不呈现「点了没反应」的开关
             StartupOptionsPanel.IsVisible = false;
         }
+        UpdateVersionText.Text = $"当前版本 v{UpdateService.Normalize(UpdateService.CurrentAppVersion())}";
+        AutoCheckUpdateBox.IsChecked = _config.AutoCheckUpdate;
+        SkipUpdateTodayBox.IsChecked = IsUpdateSkippedToday();
+
         LoadReportValues();
         UpdateApiHint();
         UpdateMcpEndpoint();
@@ -673,6 +680,13 @@ public partial class SettingsWindow : Window
             return;
         }
 
+        _config.AutoCheckUpdate = AutoCheckUpdateBox.IsChecked == true;
+        // 勾上就记今天、取消就清掉：这样「今日内不再提示」是用户随时能撤回的，
+        // 不会到了明天还得再去改配置。
+        _config.UpdateSkipDate = SkipUpdateTodayBox.IsChecked == true
+            ? DateTime.Today.ToString("yyyy-MM-dd")
+            : string.Empty;
+
         await _configStore.SaveAsync(_config);
         ApplyRequested?.Invoke(_config);
         Close();
@@ -824,6 +838,42 @@ public partial class SettingsWindow : Window
 
         ok.Click += (_, _) => win.Close();
         await win.ShowDialog(this);
+    }
+
+    // ===== 版本更新 =====
+
+    /// <summary>用户是不是选了「今日内不再提示更新」。</summary>
+    private bool IsUpdateSkippedToday() =>
+        string.Equals(_config.UpdateSkipDate, DateTime.Today.ToString("yyyy-MM-dd"), StringComparison.Ordinal);
+
+    private async void CheckUpdate_Click(object? sender, RoutedEventArgs e)
+    {
+        if (UpdateCheckRequested is null)
+        {
+            UpdateStatusText.Text = "更新服务不可用";
+            return;
+        }
+
+        CheckUpdateButton.IsEnabled = false;
+        UpdateStatusText.Text = "正在检查…";
+        try
+        {
+            // 手动点击不受「今日内不再提示」影响：用户主动问的，就必须如实回答。
+            UpdateStatusText.Text = await UpdateCheckRequested();
+            // 手动检查返回的「已是最新」也要有回执；发现新版本时主窗体负责后续的下载与重启提示。
+            _config.UpdateSkipDate = SkipUpdateTodayBox.IsChecked == true
+                ? DateTime.Today.ToString("yyyy-MM-dd")
+                : string.Empty;
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error(ex, "SettingsWindow.CheckUpdate");
+            UpdateStatusText.Text = "检查更新失败：" + ex.Message;
+        }
+        finally
+        {
+            CheckUpdateButton.IsEnabled = true;
+        }
     }
 
     /// <summary>确认对话框（替代 WPF MessageBox YesNo/OKCancel）。</summary>

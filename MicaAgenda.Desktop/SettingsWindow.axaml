@@ -244,6 +244,23 @@
           </StackPanel>
         </Border>
 
+        <!-- ===== 版本更新 ===== -->
+        <Border Classes="card">
+          <StackPanel>
+            <TextBlock Text="版本更新" Classes="groupTitle" />
+            <TextBlock x:Name="UpdateVersionText" Foreground="#374151" FontSize="12" TextWrapping="Wrap" Margin="0,0,0,8" />
+            <CheckBox x:Name="AutoCheckUpdateBox" Content="启动时自动检测更新" Margin="0,0,0,6" />
+            <CheckBox x:Name="SkipUpdateTodayBox" Content="今日内不再提示更新" Margin="0,0,0,8" />
+            <StackPanel Orientation="Horizontal">
+              <Button x:Name="CheckUpdateButton" Content="检查更新" Classes="actionButton" Click="CheckUpdate_Click" />
+              <TextBlock x:Name="UpdateStatusText" Foreground="#157347" FontSize="11" Margin="10,0,0,0"
+                         VerticalAlignment="Center" TextWrapping="Wrap" />
+            </StackPanel>
+            <TextBlock Classes="hint" Margin="0,8,0,0"
+                       Text="更新包取自 GitHub Releases：检测到新版本会先问一句，确认后在后台下载；下载完成再提示重启，重启后自动完成安装。" />
+          </StackPanel>
+        </Border>
+
         <!-- ===== 重置 ===== -->
         <Border Classes="card" BorderBrush="#FCA5A5" BorderThickness="1">
           <StackPanel>
