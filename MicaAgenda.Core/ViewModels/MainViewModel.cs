@@ -479,9 +479,11 @@ public sealed class MainViewModel : ViewModelBase
 
         MarkDirty();
         RebuildCalendar();
+
+        // 一键清空同样要通知对端：漏掉的话，清掉的复习任务下次同步会被重建，表现为「删不掉」。
+        NotifyReviewTasksDeleted(toRemove);
         return toRemove.Count;
     }
-
 
     /// <summary>
     /// 删除数据库里的所有任务，相当于「重置为初始状态」。
@@ -490,16 +492,33 @@ public sealed class MainViewModel : ViewModelBase
     /// </summary>
     public int DeleteAllTasks()
     {
+        List<CalendarTask> removedReviewTasks;
         int removed;
         lock (_syncRoot)
         {
             removed = _data.Tasks.Count;
+            removedReviewTasks = _data.Tasks.Where(t => t.IsReviewTask).ToList();
             _data.Tasks.Clear();
         }
 
         RebuildCalendar();
         MarkDirty();
+
+        // 连同复习任务一起通知对端，否则下一次同步会把它们全部重建回来。
+        NotifyReviewTasksDeleted(removedReviewTasks);
         return removed;
+    }
+
+    /// <summary>
+    /// 批量删除后的对端通知：只挑复习任务，逐个抛 <see cref="ReviewTaskDeleted"/>。
+    /// 放在锁外做——接收方会去发网络请求，持锁调用会把界面卡住。
+    /// </summary>
+    private void NotifyReviewTasksDeleted(IEnumerable<CalendarTask> removed)
+    {
+        foreach (var task in removed.Where(t => t.IsReviewTask).ToList())
+        {
+            ReviewTaskDeleted?.Invoke(task);
+        }
     }
     /// <summary>
     /// 刷新"本周任务完成情况"的三组集合（未完成 / 逾期未完成 / 已完成）。

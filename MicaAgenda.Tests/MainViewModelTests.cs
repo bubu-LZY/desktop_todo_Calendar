@@ -825,6 +825,71 @@ public sealed class MainViewModelTests
     }
 
     [Fact]
+    public void ClearPanelDateTasks_AlsoNotifiesTheOtherSideAboutReviewTasks()
+    {
+        var review = new CalendarTask
+        {
+            Id = Guid.NewGuid(),
+            Date = new DateOnly(2026, 5, 10),
+            Title = "[MM复习]三角函数",
+            CreatedAt = new DateTimeOffset(2026, 5, 10, 9, 0, 0, TimeSpan.Zero)
+        };
+        var otherDay = new CalendarTask
+        {
+            Id = Guid.NewGuid(),
+            Date = new DateOnly(2026, 5, 12),
+            Title = "买菜",
+            CreatedAt = new DateTimeOffset(2026, 5, 10, 9, 0, 0, TimeSpan.Zero)
+        };
+        var data = new CalendarData { Tasks = [review, otherDay] };
+        var viewModel = new MainViewModel(data, () => new DateTimeOffset(2026, 5, 10, 10, 0, 0, TimeSpan.Zero));
+
+        var removed = new List<CalendarTask>();
+        viewModel.ReviewTaskDeleted += removed.Add;
+
+        Assert.Equal(1, viewModel.ClearPanelDateTasks());
+
+        Assert.Equal(new[] { review.Id }, removed.Select(task => task.Id));
+        Assert.Equal(new[] { otherDay.Id }, data.Tasks.Select(task => task.Id));
+    }
+
+    [Fact]
+    public void DeleteAllTasks_NotifiesTheOtherSideAboutEveryReviewTask()
+    {
+        var review = new CalendarTask
+        {
+            Id = Guid.NewGuid(),
+            Date = new DateOnly(2026, 5, 10),
+            Title = "[MM复习]三角函数",
+            CreatedAt = new DateTimeOffset(2026, 5, 10, 9, 0, 0, TimeSpan.Zero)
+        };
+        var legacy = new CalendarTask
+        {
+            Id = Guid.NewGuid(),
+            Date = new DateOnly(2026, 5, 11),
+            Title = "[复习]立体几何",
+            CreatedAt = new DateTimeOffset(2026, 5, 10, 9, 0, 0, TimeSpan.Zero)
+        };
+        var user = new CalendarTask
+        {
+            Id = Guid.NewGuid(),
+            Date = new DateOnly(2026, 5, 12),
+            Title = "买菜",
+            CreatedAt = new DateTimeOffset(2026, 5, 10, 9, 0, 0, TimeSpan.Zero)
+        };
+        var data = new CalendarData { Tasks = [review, legacy, user] };
+        var viewModel = new MainViewModel(data, () => new DateTimeOffset(2026, 5, 10, 10, 0, 0, TimeSpan.Zero));
+
+        var removed = new List<CalendarTask>();
+        viewModel.ReviewTaskDeleted += removed.Add;
+
+        Assert.Equal(3, viewModel.DeleteAllTasks());
+
+        Assert.Equal(new[] { review.Id, legacy.Id }, removed.Select(task => task.Id));
+        Assert.Empty(data.Tasks);
+    }
+
+    [Fact]
     public void DeleteTask_UnknownIdRaisesNothing()
     {
         var data = new CalendarData();
