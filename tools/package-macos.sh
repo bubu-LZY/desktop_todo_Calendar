@@ -2,7 +2,7 @@
 # 打包 macOS 产物：.app 包 + .dmg + .zip
 # 用法: bash tools/package-macos.sh <rid> <version>
 #   rid     : osx-x64 | osx-arm64
-#   version : 4.1.0（不含 v 前缀）
+#   version : 4.1.1（不含 v 前缀）
 # 产物: dist/desktop_todo_Calendar-<version>-<arch>.dmg / .zip
 set -euo pipefail
 

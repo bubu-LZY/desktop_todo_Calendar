@@ -103,8 +103,8 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
-        FileLog.Write($"[STARTUP] MainWindow ctor - v4.1.0 - exe={Environment.ProcessPath ?? "unknown"}");
-        Title = "MicaAgenda v4.1.0";
+        FileLog.Write($"[STARTUP] MainWindow ctor - v4.1.1 - exe={Environment.ProcessPath ?? "unknown"}");
+        Title = "MicaAgenda v4.1.1";
 
         // 窗口初始化前同步加载配置，确保桌面嵌入/锁定在首帧即生效
         _config = _configStore.Load();
@@ -242,6 +242,7 @@ public partial class MainWindow : Window
 
         _viewModel = new MainViewModel(data, holidays: holidays, syncRoot: _syncRoot);
         _viewModel.ReviewTaskDeleted += NotifyReviewDeletion;
+        _viewModel.ReviewTaskStatusChanged += OnReviewTaskStatusChanged;
 
         // 先把内容挂上并渲染出来，首屏优先；
         // 下面那些与首屏无关的工作统一推迟到 Background 优先级，避免"启动卡两秒才显示全"。
@@ -2165,15 +2166,14 @@ public partial class MainWindow : Window
         {
             PreserveMonthScroll(() => _viewModel.ToggleTaskCompletion(task.Id));
             await SaveAsync();
-            await PushCompletionToMindMapAsync(task);
+            await PushCompletionToMindMapAsync(task.Model);
         }
     }
 
-    private async Task PushCompletionToMindMapAsync(TaskItemViewModel task)
+    private async Task PushCompletionToMindMapAsync(CalendarTask task)
     {
         if (!_config.SyncMyMindMapEnabled || string.IsNullOrWhiteSpace(_config.MyMindMapToken)) return;
-        if (!task.Title.StartsWith("[MM复习]", StringComparison.OrdinalIgnoreCase)
-            && !task.Title.StartsWith("[复习]", StringComparison.OrdinalIgnoreCase)) return;
+        if (!task.IsReviewTask) return;
         try
         {
             // 通过同步服务推送，携带 UpdatedAt（状态最后变更时间），供对端做时间戳仲裁
@@ -2183,7 +2183,7 @@ public partial class MainWindow : Window
             }
             if (_mindMapSyncService is not null)
             {
-                await _mindMapSyncService.PushStatusAsync(_config.MyMindMapToken, task.Model);
+                await _mindMapSyncService.PushStatusAsync(_config.MyMindMapToken, task);
             }
         }
         catch
@@ -2199,6 +2199,31 @@ public partial class MainWindow : Window
     /// 三条入口都要接，否则下一次同步会按对端复习计划把它重新建回来。
     /// 推送要走网络，不能占着调用线程（可能是 HttpListener 后台线程），丢给线程池。
     /// </summary>
+    /// <summary>
+    /// 复习任务的完成状态变了（单条勾选、批量「标记完成 / 还原未完成」，以及 HTTP API / MCP
+    /// 那两条由服务构造时注入的回调直接点名本方法）：立刻回推给 my-mindmap agent。
+    /// 推送要走网络，丢给线程池，别占着调用线程。
+    /// </summary>
+    private void OnReviewTaskStatusChanged(CalendarTask task)
+    {
+        if (!task.IsReviewTask)
+        {
+            return;
+        }
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await PushCompletionToMindMapAsync(task);
+            }
+            catch
+            {
+                // 尽力而为：对端未启动 / Token 失效时不影响日历本机操作
+            }
+        });
+    }
+
     private void NotifyReviewDeletion(CalendarTask task)
     {
         if (!task.IsReviewTask)
@@ -2243,7 +2268,7 @@ public partial class MainWindow : Window
         {
             PreserveMonthScroll(() => _viewModel.ToggleTaskCompletion(task.Id));
             _ = SaveAsync();
-            _ = PushCompletionToMindMapAsync(task);
+            _ = PushCompletionToMindMapAsync(task.Model);
         }
     }
 
@@ -2260,7 +2285,7 @@ public partial class MainWindow : Window
 
         PreserveMonthScroll(() => _viewModel.ToggleTaskCompletion(task.Id));
         _ = SaveAsync();
-        _ = PushCompletionToMindMapAsync(task);
+        _ = PushCompletionToMindMapAsync(task.Model);
     }
 
     /// <summary>本周任务行：单击切换完成状态，双击进入编辑。</summary>
@@ -2283,7 +2308,7 @@ public partial class MainWindow : Window
         e.Handled = true;
         PreserveMonthScroll(() => _viewModel.ToggleTaskCompletion(task.Id));
         _ = SaveAsync();
-        _ = PushCompletionToMindMapAsync(task);
+        _ = PushCompletionToMindMapAsync(task.Model);
     }
 
     private async void IncompleteTask_Click(object sender, RoutedEventArgs e)
@@ -2297,7 +2322,7 @@ public partial class MainWindow : Window
         {
             _viewModel.ToggleTaskCompletion(task.Id);
             await SaveAsync();
-            await PushCompletionToMindMapAsync(task);
+            await PushCompletionToMindMapAsync(task.Model);
         }
     }
 

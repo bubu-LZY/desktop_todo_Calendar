@@ -26,17 +26,25 @@ public sealed class McpServer : IDisposable
     private readonly string _token;
     // 复习任务被删除时通知宿主（同步删掉对端复习周期），可选：老调用方不需要双向删除
     private readonly Action<CalendarTask>? _onReviewTaskDeleted;
+    // 复习任务完成态变化时通知宿主（立刻回推对端），与上面那条对称
+    private readonly Action<CalendarTask>? _onReviewTaskStatusChanged;
     private CancellationTokenSource? _cts;
     private Task? _runTask;
 
+    /// <param name="onReviewTaskStatusChanged">
+    /// 完成态被改动的复习任务回调：宿主据此立刻推给 my-mindmap agent，
+    /// 与 <paramref name="onReviewTaskDeleted"/> 对称。
+    /// </param>
     public McpServer(
         CalendarData data,
         object syncRoot,
         Action onDataChanged,
         string token,
-        Action<CalendarTask>? onReviewTaskDeleted = null)
+        Action<CalendarTask>? onReviewTaskDeleted = null,
+        Action<CalendarTask>? onReviewTaskStatusChanged = null)
     {
         _onReviewTaskDeleted = onReviewTaskDeleted;
+        _onReviewTaskStatusChanged = onReviewTaskStatusChanged;
         _data = data;
         _syncRoot = syncRoot;
         _onDataChanged = onDataChanged;
@@ -481,11 +489,13 @@ public sealed class McpServer : IDisposable
 
     private object SetCompletion(Guid id, bool completed)
     {
+        CalendarTask? changedReviewTask = null;
         lock (_syncRoot)
         {
             var task = _data.Tasks.FirstOrDefault(t => t.Id == id)
                 ?? throw new KeyNotFoundException($"task not found: {id}");
 
+            var wasCompleted = task.IsCompleted;
             if (completed)
             {
                 task.MarkCompleted(DateTimeOffset.Now);
@@ -494,9 +504,20 @@ public sealed class McpServer : IDisposable
             {
                 task.MarkIncomplete();
             }
+
+            if (task.IsCompleted != wasCompleted && task.IsReviewTask)
+            {
+                changedReviewTask = task;
+            }
         }
 
         _onDataChanged();
+
+        // 锁外通知宿主回推对端（回调内部会走网络）
+        if (changedReviewTask is not null)
+        {
+            _onReviewTaskStatusChanged?.Invoke(changedReviewTask);
+        }
         lock (_syncRoot)
         {
             return ToDto(_data.Tasks.First(t => t.Id == id));

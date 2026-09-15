@@ -890,6 +890,44 @@ public sealed class MainViewModelTests
     }
 
     [Fact]
+    public void ClearOverdueTasks_AlsoNotifiesTheOtherSideAboutReviewTasks()
+    {
+        var now = new DateTimeOffset(2026, 5, 15, 10, 0, 0, TimeSpan.Zero);
+        var overdueReview = new CalendarTask { Id = Guid.NewGuid(), Date = new DateOnly(2026, 5, 10), Title = "[MM复习]三角函数", CreatedAt = now };
+        var overdueUser = new CalendarTask { Id = Guid.NewGuid(), Date = new DateOnly(2026, 5, 12), Title = "买菜", CreatedAt = now };
+        var todayUser = new CalendarTask { Id = Guid.NewGuid(), Date = new DateOnly(2026, 5, 15), Title = "今日", CreatedAt = now };
+        var data = new CalendarData { Tasks = [overdueReview, overdueUser, todayUser] };
+        var viewModel = new MainViewModel(data, () => now);
+
+        var removed = new List<CalendarTask>();
+        viewModel.ReviewTaskDeleted += removed.Add;
+
+        Assert.Equal(2, viewModel.ClearOverdueTasks());
+
+        Assert.Equal(new[] { overdueReview.Id }, removed.Select(task => task.Id));
+        Assert.Equal(new[] { todayUser.Id }, data.Tasks.Select(task => task.Id));
+    }
+
+    [Fact]
+    public void MarkOverdueCompleted_AlsoTellsTheOtherSideAboutReviewTasks()
+    {
+        var now = new DateTimeOffset(2026, 5, 15, 10, 0, 0, TimeSpan.Zero);
+        var overdueReview = new CalendarTask { Id = Guid.NewGuid(), Date = new DateOnly(2026, 5, 10), Title = "[MM复习]三角函数", CreatedAt = now };
+        var overdueLegacy = new CalendarTask { Id = Guid.NewGuid(), Date = new DateOnly(2026, 5, 11), Title = "[复习]立体几何", CreatedAt = now };
+        var overdueUser = new CalendarTask { Id = Guid.NewGuid(), Date = new DateOnly(2026, 5, 12), Title = "买菜", CreatedAt = now };
+        var alreadyDone = new CalendarTask { Id = Guid.NewGuid(), Date = new DateOnly(2026, 5, 10), Title = "[MM复习]已完成", IsCompleted = true, CreatedAt = now };
+        var data = new CalendarData { Tasks = [overdueReview, overdueLegacy, overdueUser, alreadyDone] };
+        var viewModel = new MainViewModel(data, () => now);
+
+        var changed = new List<CalendarTask>();
+        viewModel.ReviewTaskStatusChanged += changed.Add;
+
+        Assert.Equal(3, viewModel.MarkOverdueCompleted());
+
+        // 只回推复习任务，且只回推这次真的被改动的那些
+        Assert.Equal(new[] { overdueReview.Id, overdueLegacy.Id }, changed.Select(task => task.Id));
+    }
+    [Fact]
     public void DeleteTask_UnknownIdRaisesNothing()
     {
         var data = new CalendarData();

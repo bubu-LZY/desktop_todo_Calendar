@@ -481,7 +481,7 @@ public sealed class MainViewModel : ViewModelBase
         RebuildCalendar();
 
         // 一键清空同样要通知对端：漏掉的话，清掉的复习任务下次同步会被重建，表现为「删不掉」。
-        NotifyReviewTasksDeleted(toRemove);
+        NotifyEach(ReviewTaskDeleted, toRemove);
         return toRemove.Count;
     }
 
@@ -505,19 +505,24 @@ public sealed class MainViewModel : ViewModelBase
         MarkDirty();
 
         // 连同复习任务一起通知对端，否则下一次同步会把它们全部重建回来。
-        NotifyReviewTasksDeleted(removedReviewTasks);
+        NotifyEach(ReviewTaskDeleted, removedReviewTasks);
         return removed;
     }
 
     /// <summary>
-    /// 批量删除后的对端通知：只挑复习任务，逐个抛 <see cref="ReviewTaskDeleted"/>。
+    /// 批量改动后的对端通知：只挑复习任务，逐个抛事件。
     /// 放在锁外做——接收方会去发网络请求，持锁调用会把界面卡住。
     /// </summary>
-    private void NotifyReviewTasksDeleted(IEnumerable<CalendarTask> removed)
+    private static void NotifyEach(Action<CalendarTask>? handler, IEnumerable<CalendarTask> tasks)
     {
-        foreach (var task in removed.Where(t => t.IsReviewTask).ToList())
+        if (handler is null)
         {
-            ReviewTaskDeleted?.Invoke(task);
+            return;
+        }
+
+        foreach (var task in tasks.Where(t => t.IsReviewTask).ToList())
+        {
+            handler(task);
         }
     }
     /// <summary>
@@ -591,24 +596,37 @@ public sealed class MainViewModel : ViewModelBase
 
         RebuildCalendar();
         MarkDirty();
+
+        // 批量删除同样要通知对端。「逾期未完成 / 未完成 / 已完成」三组里都可能混着复习任务，
+        // 漏掉的话它们会在下一次同步时被按对端计划重建，用户看到的就是「删了又回来」。
+        NotifyEach(ReviewTaskDeleted, toRemove);
         return toRemove.Count;
     }
 
     private int BulkUpdate(Func<CalendarTask, bool> predicate, Action<CalendarTask> action)
     {
         int count;
+        List<CalendarTask> statusChangedReviewTasks = [];
         lock (_syncRoot)
         {
             var hits = _data.Tasks.Where(predicate).ToList();
             foreach (var t in hits)
             {
+                var wasCompleted = t.IsCompleted;
                 action(t);
+                if (t.IsCompleted != wasCompleted && t.IsReviewTask)
+                {
+                    statusChangedReviewTasks.Add(t);
+                }
             }
             count = hits.Count;
         }
 
         RebuildCalendar();
         MarkDirty();
+
+        // 批量改完成态也要立刻回推：对端按「状态最后变更时间」仲裁，只等每小时一次的定时同步太慢。
+        NotifyEach(ReviewTaskStatusChanged, statusChangedReviewTasks);
         return count;
     }
 
@@ -987,6 +1005,14 @@ public sealed class MainViewModel : ViewModelBase
     /// 放在事件里而不是直接调服务：删除入口有界面、MCP、HTTP API 多处，收到事件的地方只需接一次。
     /// </summary>
     public event Action<CalendarTask>? ReviewTaskDeleted;
+
+    /// <summary>
+    /// 复习任务的完成状态发生变化时触发。宿主据此把新状态与「状态最后变更时间」立刻推给
+    /// my-mindmap agent —— 对端是按时间戳仲裁的，早推一次就早对齐一次。
+    /// 单条勾选走界面事件、批量「标记完成 / 还原未完成」（逾期 / 未完成 / 已完成三组）走这里，
+    /// 两条路都覆盖到，状态才不会有「要等一小时」的空窗。
+    /// </summary>
+    public event Action<CalendarTask>? ReviewTaskStatusChanged;
 
     public void DeleteTask(Guid taskId)
     {

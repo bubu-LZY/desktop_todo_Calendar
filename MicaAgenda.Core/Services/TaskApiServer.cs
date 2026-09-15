@@ -24,6 +24,7 @@ public sealed class TaskApiServer : IDisposable
     private readonly string _token;
     private readonly Action _onDataChanged;
     private readonly Action<CalendarTask>? _onReviewTaskDeleted;
+    private readonly Action<CalendarTask>? _onReviewTaskStatusChanged;
     private readonly HttpListener _listener = new();
     private CancellationTokenSource? _cts;
     private Task? _runTask;
@@ -32,18 +33,24 @@ public sealed class TaskApiServer : IDisposable
     /// 删掉的任务如果属于 my-mindmap agent 的复习计划，回调通知它一起删除对应复习周期；
     /// 缺省（null）表示不联动，行为与旧版一致。
     /// </param>
+    /// <param name="onReviewTaskStatusChanged">
+    /// 完成态被改动的复习任务回调：宿主据此立刻把它推给 my-mindmap agent。
+    /// 与 <paramref name="onReviewTaskDeleted"/> 对称 —— 删除与状态两条路都得通知，对端才跟得上。
+    /// </param>
     public TaskApiServer(
         CalendarData data,
         object syncRoot,
         string token,
         Action onDataChanged,
-        Action<CalendarTask>? onReviewTaskDeleted = null)
+        Action<CalendarTask>? onReviewTaskDeleted = null,
+        Action<CalendarTask>? onReviewTaskStatusChanged = null)
     {
         _data = data;
         _syncRoot = syncRoot;
         _token = token;
         _onDataChanged = onDataChanged;
         _onReviewTaskDeleted = onReviewTaskDeleted;
+        _onReviewTaskStatusChanged = onReviewTaskStatusChanged;
     }
 
     public int Port { get; private set; } = 17801;
@@ -349,21 +356,27 @@ public sealed class TaskApiServer : IDisposable
 
         var results = new List<object>();
         var deletedReviewTasks = new List<CalendarTask>();
+        var statusChangedReviewTasks = new List<CalendarTask>();
         lock (_syncRoot)
         {
             foreach (var op in payload.Operations)
             {
-                results.Add(ApplyOperation(op, deletedReviewTasks));
+                results.Add(ApplyOperation(op, deletedReviewTasks, statusChangedReviewTasks));
             }
         }
 
         _onDataChanged();
 
-        // 通知对端删除对应复习周期：必须在锁外做（回调里会走网络），
+        // 通知对端删除对应复习周期 / 同步完成态：必须在锁外做（回调里会走网络），
         // 也不能加 _onDataChanged —— 批量结尾统一保存一次就够了。
         foreach (var removed in deletedReviewTasks)
         {
             _onReviewTaskDeleted?.Invoke(removed);
+        }
+
+        foreach (var changed in statusChangedReviewTasks)
+        {
+            _onReviewTaskStatusChanged?.Invoke(changed);
         }
 
         await WriteJsonAsync(response, 200, new { results });
@@ -424,6 +437,16 @@ public sealed class TaskApiServer : IDisposable
         }
 
         _onDataChanged();
+
+        // 改动过的复习任务立刻回推对端（这里已在锁外，回调内部会走网络）。
+        foreach (var task in matched)
+        {
+            if (task.IsReviewTask && task.IsCompleted == completed)
+            {
+                _onReviewTaskStatusChanged?.Invoke(task);
+            }
+        }
+
         await WriteJsonAsync(response, 200, new
         {
             completed,
@@ -435,7 +458,13 @@ public sealed class TaskApiServer : IDisposable
     /// <param name="deletedReviewTasks">
     /// 本次批量里删掉的复习任务会追加到这里，由调用方在锁外统一通知对端。
     /// </param>
-    private object ApplyOperation(BatchOperation op, List<CalendarTask> deletedReviewTasks)
+    /// <param name="statusChangedReviewTasks">
+    /// 本次批量里完成态被改动的复习任务会追加到这里，同样由调用方在锁外统一回推。
+    /// </param>
+    private object ApplyOperation(
+        BatchOperation op,
+        List<CalendarTask> deletedReviewTasks,
+        List<CalendarTask> statusChangedReviewTasks)
     {
         try
         {
@@ -444,8 +473,8 @@ public sealed class TaskApiServer : IDisposable
                 "add" or "create" => AddOperation(op),
                 "update" or "edit" => UpdateOperation(op),
                 "delete" or "remove" => DeleteOperation(op, deletedReviewTasks),
-                "complete" => SetCompletionOperation(op, true),
-                "uncomplete" or "incomplete" => SetCompletionOperation(op, false),
+                "complete" => SetCompletionOperation(op, true, statusChangedReviewTasks),
+                "uncomplete" or "incomplete" => SetCompletionOperation(op, false, statusChangedReviewTasks),
                 _ => new { error = $"unknown action: {op.Action}" }
             };
         }
@@ -516,7 +545,10 @@ public sealed class TaskApiServer : IDisposable
         return new { id = task.Id, deleted = true };
     }
 
-    private object SetCompletionOperation(BatchOperation op, bool completed)
+    private object SetCompletionOperation(
+        BatchOperation op,
+        bool completed,
+        List<CalendarTask> statusChangedReviewTasks)
     {
         var task = FindTask(op.Id ?? Guid.Empty);
         if (task is null)
@@ -524,6 +556,7 @@ public sealed class TaskApiServer : IDisposable
             throw new KeyNotFoundException($"task not found: {op.Id}");
         }
 
+        var wasCompleted = task.IsCompleted;
         if (completed)
         {
             task.MarkCompleted(DateTimeOffset.Now);
@@ -531,6 +564,11 @@ public sealed class TaskApiServer : IDisposable
         else
         {
             task.MarkIncomplete();
+        }
+
+        if (task.IsCompleted != wasCompleted && task.IsReviewTask)
+        {
+            statusChangedReviewTasks.Add(task);
         }
 
         return ToDto(task);
@@ -663,6 +701,7 @@ public sealed class TaskApiServer : IDisposable
     private async Task SetCompletionAsync(HttpListenerResponse response, Guid id, bool completed)
     {
         CalendarTask? updated;
+        var statusChanged = false;
         lock (_syncRoot)
         {
             var task = FindTask(id);
@@ -672,6 +711,7 @@ public sealed class TaskApiServer : IDisposable
             }
             else
             {
+                var wasCompleted = task.IsCompleted;
                 if (completed)
                 {
                     task.MarkCompleted(DateTimeOffset.Now);
@@ -681,6 +721,7 @@ public sealed class TaskApiServer : IDisposable
                     task.MarkIncomplete();
                 }
 
+                statusChanged = task.IsCompleted != wasCompleted && task.IsReviewTask;
                 updated = task;
             }
         }
@@ -692,6 +733,13 @@ public sealed class TaskApiServer : IDisposable
         }
 
         _onDataChanged();
+
+        // 复习任务的状态变化立刻回推对端（锁外，回调内部会走网络）。
+        if (statusChanged)
+        {
+            _onReviewTaskStatusChanged?.Invoke(updated);
+        }
+
         await WriteJsonAsync(response, 200, ToDto(updated));
     }
 

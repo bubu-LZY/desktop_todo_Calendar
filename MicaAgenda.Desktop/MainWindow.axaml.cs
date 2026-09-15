@@ -134,6 +134,7 @@ public partial class MainWindow : Window
             var holidays = await _holidayService.LoadCachedOrEmbeddedAsync(year);
             _viewModel = new MainViewModel(data, holidays: holidays, syncRoot: _syncRoot);
             _viewModel.ReviewTaskDeleted += NotifyReviewDeletion;
+            _viewModel.ReviewTaskStatusChanged += OnReviewTaskStatusChanged;
             DataContext = _viewModel;
 
             // 先把开机启动相关的诉求落实到本次运行（Windows 专属）。
@@ -702,7 +703,8 @@ public partial class MainWindow : Window
             _syncRoot,
             _config.ApiToken,
             OnDataChangedFromApi,
-            NotifyReviewDeletion);
+            NotifyReviewDeletion,
+            OnReviewTaskStatusChanged);
         _apiServer.Start(_config.ApiPort);
     }
 
@@ -718,7 +720,8 @@ public partial class MainWindow : Window
             _syncRoot,
             OnDataChangedFromApi,
             _config.ApiToken,
-            NotifyReviewDeletion);
+            NotifyReviewDeletion,
+            OnReviewTaskStatusChanged);
         _mcpServer.Start(_config.McpPort);
     }
 
@@ -789,14 +792,14 @@ public partial class MainWindow : Window
     /// （对端按时间戳仲裁，谁新听谁的）。对端的定时轮询是每小时一次，只靠它的话状态变化要等很久；
     /// 这里主动推一次。非复习任务 / 未开启同步 / 没填 Token 都直接跳过，失败也不影响日历本机操作。
     /// </summary>
-    private async System.Threading.Tasks.Task PushCompletionToMindMapAsync(TaskItemViewModel task)
+    private async System.Threading.Tasks.Task PushCompletionToMindMapAsync(CalendarTask task)
     {
         if (!_config.SyncMyMindMapEnabled || string.IsNullOrWhiteSpace(_config.MyMindMapToken))
         {
             return;
         }
 
-        if (!task.Model.IsReviewTask)
+        if (!task.IsReviewTask)
         {
             return;
         }
@@ -810,7 +813,7 @@ public partial class MainWindow : Window
 
             if (_mindMapSyncService is not null)
             {
-                await _mindMapSyncService.PushStatusAsync(_config.MyMindMapToken, task.Model);
+                await _mindMapSyncService.PushStatusAsync(_config.MyMindMapToken, task);
             }
         }
         catch (Exception ex)
@@ -827,6 +830,32 @@ public partial class MainWindow : Window
     /// 用户看到的就是"删了又回来"。未开启同步 / 没填 Token 时由服务内部直接跳过。
     /// 推送要走网络，这里绝不能占着调用线程（可能是 HttpListener 后台线程），丢给线程池。
     /// </summary>
+    /// <summary>
+    /// 复习任务的完成状态变了（单条勾选、批量「标记完成 / 还原未完成」、HTTP API、MCP 都会走到这里的
+    /// 前两类；后两类由服务构造时注入的回调直接点名本方法）：立刻把新状态与「状态最后变更时间」
+    /// 推给 my-mindmap agent。推送要走网络，绝不能占着调用线程（可能是 HttpListener 后台线程）。
+    /// </summary>
+    private void OnReviewTaskStatusChanged(CalendarTask task)
+    {
+        if (!task.IsReviewTask)
+        {
+            return;
+        }
+
+        _ = System.Threading.Tasks.Task.Run(async () =>
+        {
+            try
+            {
+                // 未开启同步 / 没填 Token 时方法内部直接返回，失败也不影响日历本机操作
+                await PushCompletionToMindMapAsync(task);
+            }
+            catch (Exception ex)
+            {
+                AppLog.Error(ex, "MainWindow.OnReviewTaskStatusChanged");
+            }
+        });
+    }
+
     private void NotifyReviewDeletion(CalendarTask task)
     {
         if (!task.IsReviewTask)
@@ -1316,7 +1345,7 @@ public partial class MainWindow : Window
         if (TaskFrom(sender) is { IsCompleted: false } task)
         {
             _viewModel?.ToggleTaskCompletion(task.Id);
-            _ = PushCompletionToMindMapAsync(task);
+            _ = PushCompletionToMindMapAsync(task.Model);
         }
     }
 
@@ -1325,7 +1354,7 @@ public partial class MainWindow : Window
         if (TaskFrom(sender) is { IsCompleted: true } task)
         {
             _viewModel?.ToggleTaskCompletion(task.Id);
-            _ = PushCompletionToMindMapAsync(task);
+            _ = PushCompletionToMindMapAsync(task.Model);
         }
     }
 
@@ -1378,7 +1407,7 @@ public partial class MainWindow : Window
         }
 
         _viewModel?.ToggleTaskCompletion(task.Id);
-        _ = PushCompletionToMindMapAsync(task);
+        _ = PushCompletionToMindMapAsync(task.Model);
     }
 
     // ===== 任务标题行内编辑 =====
