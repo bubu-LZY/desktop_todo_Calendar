@@ -60,6 +60,25 @@ public partial class MainWindow : Window
     /// </summary>
     private const double NarrowLayoutThreshold = 460.0;
 
+    /// <summary>外壳 Shell 的圆角半径（与 MainWindow.axaml 里 Shell 的 CornerRadius 一致，单位 dp）。</summary>
+    private const double ShellCornerRadius = 22.0;
+
+    // ===== Windows 10 亚克力材质 + 窗口外形裁剪 =====
+    //
+    // Windows 10 上「无边框 + 逐像素透明」是分层窗口（WS_EX_LAYERED），没有 DWM 合成缓冲，
+    // 每次重绘都要整窗重新合成 —— 这就是用户反复上报的闪烁。Win10 改用 DWM 亚克力材质后窗口
+    // 不再是分层窗口，闪烁消失；代价是圆角要靠 SetWindowRgn 裁出来（见 UpdateWindowShape）。
+    //
+    // 用可空类型记「当前实际请求的是哪种材质」：null = 还没请求过。ApplyBackground 会被透明度
+    // 滑杆高频调用，靠这个值去重，避免每动一下滑杆都重新协商一次窗口材质。
+    private bool? _acrylicBackdrop;
+
+    // 上次裁剪出来的外形：只在「材质切换」或「窗口像素尺寸变化」时重裁。透明度滑杆每动一下都会
+    // 走到 ApplyBackground，若无条件 SetWindowRgn，滑杆本身就会变成新的闪烁源。
+    private bool _windowShapeIsRounded;
+    private int _windowShapeWidth;
+    private int _windowShapeHeight;
+
     /// <summary>正在用格子里的悬浮表单新增任务的那个格子（用于"点别处自动保存"）。</summary>
     private DayCellViewModel? _pendingAddCell;
 
@@ -1384,9 +1403,10 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// 把背景模式映射成「外壳 Shell 上的 ARGB 着色」。窗口本身固定逐像素透明，由外壳画出
+    /// 把背景模式映射成「外壳 Shell 上的 ARGB 着色」。窗口本身不带标题栏，由外壳画出
     /// 底色 / 22px 圆角 / 1px 细边框 —— 与 WPF 宿主（WindowStyle=None + AllowsTransparency）同一套观感，
     /// 各模式的差异只体现在这层刷子的颜色与不透明度上（见下面的 Shell.Background switch）。
+    /// 窗口底层材质由 <see cref="ApplyWindowBackdrop"/> 决定。
     /// </summary>
     private void ApplyBackground()
     {
@@ -1399,15 +1419,13 @@ public partial class MainWindow : Window
         var mode = s.BackgroundMode == CalendarBackgroundMode.ClearBorder ? CalendarBackgroundMode.None : s.BackgroundMode;
         var alpha = (byte)Math.Clamp(s.Opacity * 255, 6, 255);
 
-        // 固定请求「逐像素透明」：窗口整块透明，底色 / 圆角 / 细边框全部由外壳 Shell 自己画。
-        //
-        // 这里**不能**再请求 Mica / AcrylicBlur / Blur 这类系统材质：它们是 OS 在窗口底层画的一层
-        // 不透明材质，会把外壳盖住 —— 表现就是「四角变直角（圆角被压在下面看不见）」「透明度滑杆没反应」
-        // 「底下多一层白底」。v3.2.0 起宿主换成 Avalonia 且窗口不再带系统标题栏，Mica 才会真的被应用，
-        // 所以这个毛病是「无边框 + 请求系统材质」凑一起才出现的；与 WPF 宿主的 AllowsTransparency 对齐即可。
-        TransparencyLevelHint = new[] { WindowTransparencyLevel.Transparent };
+        // 先定窗口底层的系统材质（Win10 走亚克力，其余平台/系统走逐像素透明），
+        // 再把颜色画到外壳 Shell 上。
+        ApplyWindowBackdrop();
 
-        // 底色画在外壳 Border 上而不是窗口上：窗口整块透明，圆角外沿才能透出桌面。
+        // 底色画在外壳 Border 上而不是窗口上：窗口本身不带底色，圆角外沿才能透出桌面
+        // （亚克力模式下透出的是被裁掉的窗口区域，效果一样）。各模式的不透明度仍然生效 ——
+        // 亚克力只是垫在更下面的一层材质，这层刷子照旧叠在它上面。
         Shell.Background = mode switch
         {
             CalendarBackgroundMode.None => Brushes.Transparent,
@@ -1423,6 +1441,106 @@ public partial class MainWindow : Window
         };
 
         ApplyBackgroundResources(mode);
+    }
+
+    /// <summary>
+    /// 决定窗口底层的系统材质，并同步窗口外形。
+    ///
+    /// Windows 10（1803 起）请求 DWM 的**亚克力**材质。原因是本程序的窗口是「无边框 + 整块透明」，
+    /// 在 Windows 上这会落成一块分层窗口（WS_EX_LAYERED）：分层窗口没有 DWM 合成缓冲，每次重绘都要
+    /// 把整窗重新合成一遍 —— 这就是用户反复上报的「频繁闪烁 / 有时候连续闪烁」。换成亚克力后窗口
+    /// 不再是分层窗口，重绘交给 DWM 合成，闪烁随之消失，观感还是磨砂玻璃。
+    ///
+    /// 只在 Windows 10 上换：Win11 的 DWM 对分层窗口的处理没有问题，维持原来的逐像素透明（圆角更锐利、
+    /// 透明度语义不变），Windows 之外（macOS / Linux）同样维持原样，不做无谓的行为变更。
+    ///
+    /// 代价：亚克力是 DWM 画在**整块窗口矩形**上的材质，圆角外沿也会被填满 —— 四角会变成"磨砂直角"。
+    /// 所以亚克力模式下必须用 SetWindowRgn 把窗口外形裁成圆角矩形（见 <see cref="UpdateWindowShape"/>）。
+    ///
+    /// 幂等：材质没变就直接返回。本方法会被透明度滑杆、背景模式按钮高频调到，
+    /// 反复重新协商窗口材质本身就是一种闪烁源。
+    /// </summary>
+    private void ApplyWindowBackdrop()
+    {
+        var useAcrylic = WindowBackdropService.ShouldUseAcrylic;
+        if (_acrylicBackdrop == useAcrylic)
+        {
+            return;
+        }
+
+        _acrylicBackdrop = useAcrylic;
+
+        // 按优先级给材质名：优先亚克力，取不到就退回逐像素透明（本程序原本的行为），
+        // 保证在任何系统上窗口都还能正常显示。ActualTransparencyLevel 会报告实际拿到了哪个。
+        TransparencyLevelHint = useAcrylic
+            ? new[] { WindowTransparencyLevel.AcrylicBlur, WindowTransparencyLevel.Transparent }
+            : new[] { WindowTransparencyLevel.Transparent };
+
+        // 材质换了，上次算出来的尺寸不再代表当前外形，置零让 UpdateWindowShape 重新裁一次。
+        // （_windowShapeIsRounded 不能在这里改：它是「窗口上现在有没有裁剪」的事实记录，
+        //  从亚克力切回透明时要靠它去 ClearRegion。）
+        _windowShapeWidth = 0;
+        _windowShapeHeight = 0;
+        UpdateWindowShape();
+    }
+
+    /// <summary>
+    /// 亚克力模式下把窗口外形裁成圆角矩形（像素单位）。
+    ///
+    /// 只在「材质切换」或「窗口像素尺寸变化」时真正重裁：ApplyBackground 会被透明度滑杆、
+    /// 背景模式按钮高频调用，无条件调 SetWindowRgn 会让滑杆本身变成新的闪烁源。
+    /// 但尺寸变化必须重裁 —— 否则窗口放大后，旧的裁剪区域会把新长出来的部分整块切掉。
+    /// </summary>
+    private void UpdateWindowShape()
+    {
+        UpdateWindowShape(Bounds.Width, Bounds.Height);
+    }
+
+    private void UpdateWindowShape(double widthDip, double heightDip)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        var hwnd = NativeHandle();
+        if (hwnd == IntPtr.Zero)
+        {
+            return;
+        }
+
+        if (_acrylicBackdrop != true)
+        {
+            // 逐像素透明：圆角由外壳自己表达，窗口不需要裁剪。切回这个模式时必须把裁剪清掉，
+            // 否则会沿用亚克力时期留下的区域。
+            if (_windowShapeIsRounded)
+            {
+                WindowBackdropService.ClearRegion(hwnd);
+                _windowShapeIsRounded = false;
+            }
+
+            _windowShapeWidth = 0;
+            _windowShapeHeight = 0;
+            return;
+        }
+
+        var scaling = RenderScaling > 0 ? RenderScaling : 1.0;
+        var width = (int)Math.Round(widthDip * scaling);
+        var height = (int)Math.Round(heightDip * scaling);
+        if (width < 1 || height < 1)
+        {
+            return;
+        }
+
+        if (_windowShapeIsRounded && _windowShapeWidth == width && _windowShapeHeight == height)
+        {
+            return;
+        }
+
+        _windowShapeIsRounded = true;
+        _windowShapeWidth = width;
+        _windowShapeHeight = height;
+        WindowBackdropService.ApplyRoundedRegion(hwnd, width, height, ShellCornerRadius * scaling);
     }
 
     /// <summary>
@@ -1574,6 +1692,10 @@ public partial class MainWindow : Window
 
     private void Window_SizeChanged(object? sender, SizeChangedEventArgs e)
     {
+        // 亚克力模式下窗口外形是"裁"出来的，尺寸一变就得重裁 —— 晚了会露一帧直角或切掉新长出来的部分。
+        // 这里直接用事件里的新尺寸，不读 Bounds，免得拿到还没更新的值。
+        UpdateWindowShape(e.NewSize.Width, e.NewSize.Height);
+
         if (_responsiveLayoutPending)
         {
             return;

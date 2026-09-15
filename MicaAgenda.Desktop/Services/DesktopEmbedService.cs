@@ -1,5 +1,6 @@
 using System;
 using System.Runtime.InteropServices;
+using System.Text;
 
 namespace MicaAgenda.Desktop.Services;
 
@@ -32,6 +33,13 @@ public static class DesktopEmbedService
     private const uint SwpNozorder = 0x0004;
     private const uint SwpFramechanged = 0x0020;
     private static readonly IntPtr HwndBottom = new(1);
+
+    /// <summary>Explorer 桌面窗口的类名（Win10：Progman；Win11：WorkerW）。</summary>
+    private const string ProgmanClass = "Progman";
+    private const string WorkerWClass = "WorkerW";
+
+    /// <summary>GetClassName 的缓冲区长度：桌面窗口类名很短，64 个字符足够。</summary>
+    private const int ClassNameCapacity = 64;
 
     /// <summary>
     /// 隐藏任务栏按钮（设为 TOOLWINDOW，去掉 APPWINDOW）。
@@ -87,10 +95,14 @@ public static class DesktopEmbedService
 
         SetNoActivateStyle(handle, true);
 
-        // 已在最底层就不必再 SetWindowPos：看门狗每个 tick 都会调到这，反复压底（尤其带
-        // SWP_SHOWWINDOW）会强制分层（透明）窗口整块重绘，在 Win10 上表现为频繁闪烁。
-        // GW_HWNDNEXT 返回空即说明它下面已经没有别的窗口了。
-        if (GetWindow(handle, GwHwndnext) == IntPtr.Zero)
+        // 已经在最底层就不必再 SetWindowPos：看门狗每个 tick 都会调到这，反复压底会让窗口反复
+        // 进出 DWM 的合成顺序，在 Win10 上表现为「连续闪烁」。
+        //
+        // 判据不能用「GW_HWNDNEXT 返回空」：桌面窗口（Progman / WorkerW）本身就在更低的 Z 序上，
+        // 那个句柄正常情况下不会是空 —— 判据等于永远不成立，每 200ms 照样真压一次。这里改成
+        // 顺着 Z 序往下找第一个可见的顶层窗口，只有它不是桌面窗口时，才说明我们头顶上还有普通
+        // 窗口需要让位，才真的压底。
+        if (IsAtDesktopLevel(handle))
         {
             return;
         }
@@ -103,6 +115,44 @@ public static class DesktopEmbedService
             0,
             0,
             SwpNomove | SwpNosize | SwpNoactivate);
+    }
+
+    /// <summary>
+    /// 窗口是否已经处在「桌面那一层」（即下面除了桌面窗口没有别的可见窗口）。
+    ///
+    /// 顺着 Z 序往下遍历，遇到的第一个可见顶层窗口如果是 Explorer 的桌面窗口，就说明我们已经在
+    /// 最底层；一路走到头（下面没有窗口了）也算。任何一种情况都不需要再压底。
+    /// </summary>
+    private static bool IsAtDesktopLevel(IntPtr handle)
+    {
+        for (var window = GetWindow(handle, GwHwndnext); window != IntPtr.Zero; window = GetWindow(window, GwHwndnext))
+        {
+            if (!IsWindowVisible(window))
+            {
+                continue;
+            }
+
+            return IsDesktopWindow(window);
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// 是不是 Explorer 的桌面窗口：Win10 上是 Progman（外加若干 WorkerW），Win11 上是 WorkerW。
+    /// 按类名判断即可 —— 这些窗口不一定属于本进程，也不适合按进程名去认。
+    /// </summary>
+    private static bool IsDesktopWindow(IntPtr handle)
+    {
+        var buffer = new StringBuilder(ClassNameCapacity);
+        if (GetClassName(handle, buffer, buffer.Capacity) <= 0)
+        {
+            return false;
+        }
+
+        var name = buffer.ToString();
+        return name.Equals(ProgmanClass, StringComparison.OrdinalIgnoreCase)
+            || name.Equals(WorkerWClass, StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>
@@ -236,6 +286,12 @@ public static class DesktopEmbedService
 
     [DllImport("user32.dll", EntryPoint = "GetWindow", SetLastError = true)]
     private static extern IntPtr GetWindow(IntPtr hWnd, int uCmd);
+
+    [DllImport("user32.dll", EntryPoint = "IsWindowVisible", SetLastError = true)]
+    private static extern bool IsWindowVisible(IntPtr hWnd);
+
+    [DllImport("user32.dll", EntryPoint = "GetClassNameW", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern int GetClassName(IntPtr hWnd, StringBuilder lpClassName, int nMaxCount);
 
     [DllImport("user32.dll", EntryPoint = "SetWindowLong", SetLastError = true)]
     private static extern int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);
