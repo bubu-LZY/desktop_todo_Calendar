@@ -19,15 +19,22 @@ public sealed class CalendarTask
     public DateTimeOffset? UpdatedAt { get; set; }
 
     /// <summary>
-    /// 任务当天的具体时间点（几点几分）。null = 没设时间。
-    /// 老数据、以及只写标题就快速添加的任务都是 null。
+    /// 所有任务的基准时刻：任务都在这一时刻「开始」。
+    /// UI 上已经没有「时间」输入框了 —— 用户只选「提前多久提醒」，
+    /// 提前量从这个基准时刻往前推。
+    /// </summary>
+    public static readonly TimeOnly DefaultTime = new(9, 0);
+
+    /// <summary>
+    /// 任务当天的具体时间点（几点几分）。null = 用 <see cref="DefaultTime"/>（当天 9:00）。
+    /// 新任务不再由用户填写，一律走默认时刻；老数据里存过的时间继续生效。
     /// </summary>
     public TimeOnly? Time { get; set; }
 
     /// <summary>
-    /// 提前提醒量（分钟）：在「任务时间 - 本值」推一次提醒。
-    /// 存总分钟数而不是把天/时/分拆成三个字段 —— UI 上那三个下拉列表互斥，合成一个总量更好维护。
-    /// null 等价于 0（到点提醒）。
+    /// 提前提醒量（分钟）：在「当天基准时刻 - 本值」推一次提醒。
+    /// UI 上是单个下拉列表（提前 3 分钟 … 提前 3 个小时），直接存总分钟数。
+    /// null = 不提醒：没选提前量就完全不推。
     /// </summary>
     public int? ReminderLeadMinutes { get; set; }
 
@@ -142,9 +149,14 @@ public sealed class CalendarTask
 
     // ===== 到点提醒 =====
 
-    /// <summary>提醒触发时刻（任务时间提前 <see cref="ReminderLeadMinutes"/> 分钟）；没设时间返回 null。</summary>
+    /// <summary>
+    /// 提醒触发时刻（当天基准时刻提前 <see cref="ReminderLeadMinutes"/> 分钟）；
+    /// 没设提前量返回 null（= 这条任务不提醒）。
+    /// </summary>
     public DateTime? ReminderTriggerAt()
-        => Time is null ? null : Date.ToDateTime(Time.Value).AddMinutes(-(ReminderLeadMinutes ?? 0));
+        => ReminderLeadMinutes is not { } lead
+            ? null
+            : Date.ToDateTime(Time ?? DefaultTime).AddMinutes(-lead);
 
     /// <summary>当天补发窗口的右端（当天 23:59:59）：超过它就不再补推，避免开机时蹦出一堆陈旧提醒。</summary>
     private DateTime ReminderWindowEnd => Date.ToDateTime(new TimeOnly(23, 59, 59));
@@ -198,13 +210,13 @@ public sealed class CalendarTask
             UpdatedAt = CompletedAt ?? CreatedAt;
         }
 
-        // 提醒相关的自洽：没有时间就没有「到点提醒」可言，顺手清掉遗留标记；
+        // 提醒相关的自洽：没设提前量就没有提醒可言，顺手清掉遗留标记；
         // 负的提前量没有意义，钳到 0。
-        if (Time is null)
+        if (ReminderLeadMinutes is null)
         {
             ReminderSentAt = null;
         }
-        else if (ReminderLeadMinutes is < 0)
+        else if (ReminderLeadMinutes < 0)
         {
             ReminderLeadMinutes = 0;
         }

@@ -7,6 +7,7 @@ public sealed class DayCellViewModel : ViewModelBase
 {
     private bool _isAddingTask;
     private string _draftTitle = string.Empty;
+    private string _reminderLead = Helpers.ReminderLeadCatalog.NoneLabel;
     private bool _isSelected;
 
     public DayCellViewModel(
@@ -62,15 +63,32 @@ public sealed class DayCellViewModel : ViewModelBase
         set => SetProperty(ref _draftTitle, value);
     }
 
+    /// <summary>格子里快速添加时可选的「提醒时间」档位（与右侧面板同一份）。</summary>
+    public IReadOnlyList<string> ReminderLeadOptions => Helpers.ReminderLeadCatalog.Labels;
+
+    /// <summary>格子里快速添加时选中的提醒档位。</summary>
+    public string ReminderLead
+    {
+        get => _reminderLead;
+        set => SetProperty(ref _reminderLead, string.IsNullOrWhiteSpace(value)
+            ? Helpers.ReminderLeadCatalog.NoneLabel
+            : value);
+    }
+
+    /// <summary>格子草稿对应的提前提醒量（分钟）；「不提醒」为 null。</summary>
+    public int? DraftReminderLead => Helpers.ReminderLeadCatalog.ToMinutes(_reminderLead);
+
     public void BeginAdd()
     {
         DraftTitle = string.Empty;
+        ReminderLead = Helpers.ReminderLeadCatalog.NoneLabel;
         IsAddingTask = true;
     }
 
     public void CancelAdd()
     {
         DraftTitle = string.Empty;
+        ReminderLead = Helpers.ReminderLeadCatalog.NoneLabel;
         IsAddingTask = false;
     }
 
@@ -116,23 +134,23 @@ public sealed class DayCellViewModel : ViewModelBase
         var editingId = editing?.Id;
         var editingText = editing?.EditTitle;
 
-        // 建立 Id -> 现有实例 的映射，优先复用，避免销毁复选框元素。
-        var existingById = new Dictionary<Guid, TaskItemViewModel>(Tasks.Count);
-        foreach (var item in Tasks)
-        {
-            existingById[item.Id] = item;
-        }
+        // 可复用实例的池子。用「列表 + 消费式匹配」而不是 Id 字典：
+        // 字典遇到两条 Id 相同的任务（同步/导入都可能产生）会复用同一个实例两次，
+        // 下面的增量插入会把其中一条吃掉，格子里就比右侧面板少显示一条。
+        var reusable = new List<TaskItemViewModel>(Tasks);
 
         // 计算刷新后的目标顺序（复用已有实例，就地刷新属性）
         var desired = new List<TaskItemViewModel>(incoming.Count);
         foreach (var task in incoming)
         {
-            if (existingById.TryGetValue(task.Id, out var vm))
+            var index = reusable.FindIndex(item => item.Id == task.Id);
+            if (index >= 0)
             {
                 // 同一实例：仅就地刷新完成/重要/标题，复选框元素得以保留
+                var vm = reusable[index];
+                reusable.RemoveAt(index);
                 vm.SyncFromModel();
                 desired.Add(vm);
-                existingById.Remove(task.Id);
             }
             else
             {

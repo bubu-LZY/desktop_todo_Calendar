@@ -9,6 +9,7 @@ using Avalonia.Controls.Primitives;
 using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Layout;
+using Avalonia.LogicalTree;
 using Avalonia.Media;
 using Avalonia.Styling;
 using Avalonia.Threading;
@@ -57,6 +58,12 @@ public partial class MainWindow : Window
     /// 与 WPF 宿主 MicaAgenda.App 的 NarrowLayoutThreshold 取同一个值（460dp）。
     /// </summary>
     private const double NarrowLayoutThreshold = 460.0;
+
+    /// <summary>正在用格子里的悬浮表单新增任务的那个格子（用于"点别处自动保存"）。</summary>
+    private DayCellViewModel? _pendingAddCell;
+
+    /// <summary>正在行内改标题的那条任务（同上：点别处要自动落盘）。</summary>
+    private TaskItemViewModel? _editingTask;
 
     // 布局 pass 里改可见性会再触发一轮布局；用标记 + Post 推到下一帧，挡掉重入。
     private bool _responsiveLayoutPending;
@@ -1294,6 +1301,8 @@ public partial class MainWindow : Window
     {
         if (sender is Control { DataContext: DayCellViewModel cell })
         {
+            // 点到另一个格子前，先把上一个格子的草稿 / 行内标题落盘（不能只等 LostFocus）
+            CommitPendingEditsForPointer(e);
             _viewModel?.SelectCell(cell.Date);
         }
     }
@@ -1340,7 +1349,9 @@ public partial class MainWindow : Window
     {
         if (TaskFrom(sender) is { IsEditing: false } task)
         {
+            CommitPendingEdits();
             task.BeginEdit();
+            _editingTask = task;
             FocusInlineTextBox(() => FindVisibleTextBoxByDataContext(task));
         }
     }
@@ -1403,6 +1414,11 @@ public partial class MainWindow : Window
     {
         var title = task.EditTitle?.Trim();
         task.IsEditing = false;
+        if (ReferenceEquals(_editingTask, task))
+        {
+            _editingTask = null;
+        }
+
         if (!string.IsNullOrWhiteSpace(title))
         {
             _viewModel?.RenameTask(task.Id, title);
@@ -1418,10 +1434,16 @@ public partial class MainWindow : Window
             return;
         }
 
-        cell.BeginAdd();
+        // 换格子加任务前，先把上一张悬浮表单的草稿落盘（指针事件通常已经收过尾，这里兜底）。
+        CommitPendingEdits();
 
-        // 等新输入框进入可视树后再抢焦点（按 DataContext 精确匹配本格，避免抢到任务条目的编辑框）
-        FocusInlineTextBox(() => FindVisibleTextBoxByDataContext(cell));
+        cell.BeginAdd();
+        _pendingAddCell = cell;
+
+        // 等悬浮表单进入可视树后再抢焦点（按 Tag 精确匹配表单里的标题框）
+        FocusInlineTextBox(() => this.GetVisualDescendants()
+            .OfType<TextBox>()
+            .FirstOrDefault(box => box.IsVisible && Equals(box.Tag, "CellDraftBox")));
     }
 
     private void InlineTaskTextBox_KeyDown(object? sender, KeyEventArgs e)
@@ -1443,28 +1465,141 @@ public partial class MainWindow : Window
         }
     }
 
-    private void InlineTaskTextBox_LostFocus(object? sender, RoutedEventArgs e)
+    private void CommitAdd(DayCellViewModel cell)
     {
-        if (sender is TextBox { DataContext: DayCellViewModel cell } && cell.IsAddingTask)
+        var title = cell.DraftTitle?.Trim();
+        var lead = cell.DraftReminderLead;
+        cell.CancelAdd();
+        if (ReferenceEquals(_pendingAddCell, cell))
+        {
+            _pendingAddCell = null;
+        }
+
+        // 以前这里没有落盘：格子里加完任务要等下一次别的改动才写文件。
+        if (!string.IsNullOrWhiteSpace(title))
+        {
+            _viewModel?.AddTask(cell.Date, title, lead);
+            _ = SaveAsync();
+        }
+    }
+
+    private void CellCommitAdd_Click(object? sender, RoutedEventArgs e)
+    {
+        if ((sender as Control)?.DataContext is DayCellViewModel cell)
         {
             CommitAdd(cell);
         }
     }
 
-    private void CommitAdd(DayCellViewModel cell)
+    private void CellCancelAdd_Click(object? sender, RoutedEventArgs e)
     {
-        var title = cell.DraftTitle?.Trim();
-        cell.CancelAdd();
-        if (!string.IsNullOrWhiteSpace(title))
+        if ((sender as Control)?.DataContext is DayCellViewModel cell)
         {
-            _viewModel?.AddTask(cell.Date, title);
+            cell.CancelAdd();
+            if (ReferenceEquals(_pendingAddCell, cell))
+            {
+                _pendingAddCell = null;
+            }
         }
+    }
+
+    /// <summary>
+    /// 点别处时把「格子里的新增草稿」和「行内改的标题」一起收尾。
+    ///
+    /// 为什么不能只靠 LostFocus：日期格子是 Border、任务条是 Border，
+    /// 它们都不可获得焦点，点上去并不会让 TextBox 失焦，
+    /// 于是用户必须按回车才能保存（历史 bug）。
+    ///
+    /// <paramref name="source"/> 是引发这次收尾的指针事件源头：
+    /// 点的是悬浮表单自己（标题框 / 提醒下拉 / 取消 / 确定 / 展开的下拉项）时**不能**收尾，
+    /// 否则一点「提醒时间」下拉就会把草稿先提交掉、表单当场收起。
+    /// </summary>
+    private void CommitPendingEdits()
+    {
+        if (_pendingAddCell is { IsAddingTask: true } cell)
+        {
+            CommitAdd(cell);
+        }
+
+        if (_editingTask is { IsEditing: true } editing)
+        {
+            CommitEdit(editing);
+        }
+    }
+
+    /// <summary>
+    /// 指针按下引起的收尾：指针落在悬浮表单自己身上就什么都不做。
+    /// 弹层另开宿主时，任何能到达主窗口的点击天然就在表单之外；
+    /// 只有当表单确实挂在本窗口的可视树里（OverlayPopupHost）才需要按坐标排除。
+    /// </summary>
+    private void CommitPendingEditsForPointer(PointerPressedEventArgs e)
+    {
+        if (!IsInsideCellAddForm(e) && _pendingAddCell is { IsAddingTask: true } cell)
+        {
+            CommitAdd(cell);
+        }
+
+        if (_editingTask is { IsEditing: true } editing)
+        {
+            CommitEdit(editing);
+        }
+    }
+
+    /// <summary>指针是不是落在「格子里那张悬浮新增表单」上。</summary>
+    private bool IsInsideCellAddForm(PointerPressedEventArgs e)
+    {
+        var point = e.GetPosition(this);
+        foreach (var visual in this.GetVisualDescendants())
+        {
+            if (visual is Control { Tag: "CellAddForm" } form
+                && TryBounds(form, out var rect)
+                && rect.Contains(point))
+            {
+                return true;
+            }
+        }
+
+        return e.Source is Visual source
+               && (source.GetSelfAndVisualAncestors().Any(a => a is Popup)
+                   || source.GetSelfAndLogicalAncestors().Any(a => a is Control { Tag: "CellAddForm" } or Popup));
+    }
+
+    private bool TryGetCellAddFormBounds(out Rect rect)
+    {
+        foreach (var visual in this.GetVisualDescendants())
+        {
+            if (visual is Control { Tag: "CellAddForm" } form && TryBounds(form, out rect))
+            {
+                return true;
+            }
+        }
+
+        rect = default;
+        return false;
+    }
+
+    private bool TryBounds(Visual visual, out Rect rect)
+    {
+        rect = default;
+        if (visual.Bounds.Width <= 0 || visual.Bounds.Height <= 0)
+        {
+            return false;
+        }
+
+        if (visual.TranslatePoint(new Point(0, 0), this) is not { } origin)
+        {
+            return false;
+        }
+
+        rect = new Rect(origin, visual.Bounds.Size);
+        return true;
     }
 
     // ===== 右侧面板：今日任务快速添加 =====
 
     private void AddTodayTask_Click(object? sender, RoutedEventArgs e)
     {
+        CommitPendingEdits();
         _viewModel?.BeginAddTodayTask();
 
         // 等输入框进入可视树后再抢焦点（按 Tag 精确定位，避开条目内的编辑框）
@@ -1550,7 +1685,9 @@ public partial class MainWindow : Window
 
         if (e.ClickCount >= 2 && TaskFrom(sender) is { IsEditing: false } task)
         {
+            CommitPendingEdits();
             task.BeginEdit();
+            _editingTask = task;
             FocusInlineTextBox(() => FindVisibleTextBoxByDataContext(task));
             e.Handled = true;
         }
@@ -1568,7 +1705,9 @@ public partial class MainWindow : Window
         {
             if (!task.IsEditing)
             {
+                CommitPendingEdits();
                 task.BeginEdit();
+                _editingTask = task;
                 FocusInlineTextBox(() => FindVisibleTextBoxByDataContext(task));
             }
 
@@ -1601,6 +1740,9 @@ public partial class MainWindow : Window
         {
             return;
         }
+
+        // 点窗口空白处也算「点别处」：把没提交的草稿收尾，别让用户以为已经保存了。
+        CommitPendingEditsForPointer(e);
 
         if (IsInteractiveDragSource(e.Source))
         {

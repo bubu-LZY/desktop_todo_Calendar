@@ -100,11 +100,12 @@ public sealed class TaskItemViewModel : ViewModelBase
     /// <summary>序号文本（"1." / "2."）；未编号时是空串。</summary>
     public string OrderText => _orderIndex > 0 ? $"{_orderIndex}." : string.Empty;
 
-    /// <summary>当天的具体时间点文本（"09:30"）；没设时间是空串。</summary>
-    public string TimeText => _task.Time is { } time ? time.ToString("HH:mm") : string.Empty;
+    /// <summary>提醒时刻文本（"08:30"，= 基准时刻减掉提前量）；没设提醒是空串。</summary>
+    public string ReminderTimeText
+        => _task.ReminderTriggerAt() is { } trigger ? trigger.ToString("HH:mm") : string.Empty;
 
-    /// <summary>是否设了具体时间。UI 用它在标题前面留出时间的位置。</summary>
-    public bool HasTime => _task.Time is not null;
+    /// <summary>是否设了提前提醒。UI 用它在标题前面留出提醒小字的位置。</summary>
+    public bool HasReminder => _task.ReminderLeadMinutes is not null;
 
     public bool IsEditing
     {
@@ -167,8 +168,8 @@ public sealed class TaskItemViewModel : ViewModelBase
         {
             _shownTime = _task.Time;
             _shownLeadMinutes = _task.ReminderLeadMinutes;
-            OnPropertyChanged(nameof(TimeText));
-            OnPropertyChanged(nameof(HasTime));
+            OnPropertyChanged(nameof(ReminderTimeText));
+            OnPropertyChanged(nameof(HasReminder));
             OnPropertyChanged(nameof(TimeBadge));
             OnPropertyChanged(nameof(TooltipText));
         }
@@ -190,15 +191,15 @@ public sealed class TaskItemViewModel : ViewModelBase
     private DateOnly Today => DateOnly.FromDateTime(_now().LocalDateTime);
 
     /// <summary>
-    /// 紧凑的时间徽标（如 "09:30 · 3天未完" / "逾期2天" / "用时2小时"），空间够的地方显示。
-    /// 设了具体时间的任务把时间顶在最前面：右侧面板里一眼就能看出几点要做。
+    /// 紧凑的提醒徽标（如 "08:30 提醒 · 3天未完" / "逾期2天" / "用时2小时"）。
+    /// 设了提前提醒的任务把提醒时刻顶在最前面：右侧面板里一眼就能看出几点会响。
     /// </summary>
     public string TimeBadge
     {
         get
         {
             var status = StatusBadge;
-            return HasTime ? $"{TimeText} · {status}" : status;
+            return HasReminder ? $"{ReminderTimeText} 提醒 · {status}" : status;
         }
     }
 
@@ -235,12 +236,11 @@ public sealed class TaskItemViewModel : ViewModelBase
             sb.AppendLine(Title);
 
             var createdDay = _task.CreatedDate;
-            if (_task.Time is { } scheduledAt)
+            if (_task.ReminderLeadMinutes is { } lead)
             {
-                var lead = _task.ReminderLeadMinutes ?? 0;
-                sb.AppendLine(lead > 0
-                    ? $"计划：{scheduledAt:HH:mm}（提前 {Helpers.TimeText.FormatLead(lead)} 提醒）"
-                    : $"计划：{scheduledAt:HH:mm}（到点提醒）");
+                var anchor = _task.Time ?? CalendarTask.DefaultTime;
+                sb.AppendLine(
+                    $"提醒：{_task.ReminderTriggerAt():HH:mm}（提前 {Helpers.TimeText.FormatLead(lead)}，任务时刻 {anchor:HH:mm}）");
             }
 
             sb.Append($"创建：{_task.CreatedAt:MM/dd HH:mm}");

@@ -122,9 +122,10 @@
             <TextBlock Grid.Column="2" Text="★" Margin="0,0,2,0" FontSize="8.5" FontWeight="Bold"
                        Foreground="{DynamicResource ImportantTaskTextBrush}"
                        VerticalAlignment="Center" IsVisible="{Binding IsImportant}" />
-            <TextBlock Grid.Column="3" Text="{Binding TimeText}" FontSize="8" Margin="0,0,2,0"
+            <TextBlock Grid.Column="3" Text="{Binding ReminderTimeText}" FontSize="8" Margin="0,0,2,0"
+                       ToolTip.Tip="提醒时刻（提前量见悬浮提示）"
                        Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center"
-                       IsVisible="{Binding HasTime}" />
+                       IsVisible="{Binding HasReminder}" />
             <TextBlock Grid.Column="4" Classes="taskTitle" Classes.important="{Binding IsImportant}"
                        Text="{Binding Title}" FontSize="8.5" VerticalAlignment="Center"
                        TextTrimming="CharacterEllipsis"
@@ -180,10 +181,39 @@
           <ScrollViewer Grid.Row="1" Margin="0,3,0,0" VerticalScrollBarVisibility="Auto">
             <ItemsControl ItemsSource="{Binding Tasks}" ItemTemplate="{StaticResource TaskTemplate}" />
           </ScrollViewer>
-          <TextBox Grid.Row="2" Text="{Binding DraftTitle}" IsVisible="{Binding IsAddingTask}"
-                   MinHeight="20" Margin="0,3,0,0" Padding="3,1" BorderThickness="1"
-                   BorderBrush="{DynamicResource TaskBorderBrush}" FontSize="11"
-                   KeyDown="InlineTaskTextBox_KeyDown" LostFocus="InlineTaskTextBox_LostFocus" />
+          <!-- 格子里点「+」后弹出的快速添加表单。
+               格子本身只有 ~96px 高，塞不下「标题 + 提醒时间 + 按钮」，
+               所以用一个跟着格子走的悬浮层（Popup）展开，而不是把小格子撑高。 -->
+          <Popup Grid.Row="0" Grid.RowSpan="3"
+                 IsOpen="{Binding IsAddingTask}" PlacementTarget="{Binding $parent[Border]}"
+                 Placement="BottomEdgeAlignedLeft" HorizontalOffset="-2" VerticalOffset="4"
+                 IsLightDismissEnabled="False">
+            <Border Classes="panel" CornerRadius="8" Padding="8,7" BorderThickness="1" Width="216"
+                    Tag="CellAddForm">
+              <StackPanel Spacing="5">
+                <TextBlock Text="{Binding Header}" FontSize="11" FontWeight="SemiBold"
+                           Foreground="{DynamicResource PrimaryTextBrush}" />
+                <TextBox Tag="CellDraftBox" Text="{Binding DraftTitle}"
+                         Padding="4,3" FontSize="11.5" MinHeight="22"
+                         PlaceholderText="任务内容，回车添加"
+                         KeyDown="InlineTaskTextBox_KeyDown" />
+                <Grid ColumnDefinitions="Auto,*">
+                  <TextBlock Grid.Column="0" Text="提醒时间" FontSize="10.5" Margin="0,0,5,0"
+                             Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center" />
+                  <ComboBox Grid.Column="1" HorizontalAlignment="Left" MinWidth="112" FontSize="10.5"
+                            MinHeight="24" Padding="6,1"
+                            ItemsSource="{Binding ReminderLeadOptions}"
+                            SelectedItem="{Binding ReminderLead}" />
+                </Grid>
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="4">
+                  <Button Content="取消" FontSize="10.5" Padding="8,2" MinHeight="0"
+                          Click="CellCancelAdd_Click" />
+                  <Button Content="确定" FontSize="10.5" Padding="10,2" MinHeight="0"
+                          Click="CellCommitAdd_Click" />
+                </StackPanel>
+              </StackPanel>
+            </Border>
+          </Popup>
         </Grid>
       </Border>
     </DataTemplate>
@@ -303,7 +333,7 @@
             <MenuItem Header="删除" Click="DeleteTask_Click" />
           </ContextMenu>
         </Border.ContextMenu>
-        <Grid ColumnDefinitions="20,34,*,Auto">
+        <Grid ColumnDefinitions="26,34,*,Auto">
           <CheckBox Grid.Column="0" IsChecked="{Binding IsCompleted, Mode=OneWay}"
                     IsCheckedChanged="TaskCheckBox_Changed" VerticalAlignment="Center"
                     HorizontalAlignment="Center" Margin="0,0,2,0" />
@@ -339,7 +369,7 @@
             <MenuItem Header="删除" Click="DeleteTask_Click" />
           </ContextMenu>
         </Border.ContextMenu>
-        <Grid ColumnDefinitions="20,34,*,Auto">
+        <Grid ColumnDefinitions="26,34,*,Auto">
           <CheckBox Grid.Column="0" IsChecked="{Binding IsCompleted, Mode=OneWay}"
                     IsCheckedChanged="TaskCheckBox_Changed" VerticalAlignment="Center"
                     HorizontalAlignment="Center" Margin="0,0,2,0" />
@@ -373,9 +403,9 @@
               <TextBlock Text="{Binding TodayTaskSummary}" FontSize="10.5" Foreground="{DynamicResource MutedTextBrush}" Margin="0,2,0,0" />
             </StackPanel>
           </DockPanel>
-          <!-- ===== 快速添加表单：标题 + 时间 + 提前提醒 + 确定 =====
-               提前提醒是三个互斥的下拉列表（天 / 小时 / 分钟），选一个即可；
-               三个都停在「不选」＝到点提醒，留空时间则完全不推到点提醒。
+          <!-- ===== 快速添加表单：标题 + 提醒时间 + 确定 =====
+               任务没有「时间」输入框：基准时刻固定为任务当天 9:00，用户只选「提前多久提醒」，
+               提醒时刻 = 当天 9:00 − 提前量。下拉只有一列固定档位，不需要再让用户自己算。
                用 Tag 而不是 x:Name 定位：这段在 DataTemplate 内部，x:Name 生成不了字段
                （模板有自己的命名空间），宿主里既有右侧面板又有窄窗视图两份实例。 -->
           <StackPanel Grid.Row="1" Tag="AddTaskForm" IsVisible="{Binding IsAddingTodayTask}"
@@ -385,25 +415,16 @@
                      PlaceholderText="输入任务，回车添加"
                      KeyDown="TodayTaskTextBox_KeyDown" LostFocus="TodayTaskTextBox_LostFocus" />
             <Grid ColumnDefinitions="Auto,*">
-              <TextBlock Grid.Column="0" Text="时间" FontSize="10.5" Margin="0,0,4,0"
+              <TextBlock Grid.Column="0" Text="提醒时间" FontSize="10.5" Margin="0,0,5,0"
                          Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center" />
-              <TextBox Grid.Column="1" Tag="TaskTimeBox" Text="{Binding TodayTaskTimeText}"
-                       Padding="4,2" FontSize="11" MinHeight="20" MaxLength="5"
-                       PlaceholderText="HH:mm（可留空）"
-                       KeyDown="TodayTaskTextBox_KeyDown" LostFocus="TodayTaskTextBox_LostFocus" />
+              <ComboBox Grid.Column="1" Tag="TaskLeadBox" HorizontalAlignment="Left" MinWidth="112"
+                        FontSize="10.5" MinHeight="24" Padding="6,1"
+                        ItemsSource="{Binding ReminderLeadOptions}"
+                        SelectedItem="{Binding TodayTaskLead}" />
             </Grid>
-            <TextBlock Text="提前提醒（三选一）" FontSize="10" Foreground="{DynamicResource MutedTextBrush}" />
-            <StackPanel Orientation="Horizontal" Spacing="3">
-              <ComboBox Width="58" FontSize="10.5" MinHeight="24" Padding="5,1"
-                        ItemsSource="{Binding ReminderLeadDayOptions}"
-                        SelectedItem="{Binding TodayTaskLeadDay}" />
-              <ComboBox Width="58" FontSize="10.5" MinHeight="24" Padding="5,1"
-                        ItemsSource="{Binding ReminderLeadHourOptions}"
-                        SelectedItem="{Binding TodayTaskLeadHour}" />
-              <ComboBox Width="58" FontSize="10.5" MinHeight="24" Padding="5,1"
-                        ItemsSource="{Binding ReminderLeadMinuteOptions}"
-                        SelectedItem="{Binding TodayTaskLeadMinute}" />
-            </StackPanel>
+            <TextBlock Text="任务固定当天 9:00 开始，提醒按提前量往前推；选「不提醒」就不推送。"
+                       FontSize="9.5" TextWrapping="Wrap"
+                       Foreground="{DynamicResource MutedTextBrush}" />
             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="4">
               <Button Content="取消" FontSize="10.5" Padding="8,2" MinHeight="0" Click="CancelTodayTask_Click" />
               <Button Content="确定" FontSize="10.5" Padding="10,2" MinHeight="0" Click="CommitTodayTask_Click" />

@@ -330,7 +330,8 @@ public sealed class ReminderService : IDisposable
     /// <summary>单条任务的到点提醒文案。</summary>
     private static string BuildTaskReminderText(CalendarTask task)
     {
-        var timeText = task.Time?.ToString("HH:mm") ?? string.Empty;
+        // 任务时刻 = 老数据里存过的时间，否则是当天默认的 9:00。
+        var timeText = (task.Time ?? CalendarTask.DefaultTime).ToString("HH:mm");
         var lead = task.ReminderLeadMinutes ?? 0;
 
         var sb = new StringBuilder();

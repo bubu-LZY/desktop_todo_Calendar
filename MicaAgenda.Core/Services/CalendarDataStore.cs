@@ -137,7 +137,33 @@ public sealed class CalendarDataStore
             task.Normalize(fallback);
         }
 
+        NormalizeTaskIds(data);
+
         NormalizePendingReviewDeletions(data);
+    }
+
+    /// <summary>
+    /// 任务 Id 必须唯一：整个 UI 都按 Id 复用 ViewModel 实例（日期格子的增量刷新、
+    /// 右侧面板的实例池）。两条任务共用一个 Id 时，池子会把同一个实例发两次，
+    /// 增量插入随即吃掉其中一条 —— 表现出来就是"日期格子里比右侧面板少显示一条"。
+    /// 同步 / 导入 / 手工改过的 JSON 都可能产生重复 Id，所以在这里一次性改正。
+    /// </summary>
+    private static void NormalizeTaskIds(CalendarData data)
+    {
+        if (data.Tasks.Count == 0)
+        {
+            return;
+        }
+
+        var seen = new HashSet<Guid>();
+        foreach (var task in data.Tasks)
+        {
+            if (task.Id == Guid.Empty || !seen.Add(task.Id))
+            {
+                task.Id = Guid.NewGuid();
+                seen.Add(task.Id);
+            }
+        }
     }
 
     /// <summary>

@@ -1,3 +1,4 @@
+using MicaAgenda.App.Helpers;
 using MicaAgenda.App.Models;
 using MicaAgenda.App.Services;
 using MicaAgenda.App.ViewModels;
@@ -13,25 +14,25 @@ public sealed class TaskScheduleTests
         => viewModel.TimelineMonths.SelectMany(block => block.Days);
 
     [Fact]
-    public void AddTask_WithTimeAndLead_StoresSchedule()
+    public void AddTask_WithLead_AnchorsToTheDefaultNineAm()
     {
         var data = new CalendarData();
         var viewModel = new MainViewModel(data, () => new DateTimeOffset(2026, 5, 10, 9, 0, 0, TimeSpan.Zero));
 
-        var task = viewModel.AddTask(new DateOnly(2026, 5, 12), "组会汇报", new TimeOnly(14, 30), 60);
+        var task = viewModel.AddTask(new DateOnly(2026, 5, 12), "组会汇报", 60);
 
-        Assert.Equal(new TimeOnly(14, 30), task.Time);
+        // 任务不再由用户填时间：Time 留空，基准时刻走当天 9:00
+        Assert.Null(task.Time);
         Assert.Equal(60, task.ReminderLeadMinutes);
-        Assert.Equal(new DateTime(2026, 5, 12, 13, 30, 0), task.ReminderTriggerAt());
+        Assert.Equal(new DateTime(2026, 5, 12, 8, 0, 0), task.ReminderTriggerAt());
     }
 
     [Fact]
-    public void AddTask_WithoutTime_DropsLeadAndNeverReminds()
+    public void AddTask_WithoutLead_NeverReminds()
     {
-        var data = new CalendarData();
-        var viewModel = new MainViewModel(data);
+        var viewModel = new MainViewModel(new CalendarData());
 
-        var task = viewModel.AddTask(new DateOnly(2026, 5, 12), "随手记", null, 120);
+        var task = viewModel.AddTask(new DateOnly(2026, 5, 12), "随手记");
 
         Assert.Null(task.Time);
         Assert.Null(task.ReminderLeadMinutes);
@@ -41,80 +42,106 @@ public sealed class TaskScheduleTests
     }
 
     [Fact]
-    public void AddTask_NegativeLead_IsClampedToZero()
+    public void AddTask_NonPositiveLead_IsTreatedAsNoReminder()
     {
-        var data = new CalendarData();
-        var viewModel = new MainViewModel(data);
+        var viewModel = new MainViewModel(new CalendarData());
 
-        var task = viewModel.AddTask(new DateOnly(2026, 5, 12), "到点提醒", new TimeOnly(9, 0), -30);
-
-        Assert.Equal(0, task.ReminderLeadMinutes);
-        Assert.Equal(new DateTime(2026, 5, 12, 9, 0, 0), task.ReminderTriggerAt());
+        foreach (var lead in new int?[] { null, 0, -30 })
+        {
+            var task = viewModel.AddTask(new DateOnly(2026, 5, 12), "无提醒", lead);
+            Assert.Null(task.ReminderLeadMinutes);
+            Assert.Null(task.ReminderTriggerAt());
+        }
     }
 
     [Fact]
-    public void CommitTodayTask_CarriesTimeAndLeadFromTheForm()
+    public void LegacyTaskWithStoredTime_StillUsesThatTimeAsAnchor()
+    {
+        var task = ScheduledTask(new TimeOnly(14, 30), 30);
+
+        Assert.Equal(new DateTime(2026, 5, 10, 14, 0, 0), task.ReminderTriggerAt());
+    }
+
+    [Fact]
+    public void CommitTodayTask_CarriesLeadFromTheForm()
     {
         var data = new CalendarData();
         var viewModel = new MainViewModel(data, () => new DateTimeOffset(2026, 5, 10, 9, 0, 0, TimeSpan.Zero));
 
         viewModel.BeginAddTodayTask();
         viewModel.TodayTaskDraft = "写周报";
-        viewModel.TodayTaskTimeText = "18:00";
-        viewModel.TodayTaskLeadHour = "1时";
+        viewModel.TodayTaskLead = "提前1个小时";
 
         var task = viewModel.CommitTodayTask();
 
         Assert.NotNull(task);
-        Assert.Equal(new TimeOnly(18, 0), task!.Time);
-        Assert.Equal(60, task.ReminderLeadMinutes);
+        Assert.Equal(60, task!.ReminderLeadMinutes);
+        Assert.Null(task.Time);
         Assert.Equal(new DateOnly(2026, 5, 10), task.Date);
 
-        // 提交后表单清空，下次添加不会带着上一条的时间与提前量
+        // 提交后表单清空，下次添加不会带着上一条的提前量
         Assert.False(viewModel.IsAddingTodayTask);
-        Assert.Equal(string.Empty, viewModel.TodayTaskTimeText);
         Assert.Null(viewModel.TodayTaskReminderLead);
-        Assert.Equal("不选", viewModel.TodayTaskLeadHour);
-    }
-
-    [Fact]
-    public void ReminderLeadDropdowns_AreMutuallyExclusive()
-    {
-        var viewModel = new MainViewModel(new CalendarData());
-
-        viewModel.TodayTaskLeadDay = "2天";
-        Assert.Equal(2 * 24 * 60, viewModel.TodayTaskReminderLead);
-
-        // 换选「小时」之后，天被清回「不选」，总量只按小时算
-        viewModel.TodayTaskLeadHour = "3时";
-        Assert.Equal("不选", viewModel.TodayTaskLeadDay);
-        Assert.Equal("3时", viewModel.TodayTaskLeadHour);
-        Assert.Equal(180, viewModel.TodayTaskReminderLead);
-
-        viewModel.TodayTaskLeadMinute = "45分";
-        Assert.Equal("不选", viewModel.TodayTaskLeadHour);
-        Assert.Equal(45, viewModel.TodayTaskReminderLead);
-
-        viewModel.TodayTaskLeadMinute = "不选";
-        Assert.Null(viewModel.TodayTaskReminderLead);
+        Assert.Equal("不提醒", viewModel.TodayTaskLead);
     }
 
     [Theory]
+    [InlineData("不提醒", null)]
+    [InlineData("提前3分钟", 3)]
+    [InlineData("提前5分钟", 5)]
+    [InlineData("提前10分钟", 10)]
+    [InlineData("提前15分钟", 15)]
+    [InlineData("提前30分钟", 30)]
+    [InlineData("提前1个小时", 60)]
+    [InlineData("提前3个小时", 180)]
     [InlineData("", null)]
-    [InlineData("   ", null)]
-    [InlineData("09:05", "09:05")]
-    [InlineData("9:5", "09:05")]
-    [InlineData("9：05", "09:05")]
-    [InlineData("23:59", "23:59")]
-    [InlineData("25:00", null)]
-    [InlineData("abc", null)]
-    public void ParseTimeDraft_AcceptsCommonFormats(string input, string? expected)
+    [InlineData(null, null)]
+    [InlineData("随便什么", null)]
+    public void ReminderLeadCatalog_MapsEveryOptionToMinutes(string? label, int? expected)
+        => Assert.Equal(expected, ReminderLeadCatalog.ToMinutes(label));
+
+    [Fact]
+    public void ReminderLeadDropdown_ExposesExactlyTheFixedOptions()
     {
-        var parsed = MainViewModel.ParseTimeDraft(input);
-        Assert.Equal(expected is null ? null : TimeOnly.Parse(expected), parsed);
+        var viewModel = new MainViewModel(new CalendarData());
+
+        Assert.Equal(
+            ["不提醒", "提前3分钟", "提前5分钟", "提前10分钟", "提前15分钟", "提前30分钟", "提前1个小时", "提前3个小时"],
+            viewModel.ReminderLeadOptions.ToArray());
+
+        viewModel.TodayTaskLead = "提前15分钟";
+        Assert.Equal(15, viewModel.TodayTaskReminderLead);
+
+        viewModel.TodayTaskLead = "不提醒";
+        Assert.Null(viewModel.TodayTaskReminderLead);
     }
 
-    private static CalendarTask ScheduledTask(TimeOnly time, int lead)
+    /// <summary>日期格子里的快速添加表单与右侧面板共用同一份提醒档位，且开始/取消都要复位。</summary>
+    [Fact]
+    public void DayCellQuickAdd_StartsFromNoReminderAndResetsOnCancel()
+    {
+        var cell = new DayCellViewModel(new DateOnly(2026, 9, 15), isInCurrentMonth: true, isToday: true, [], []);
+
+        Assert.Equal(ReminderLeadCatalog.Labels, cell.ReminderLeadOptions);
+        Assert.Equal("不提醒", cell.ReminderLead);
+        Assert.Null(cell.DraftReminderLead);
+
+        cell.ReminderLead = "提前30分钟";
+        Assert.Equal(30, cell.DraftReminderLead);
+
+        // 取消后要回到「不提醒」，否则下一次新建会莫名其妙带上上一次的提醒。
+        cell.CancelAdd();
+        Assert.Equal("不提醒", cell.ReminderLead);
+        Assert.Null(cell.DraftReminderLead);
+
+        cell.ReminderLead = "提前3个小时";
+        cell.BeginAdd();
+        Assert.Equal("不提醒", cell.ReminderLead);
+        Assert.Equal(string.Empty, cell.DraftTitle);
+        Assert.Null(cell.DraftReminderLead);
+    }
+
+    private static CalendarTask ScheduledTask(TimeOnly? time, int? lead)
         => new()
         {
             Id = Guid.NewGuid(),
@@ -159,15 +186,25 @@ public sealed class TaskScheduleTests
     }
 
     [Fact]
-    public void Normalize_ClearsReminderMarkWhenTimeIsRemoved()
+    public void Normalize_ClearsReminderMarkWhenLeadIsRemoved()
     {
         var task = ScheduledTask(new TimeOnly(10, 0), 30);
         task.MarkReminderSent(new DateTimeOffset(2026, 5, 10, 9, 30, 0, TimeSpan.Zero));
 
-        task.Time = null;
+        task.ReminderLeadMinutes = null;
         task.Normalize(DateTimeOffset.Now);
 
         Assert.Null(task.ReminderSentAt);
+    }
+
+    [Fact]
+    public void Normalize_ClampsNegativeLeadToZero()
+    {
+        var task = ScheduledTask(new TimeOnly(10, 0), -30);
+
+        task.Normalize(DateTimeOffset.Now);
+
+        Assert.Equal(0, task.ReminderLeadMinutes);
     }
 
     [Fact]
@@ -187,16 +224,46 @@ public sealed class TaskScheduleTests
     }
 
     [Fact]
-    public void TaskItemViewModel_ExposesScheduledTime()
+    public void TaskItemViewModel_ExposesReminderInsteadOfTime()
     {
-        var task = ScheduledTask(new TimeOnly(14, 5), 30);
-        var vm = new TaskItemViewModel(task);
+        var withLead = new TaskItemViewModel(ScheduledTask(new TimeOnly(14, 5), 30));
 
-        Assert.True(vm.HasTime);
-        Assert.Equal("14:05", vm.TimeText);
-        Assert.StartsWith("14:05 · ", vm.TimeBadge);
-        Assert.Contains("计划：14:05", vm.TooltipText);
-        Assert.Contains("提前 30分钟 提醒", vm.TooltipText);
+        Assert.True(withLead.HasReminder);
+        Assert.Equal("13:35", withLead.ReminderTimeText);
+        Assert.StartsWith("13:35 提醒 · ", withLead.TimeBadge);
+        Assert.Contains("提醒：13:35", withLead.TooltipText);
+        Assert.Contains("提前 30分钟", withLead.TooltipText);
+
+        var withoutLead = new TaskItemViewModel(ScheduledTask(null, null));
+        Assert.False(withoutLead.HasReminder);
+        Assert.Equal(string.Empty, withoutLead.ReminderTimeText);
+        Assert.DoesNotContain("提醒 ·", withoutLead.TimeBadge);
+    }
+
+    [Fact]
+    public async Task CalendarDataStore_GivesDuplicateIdsAFreshOne()
+    {
+        // 整个 UI 都按 Id 复用 ViewModel 实例；两条任务共用 Id 时，
+        // 日期格子里会比右侧面板少显示一条。加载时一次性改正。
+        var shared = Guid.NewGuid();
+        var path = Path.Combine(Path.GetTempPath(), $"mica-agenda-dup-{Guid.NewGuid():N}.json");
+        await File.WriteAllTextAsync(path, $$"""
+            {
+              "Settings": { "ViewMode": "Month", "BackgroundMode": "Graphite", "Opacity": 1 },
+              "Tasks": [
+                { "Id": "{{shared}}", "Date": "2026-05-12", "Title": "第一条", "CreatedAt": "2026-05-01T09:00:00+08:00" },
+                { "Id": "{{shared}}", "Date": "2026-05-12", "Title": "第二条", "CreatedAt": "2026-05-01T09:05:00+08:00" },
+                { "Id": "00000000-0000-0000-0000-000000000000", "Date": "2026-05-12", "Title": "空 Id", "CreatedAt": "2026-05-01T09:10:00+08:00" }
+              ]
+            }
+            """);
+
+        var loaded = await new CalendarDataStore(path).LoadAsync();
+
+        Assert.Equal(3, loaded.Tasks.Count);
+        Assert.Equal(3, loaded.Tasks.Select(task => task.Id).Distinct().Count());
+        Assert.DoesNotContain(Guid.Empty, loaded.Tasks.Select(task => task.Id));
+        File.Delete(path);
     }
 
     [Fact]
