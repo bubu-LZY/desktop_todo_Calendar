@@ -103,8 +103,8 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
-        FileLog.Write($"[STARTUP] MainWindow ctor - v4.5.0 - exe={Environment.ProcessPath ?? "unknown"}");
-        Title = "MicaAgenda v4.5.0";
+        FileLog.Write($"[STARTUP] MainWindow ctor - v4.6.0 - exe={Environment.ProcessPath ?? "unknown"}");
+        Title = "MicaAgenda v4.6.0";
 
         // 窗口初始化前同步加载配置，确保桌面嵌入/锁定在首帧即生效
         _config = _configStore.Load();
@@ -2990,9 +2990,9 @@ public partial class MainWindow : Window
             return;
         }
 
-        if (_viewModel.Settings.ViewMode is CalendarViewMode.Month or CalendarViewMode.Week)
+        if (_viewModel.Settings.ViewMode is CalendarViewMode.Month or CalendarViewMode.Week or CalendarViewMode.Tasks)
         {
-            // 月/周视图窗口大小都由用户自由调整，不自动适配内容高度。
+            // 月/周/任务视图窗口大小都由用户自由调整，不自动适配内容高度。
             return;
         }
 
@@ -3094,9 +3094,9 @@ public partial class MainWindow : Window
             return;
         }
 
-        if (_viewModel.Settings.ViewMode is CalendarViewMode.Month or CalendarViewMode.Week)
+        if (_viewModel.Settings.ViewMode is CalendarViewMode.Month or CalendarViewMode.Week or CalendarViewMode.Tasks)
         {
-            // 月/周视图窗口大小都由用户自由控制。
+            // 月/周/任务视图窗口大小都由用户自由控制。
             return;
         }
 

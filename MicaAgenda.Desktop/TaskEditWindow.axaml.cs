@@ -1,5 +1,5 @@
 using System;
-using System.Collections;
+using System.Collections.ObjectModel;
 using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Interactivity;
@@ -23,7 +23,6 @@ public partial class TaskEditWindow : Window
     private static readonly string[] WeekdayNames = ["日", "一", "二", "三", "四", "五", "六"];
 
     private readonly AppConfig? _config;
-    private bool _initializing;
 
     /// <summary>XAML 编译器要求的无参构造（仅供编译期/设计期）；运行时一律走有参构造。</summary>
     public TaskEditWindow()
@@ -35,17 +34,13 @@ public partial class TaskEditWindow : Window
     {
         _config = config;
 
-        // 填初始值期间不要触发「提醒送不出去」的提示，否则一开窗就会莫名黄一条
-        _initializing = true;
-
         DateText.Text = $"{task.Date:yyyy年M月d日}　周{WeekdayNames[(int)task.Date.DayOfWeek]}";
         TitleBox.Text = task.Title;
-        TimeBox.SelectedTime = (task.Time ?? CalendarTask.DefaultTime).ToTimeSpan();
+        TimeBox.Time = (task.Time ?? CalendarTask.DefaultTime).ToTimeSpan();
 
-        LeadBox.ItemsSource = ReminderLeadCatalog.Labels;
-        LeadBox.SelectedItem = ReminderLeadCatalog.ToLabel(task.ReminderLeadMinutes);
-
-        _initializing = false;
+        // 多选提醒：把任务现存的全部档位还原成勾选项。
+        LeadBox.SelectedLabels = new ObservableCollection<string>(
+            ReminderLeadCatalog.ToLabels(task.AllReminderLeads));
 
         // 标题框里回车 = 保存（标题是单行的，回车没有别的含义）
         TitleBox.KeyDown += OnTitleKeyDown;
@@ -62,12 +57,13 @@ public partial class TaskEditWindow : Window
     /// <summary>编辑后的任务内容（调用方 Trim 后为空则视为不改标题）。</summary>
     public string EditedTitle => TitleBox.Text ?? string.Empty;
 
-    /// <summary>编辑后的任务时刻；用户把 TimePicker 清空时返回 null（= 当天 9:00）。</summary>
+    /// <summary>编辑后的任务时刻；TimeField 为空时按默认 9:00（它本身不允许清空）。</summary>
     public TimeOnly? EditedTime
-        => TimeBox.SelectedTime is { } span ? TimeOnly.FromTimeSpan(span) : null;
+        => TimeBox.Time is { } span ? TimeOnly.FromTimeSpan(span) : null;
 
-    /// <summary>编辑后的提醒档位：null = 不提醒，0 = 到时提醒。</summary>
-    public int? EditedLeadMinutes => ReminderLeadCatalog.ToMinutes(LeadBox.SelectedItem as string);
+    /// <summary>编辑后的全部提醒提前量（分钟）；空集合 = 不提醒，0 = 到时提醒。</summary>
+    public IReadOnlyList<int> EditedLeads
+        => ReminderLeadCatalog.ToMinutesList(LeadBox.SelectedLabels);
 
     private void OnTitleKeyDown(object? sender, KeyEventArgs e)
     {
@@ -90,27 +86,14 @@ public partial class TaskEditWindow : Window
         Close();
     }
 
-    private void LeadBox_SelectionChanged(object? sender, SelectionChangedEventArgs e)
+    /// <summary>
+    /// 第一次勾上任一档位、而当前没有任何推送通道时，用窗内黄字提示（不再弹模态框，
+    /// 嵌套模态在桌面嵌入模式下容易点不动）。事件语义上触发时一定是「从无到有」。
+    /// </summary>
+    private void LeadBox_FirstSelected(object? sender, EventArgs e)
     {
-        if (_initializing)
-        {
-            return;
-        }
-
-        // 与快速添加表单同一个守门人：从「不提醒」切到真的提醒档、而当前没有任何推送通道时提示。
-        // 这里用窗内黄字提示，不再另弹一个模态框（嵌套模态在桌面嵌入模式下容易点不动）。
-        var shouldWarn = ReminderGate.ShouldWarnOnLeadChange(
-            _config,
-            FirstLabel(e.RemovedItems),
-            FirstLabel(e.AddedItems));
-        if (shouldWarn)
-        {
-            WarnText.Text = ReminderGate.FeishuMissingMessage;
-        }
-
+        var shouldWarn = ReminderGate.ShouldWarnOnLeadToggle(_config, hadAny: false, hasAny: true);
+        WarnText.Text = ReminderGate.FeishuMissingMessage;
         WarnText.IsVisible = shouldWarn;
     }
-
-    /// <summary>下拉的变更项里取出档位文案（Avalonia 给的 AddedItems/RemovedItems 是非泛型 IList）。</summary>
-    private static string? FirstLabel(IList items) => items.Count > 0 ? items[0] as string : null;
 }

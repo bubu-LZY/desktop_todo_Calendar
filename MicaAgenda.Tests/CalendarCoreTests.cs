@@ -252,4 +252,94 @@ public sealed class CalendarCoreTests
 
         File.Delete(path);
     }
+
+    // ===== 多选提醒（含「提前一天」）=====
+
+    [Fact]
+    public void SetReminderLeads_FirstBecomesPrimary_RestGoToAdditional()
+    {
+        var task = new CalendarTask { Date = new DateOnly(2026, 9, 20), Time = new TimeOnly(10, 0), Title = "t" };
+
+        task.SetReminderLeads([30, 0, 1440]);
+
+        Assert.Equal(30, task.ReminderLeadMinutes);
+        Assert.Equal([0, 1440], task.AdditionalReminderLeadMinutes);
+        Assert.Equal([30, 0, 1440], task.AllReminderLeads.ToArray());
+
+        // 空集合 = 不提醒，两处都清空
+        task.SetReminderLeads([]);
+        Assert.Null(task.ReminderLeadMinutes);
+        Assert.Null(task.AdditionalReminderLeadMinutes);
+        Assert.False(task.HasReminders);
+    }
+
+    [Fact]
+    public void DueReminderLeads_FiresEachSelectedLeadIndependently()
+    {
+        var task = new CalendarTask { Date = new DateOnly(2026, 9, 20), Time = new TimeOnly(10, 0), Title = "t" };
+        task.SetReminderLeads([1440, 0]); // 提前一天 + 到时提醒
+
+        // 9/19 10:00：提前一天刚到点，到时提醒还没到
+        var dueEarly = task.DueReminderLeads(new DateTime(2026, 9, 19, 10, 0, 0));
+        Assert.Equal([1440], dueEarly.ToArray());
+
+        // 推过 1440 档位后，同刻再轮询不重复推
+        task.MarkReminderSent(1440, DateTimeOffset.Now);
+        Assert.Empty(task.DueReminderLeads(new DateTime(2026, 9, 19, 10, 1, 0)));
+
+        // 9/20 10:00：到时提醒到点，与已推的 1440 互不挡
+        var dueOnTime = task.DueReminderLeads(new DateTime(2026, 9, 20, 10, 0, 0));
+        Assert.Equal([0], dueOnTime.ToArray());
+    }
+
+    [Fact]
+    public void OneDayLead_TriggersExactly24HoursBeforeScheduledAt()
+    {
+        var task = new CalendarTask { Date = new DateOnly(2026, 9, 20), Time = new TimeOnly(9, 0), Title = "t" };
+        task.SetReminderLeads([1440]);
+
+        var trigger = Assert.Single(task.ReminderTriggers());
+        Assert.Equal(1440, trigger.Lead);
+        Assert.Equal(new DateTime(2026, 9, 19, 9, 0, 0), trigger.TriggerAt);
+        Assert.Equal(new DateTime(2026, 9, 19, 9, 0, 0), task.EarliestReminderTriggerAt());
+    }
+
+    [Fact]
+    public void ResetReminder_ClearsFiredMarksForEveryLead()
+    {
+        var task = new CalendarTask { Date = new DateOnly(2026, 9, 20), Time = new TimeOnly(10, 0), Title = "t" };
+        task.SetReminderLeads([30, 0]);
+        task.MarkReminderSent(30, DateTimeOffset.Now);
+        task.MarkReminderSent(0, DateTimeOffset.Now);
+
+        task.ResetReminder();
+
+        Assert.Null(task.ReminderSentAt);
+        Assert.Null(task.FiredReminderLeads);
+        Assert.Equal([30, 0], task.DueReminderLeads(new DateTime(2026, 9, 20, 10, 0, 0)).ToArray());
+    }
+
+    [Fact]
+    public async Task CalendarDataStore_RoundTripsMultipleReminderLeads()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"mica-agenda-multi-reminder-{Guid.NewGuid():N}.json");
+        var store = new CalendarDataStore(path);
+        var task = new CalendarTask
+        {
+            Date = new DateOnly(2026, 9, 20),
+            Time = new TimeOnly(14, 30),
+            Title = "多提醒任务",
+            ReminderLeadMinutes = 0,
+            AdditionalReminderLeadMinutes = [30, 1440],
+            CreatedAt = new DateTimeOffset(2026, 9, 17, 9, 0, 0, TimeSpan.Zero)
+        };
+        await store.SaveAsync(new CalendarData { Tasks = [task] });
+
+        var loaded = (await store.LoadAsync()).Tasks.Single();
+
+        Assert.Equal(new TimeOnly(14, 30), loaded.Time);
+        Assert.Equal([0, 30, 1440], loaded.AllReminderLeads.ToArray());
+
+        File.Delete(path);
+    }
 }

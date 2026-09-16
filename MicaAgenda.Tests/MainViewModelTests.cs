@@ -83,7 +83,7 @@ public sealed class MainViewModelTests
     }
 
     [Fact]
-    public void MarkOpenCompleted_MarksOnlyThisWeeksOpenAsCompleted()
+    public void MarkOpenCompleted_MarksOverdueAndThisWeeksOpenAsCompleted()
     {
         var now = new DateTimeOffset(2026, 5, 13, 10, 0, 0, TimeSpan.Zero);
         var data = new CalendarData
@@ -97,12 +97,11 @@ public sealed class MainViewModelTests
         };
         var viewModel = new MainViewModel(data, () => now);
 
+        // 分组合并后，「未完成」组的一键完成要把逾期欠账也一起勾掉
         var marked = viewModel.MarkOpenCompleted();
 
-        Assert.Equal(2, marked);
-        Assert.True(data.Tasks.Single(t => t.Title == "本周").IsCompleted);
-        Assert.True(data.Tasks.Single(t => t.Title == "本周2").IsCompleted);
-        Assert.False(data.Tasks.Single(t => t.Title == "逾期未完成").IsCompleted);
+        Assert.Equal(3, marked);
+        Assert.All(data.Tasks, task => Assert.True(task.IsCompleted));
     }
 
     [Fact]
@@ -212,6 +211,38 @@ public sealed class MainViewModelTests
         Assert.False(viewModel.IsYearView);
         Assert.Contains(nameof(MainViewModel.IsMonthView), notified);
         Assert.True(viewModel.IsMonthOrYearView);
+    }
+
+    [Fact]
+    public void TaskView_ShowsOnlyTaskPanel_AndKeepsTodayListFresh()
+    {
+        var data = new CalendarData();
+        var clock = () => new DateTimeOffset(2026, 5, 10, 9, 0, 0, TimeSpan.Zero);
+        var viewModel = new MainViewModel(data, clock);
+
+        // 任务视图下新增任务：RebuildCalendar 走早退分支，不建日历格子，
+        // 但今日 / 本周列表必须照常刷新，否则任务视图里加任务看起来像没反应。
+        viewModel.SetViewMode(CalendarViewMode.Tasks);
+
+        Assert.Equal(CalendarViewMode.Tasks, data.Settings.ViewMode);
+        Assert.True(viewModel.IsTaskView);
+        Assert.False(viewModel.IsMonthView);
+        Assert.False(viewModel.IsWeekView);
+        Assert.False(viewModel.IsYearView);
+        Assert.False(viewModel.IsMonthOrYearView);
+        Assert.Equal("任务视图", viewModel.CurrentViewLabel);
+
+        var today = DateOnly.FromDateTime(clock().LocalDateTime);
+        viewModel.AddTask(today, "任务视图里加的");
+        Assert.Contains(viewModel.TodayTasks, t => t.Title == "任务视图里加的");
+
+        // 切回月视图：日历格子恢复，标志位复位
+        viewModel.SetViewMode(CalendarViewMode.Month);
+        Assert.False(viewModel.IsTaskView);
+        Assert.True(viewModel.IsMonthView);
+        Assert.Contains(
+            MonthDays(viewModel).SelectMany(d => d.Tasks),
+            t => t.Title == "任务视图里加的");
     }
 
     [Fact]
@@ -877,29 +908,37 @@ public sealed class MainViewModelTests
         Assert.Empty(viewModel.TodayCompletedTasks);
     }
 
-    /// <summary>把一条历史逾期任务标记完成后，不能从三个本周分组里同时消失。</summary>
+    /// <summary>
+    /// 历史逾期任务现在并入「未完成」一组（行内挂红色【已逾期】）；
+    /// 标记完成后要挪进「已完成」，不能从两个本周分组里同时消失。
+    /// </summary>
     [Fact]
     public void CompleteOverdueTask_DoesNotMakeItVanishFromWeekGroups()
     {
-        var now = new DateTimeOffset(2026, 5, 10, 9, 0, 0, TimeSpan.Zero);
+        var now = new DateTimeOffset(2026, 5, 10, 10, 0, 0, TimeSpan.Zero);
         var id = Guid.NewGuid();
         var data = new CalendarData
         {
             Tasks =
             [
-                // 计划日期早于本周（5/10 是周日，本周从 5/10 开始），属于"逾期未完成"
+                // 计划日期早于本周（5/10 是周日，本周从 5/10 开始），且过了当天 9 点，属于逾期欠账
                 new CalendarTask { Id = id, Date = new DateOnly(2026, 4, 20), Title = "交房租", CreatedAt = now },
             ]
         };
         var viewModel = new MainViewModel(data, () => now);
 
-        Assert.Single(viewModel.WeekOverdueTasks);
+        // 合并后：逾期任务在「未完成」组里，标题带红色【已逾期】前缀
+        Assert.Single(viewModel.WeekOpenTasks);
+        Assert.Empty(viewModel.WeekCompletedTasks);
+        Assert.Equal(1, viewModel.WeekOverdueCount);
+        Assert.True(viewModel.HasWeekOverdue);
+        var overdueVm = viewModel.WeekOpenTasks[0];
+        Assert.True(overdueVm.IsOverdueNow);
+        Assert.Equal("【已逾期】", overdueVm.OverduePrefix);
 
         viewModel.ToggleTaskCompletion(id);
 
-        var visible = viewModel.WeekOverdueTasks.Count
-                      + viewModel.WeekOpenTasks.Count
-                      + viewModel.WeekCompletedTasks.Count;
+        var visible = viewModel.WeekOpenTasks.Count + viewModel.WeekCompletedTasks.Count;
         Assert.Equal(1, visible);
         Assert.Single(viewModel.WeekCompletedTasks);
     }
@@ -1108,6 +1147,7 @@ public sealed class MainViewModelTests
     /// <summary>
     /// 逾期与否看「任务时刻」（日期 + 时间），不只看日期：
     /// 今天 9:00 且此刻已过 = 逾期；今天 23:00 = 还留在「未完成」；没设时间 = 当天 9:00。
+    /// 分组合并后逾期任务仍排在「未完成」组最前，并带【已逾期】前缀。
     /// </summary>
     [Fact]
     public void OverdueFollowsTaskTimeNotJustTheDate()
@@ -1124,15 +1164,18 @@ public sealed class MainViewModelTests
         };
         var viewModel = new MainViewModel(data, () => now);
 
-        var overdue = viewModel.WeekOverdueTasks.Select(task => task.Title).ToList();
-        var open = viewModel.WeekOpenTasks.Select(task => task.Title).ToList();
+        var merged = viewModel.WeekOpenTasks;
+        Assert.Equal(2, viewModel.WeekOverdueCount);
 
-        Assert.Contains("今天9点", overdue);
-        Assert.Contains("今天没设时间", overdue);
-        Assert.DoesNotContain("今天23点", overdue);
+        // 逾期两条排在前面（按时间先后），未到期的 23 点在最后
+        Assert.Equal(["今天9点", "今天没设时间", "今天23点"], merged.Select(task => task.Title).ToArray());
 
-        Assert.Contains("今天23点", open);
-        Assert.DoesNotContain("今天9点", open);
+        var byTitle = merged.ToDictionary(task => task.Title);
+        Assert.True(byTitle["今天9点"].IsOverdueNow);
+        Assert.True(byTitle["今天没设时间"].IsOverdueNow);
+        Assert.Equal("【已逾期】", byTitle["今天9点"].OverduePrefix);
+        Assert.False(byTitle["今天23点"].IsOverdueNow);
+        Assert.Equal(string.Empty, byTitle["今天23点"].OverduePrefix);
     }
 
     /// <summary>没设时间 / 正好 9:00 都存成 null，让"没选"和"就是 9 点"在数据里是同一种形态。</summary>

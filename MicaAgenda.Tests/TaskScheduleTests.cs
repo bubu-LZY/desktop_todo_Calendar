@@ -42,16 +42,28 @@ public sealed class TaskScheduleTests
     }
 
     [Fact]
-    public void AddTask_NullOrNegativeLead_IsTreatedAsNoReminder()
+    public void AddTask_NullLead_IsTreatedAsNoReminder()
     {
         var viewModel = new MainViewModel(new CalendarData());
 
-        foreach (var lead in new int?[] { null, -30 })
-        {
-            var task = viewModel.AddTask(new DateOnly(2026, 5, 12), "无提醒", lead);
-            Assert.Null(task.ReminderLeadMinutes);
-            Assert.Null(task.ReminderTriggerAt());
-        }
+        var task = viewModel.AddTask(new DateOnly(2026, 5, 12), "无提醒", null);
+        Assert.Null(task.ReminderLeadMinutes);
+        Assert.Null(task.ReminderTriggerAt());
+    }
+
+    /// <summary>
+    /// 多选提醒改造后的口径：负的提前量是非法输入，统一钳到 0（「到时提醒」），
+    /// 不再是「不提醒」—— 「不提醒」只能用 null / 空档位集合表达。
+    /// </summary>
+    [Fact]
+    public void AddTask_NegativeLead_ClampsToOnTimeLead()
+    {
+        var viewModel = NewViewModelWithClock();
+
+        var task = viewModel.AddTask(new DateOnly(2026, 5, 12), "任务", -30, new TimeOnly(15, 0));
+
+        Assert.Equal(0, task.ReminderLeadMinutes);
+        Assert.Equal(new DateTime(2026, 5, 12, 15, 0, 0), task.ReminderTriggerAt());
     }
 
     /// <summary>
@@ -61,7 +73,9 @@ public sealed class TaskScheduleTests
     [Fact]
     public void AddTask_OnTimeLead_FiresAtTheTaskTime()
     {
-        var viewModel = new MainViewModel(new CalendarData());
+        // 固定时钟在任务时刻之前：否则新建时 SuppressMissedLeadReminders 会把这个
+        // 「已过点」的档位直接记账（模拟真实场景里给过去的任务补勾提醒不该立刻蹦通知）。
+        var viewModel = NewViewModelWithClock();
 
         var task = viewModel.AddTask(new DateOnly(2026, 5, 12), "开会", 0, new TimeOnly(15, 0));
 
@@ -116,7 +130,7 @@ public sealed class TaskScheduleTests
 
         viewModel.BeginAddTodayTask();
         viewModel.TodayTaskDraft = "写周报";
-        viewModel.TodayTaskLead = "提前1个小时";
+        viewModel.TodayTaskLeadLabels.Add("提前1个小时");
         viewModel.TodayTaskTime = new TimeSpan(14, 0, 0);
 
         var task = viewModel.CommitTodayTask();
@@ -129,8 +143,8 @@ public sealed class TaskScheduleTests
 
         // 提交后表单清空，下次添加不会带着上一条的提前量和时刻
         Assert.False(viewModel.IsAddingTodayTask);
-        Assert.Null(viewModel.TodayTaskReminderLead);
-        Assert.Equal("不提醒", viewModel.TodayTaskLead);
+        Assert.Empty(viewModel.TodayTaskReminderLeads);
+        Assert.Equal("不提醒", viewModel.TodayTaskLeadSummary);
         Assert.Equal(CalendarTask.DefaultTime, viewModel.TodayTaskTimeOnly);
     }
 
@@ -178,18 +192,21 @@ public sealed class TaskScheduleTests
     {
         var viewModel = new MainViewModel(new CalendarData());
 
+        // 多选下拉不含「不提醒」（一个都不勾就是不提醒），但含新增的「提前一天」
         Assert.Equal(
-            ["不提醒", "到时提醒", "提前3分钟", "提前5分钟", "提前10分钟", "提前15分钟", "提前30分钟", "提前1个小时", "提前3个小时"],
+            ["到时提醒", "提前3分钟", "提前5分钟", "提前10分钟", "提前15分钟", "提前30分钟", "提前1个小时", "提前3个小时", "提前一天"],
             viewModel.ReminderLeadOptions.ToArray());
 
-        viewModel.TodayTaskLead = "提前15分钟";
-        Assert.Equal(15, viewModel.TodayTaskReminderLead);
+        viewModel.TodayTaskLeadLabels.Add("提前15分钟");
+        Assert.Equal([15], viewModel.TodayTaskReminderLeads.ToArray());
 
-        viewModel.TodayTaskLead = "到时提醒";
-        Assert.Equal(0, viewModel.TodayTaskReminderLead);
+        // 多选：再勾一档，两个提前量都保留（按下拉顺序）
+        viewModel.TodayTaskLeadLabels.Add("到时提醒");
+        Assert.Equal([0, 15], viewModel.TodayTaskReminderLeads.ToArray());
 
-        viewModel.TodayTaskLead = "不提醒";
-        Assert.Null(viewModel.TodayTaskReminderLead);
+        viewModel.TodayTaskLeadLabels.Clear();
+        Assert.Empty(viewModel.TodayTaskReminderLeads);
+        Assert.Equal("不提醒", viewModel.TodayTaskLeadSummary);
     }
 
     /// <summary>日期格子里的快速添加表单与右侧面板共用同一份提醒档位，且开始/取消都要复位。</summary>
@@ -198,23 +215,24 @@ public sealed class TaskScheduleTests
     {
         var cell = new DayCellViewModel(new DateOnly(2026, 9, 15), isInCurrentMonth: true, isToday: true, [], []);
 
-        Assert.Equal(ReminderLeadCatalog.Labels, cell.ReminderLeadOptions);
-        Assert.Equal("不提醒", cell.ReminderLead);
-        Assert.Null(cell.DraftReminderLead);
+        // 多选档位表不含「不提醒」（空勾选 = 不提醒）
+        Assert.Equal(ReminderLeadCatalog.SelectableLabels, cell.ReminderLeadOptions);
+        Assert.Equal("不提醒", cell.ReminderLeadSummary);
+        Assert.Empty(cell.DraftReminderLeads);
 
-        cell.ReminderLead = "提前30分钟";
-        Assert.Equal(30, cell.DraftReminderLead);
+        cell.ReminderLeadLabels.Add("提前30分钟");
+        Assert.Equal([30], cell.DraftReminderLeads.ToArray());
 
         // 取消后要回到「不提醒」，否则下一次新建会莫名其妙带上上一次的提醒。
         cell.CancelAdd();
-        Assert.Equal("不提醒", cell.ReminderLead);
-        Assert.Null(cell.DraftReminderLead);
+        Assert.Equal("不提醒", cell.ReminderLeadSummary);
+        Assert.Empty(cell.DraftReminderLeads);
 
-        cell.ReminderLead = "提前3个小时";
+        cell.ReminderLeadLabels.Add("提前3个小时");
         cell.BeginAdd();
-        Assert.Equal("不提醒", cell.ReminderLead);
+        Assert.Equal("不提醒", cell.ReminderLeadSummary);
         Assert.Equal(string.Empty, cell.DraftTitle);
-        Assert.Null(cell.DraftReminderLead);
+        Assert.Empty(cell.DraftReminderLeads);
     }
 
     /// <summary>
@@ -313,7 +331,7 @@ public sealed class TaskScheduleTests
         var viewModel = NewViewModelWithClock();
         var task = viewModel.AddTask(new DateOnly(2026, 5, 12), "原标题", 30, new TimeOnly(15, 0));
 
-        viewModel.UpdateTask(task.Id, "   ", new TimeOnly(9, 0), null);
+        viewModel.UpdateTask(task.Id, "   ", new TimeOnly(9, 0), (int?)null);
 
         Assert.Equal("原标题", task.Title);
         Assert.Null(task.Time);
@@ -321,17 +339,17 @@ public sealed class TaskScheduleTests
         Assert.Null(task.ReminderTriggerAt());
     }
 
-    /// <summary>负的提前量没有意义，落到「不提醒」。</summary>
+    /// <summary>负的提前量是非法输入：钳到 0（到时提醒），而不是悄悄变成「不提醒」。</summary>
     [Fact]
-    public void UpdateTask_NegativeLead_FallsBackToNoReminder()
+    public void UpdateTask_NegativeLead_ClampsToOnTimeLead()
     {
         var viewModel = NewViewModelWithClock();
         var task = viewModel.AddTask(new DateOnly(2026, 5, 12), "任务", 30, new TimeOnly(15, 0));
 
         viewModel.UpdateTask(task.Id, "任务", new TimeOnly(15, 0), -30);
 
-        Assert.Null(task.ReminderLeadMinutes);
-        Assert.Null(task.ReminderTriggerAt());
+        Assert.Equal(0, task.ReminderLeadMinutes);
+        Assert.Equal(new DateTime(2026, 5, 12, 15, 0, 0), task.ReminderTriggerAt());
     }
 
     /// <summary>Id 找不到（刚被删掉）时安静返回 false，不抛异常。</summary>
@@ -496,5 +514,114 @@ public sealed class TaskScheduleTests
             Assert.Equal(expected, loaded.Settings.BackgroundMode);
             File.Delete(path);
         }
+    }
+
+    /// <summary>勾完成后该任务必须自动沉到当天排序的最后，序号按新顺序重排（未完成在前）。</summary>
+    [Fact]
+    public void DayCell_CompletedTask_SinksToEndOfDayAndRenumbers()
+    {
+        var data = new CalendarData();
+        var viewModel = new MainViewModel(data, () => new DateTimeOffset(2026, 5, 10, 9, 0, 0, TimeSpan.Zero));
+        var day = new DateOnly(2026, 5, 12);
+
+        var first = viewModel.AddTask(day, "第一件");
+        viewModel.AddTask(day, "第二件");
+        viewModel.AddTask(day, "第三件");
+
+        viewModel.ToggleTaskCompletion(first.Id);
+
+        var cell = MonthDays(viewModel).Single(c => c.Date == day);
+        Assert.Equal(["第二件", "第三件", "第一件"], cell.Tasks.Select(t => t.Title).ToArray());
+        Assert.Equal(["1.", "2.", "3."], cell.Tasks.Select(t => t.OrderText).ToArray());
+        Assert.False(cell.Tasks[0].IsCompleted);
+        Assert.False(cell.Tasks[1].IsCompleted);
+        Assert.True(cell.Tasks[2].IsCompleted);
+    }
+
+    /// <summary>悬停「↺」还原后，任务回到未完成段，按重要度 / 创建时间的正常口径排序。</summary>
+    [Fact]
+    public void DayCell_RestoredTask_ReturnsToOpenSectionOrder()
+    {
+        var data = new CalendarData();
+        var viewModel = new MainViewModel(data, () => new DateTimeOffset(2026, 5, 10, 9, 0, 0, TimeSpan.Zero));
+        var day = new DateOnly(2026, 5, 12);
+
+        viewModel.AddTask(day, "第一件");
+        var second = viewModel.AddTask(day, "第二件");
+        viewModel.ToggleTaskCompletion(second.Id);
+        Assert.Equal(["第一件", "第二件"], MonthDays(viewModel).Single(c => c.Date == day).Tasks.Select(t => t.Title).ToArray());
+
+        viewModel.ToggleTaskCompletion(second.Id);
+
+        var titles = MonthDays(viewModel).Single(c => c.Date == day).Tasks.Select(t => t.Title).ToArray();
+        Assert.Equal(["第一件", "第二件"], titles);
+        Assert.All(MonthDays(viewModel).Single(c => c.Date == day).Tasks, t => Assert.False(t.IsCompleted));
+    }
+
+    /// <summary>给今天的任务勾「提前一天」：触发时刻已过且超出 60 分钟补发宽限，新建即记账，不再补陈旧提醒。</summary>
+    [Fact]
+    public void SuppressMissedLead_OneDayEarly_PastGrace_IsMarkedFired()
+    {
+        var task = new CalendarTask
+        {
+            Date = new DateOnly(2026, 5, 12),
+            Title = "明天的事今天建",
+            CreatedAt = LocalOffset(2026, 5, 12, 10, 0)
+        };
+        task.SetReminderLeads([1440]);
+
+        // 触发时刻 = 5/11 09:00，宽限到 5/11 10:00；现在已是 5/12 10:00
+        task.SuppressMissedLeadReminders(LocalOffset(2026, 5, 12, 10, 0));
+
+        Assert.True(task.IsReminderFired(1440));
+        Assert.Empty(task.DueReminderLeads(new DateTime(2026, 5, 12, 10, 0, 0)));
+    }
+
+    /// <summary>「提前一天」刚过点 60 分钟内开机/新建仍补发（宽限窗口内不记账）。</summary>
+    [Fact]
+    public void SuppressMissedLead_OneDayEarly_WithinGrace_StillArmed()
+    {
+        var task = new CalendarTask
+        {
+            Date = new DateOnly(2026, 5, 12),
+            Title = "宽限内",
+            CreatedAt = LocalOffset(2026, 5, 11, 9, 30)
+        };
+        task.SetReminderLeads([1440]);
+
+        // 触发时刻 5/11 09:00，现在 09:30 —— 还在 60 分钟宽限内
+        task.SuppressMissedLeadReminders(LocalOffset(2026, 5, 11, 9, 30));
+
+        Assert.False(task.IsReminderFired(1440));
+        Assert.Contains(1440, task.DueReminderLeads(new DateTime(2026, 5, 11, 9, 30, 0)));
+    }
+
+    /// <summary>小档位（提前 30 分钟）沿用当天 23:59:59 的补发窗口：任务日当天晚上开机仍会补发。</summary>
+    [Fact]
+    public void SuppressMissedLead_ShortLead_SameDayEvening_StillArmed()
+    {
+        var task = new CalendarTask
+        {
+            Date = new DateOnly(2026, 5, 12),
+            Title = "当天的小档位",
+            CreatedAt = LocalOffset(2026, 5, 12, 20, 0)
+        };
+        task.SetReminderLeads([30]);
+
+        // 触发时刻 5/12 08:30，现在当天 20:00 —— 当天补发窗口刻意保留
+        task.SuppressMissedLeadReminders(LocalOffset(2026, 5, 12, 20, 0));
+
+        Assert.False(task.IsReminderFired(30));
+        Assert.Contains(30, task.DueReminderLeads(new DateTime(2026, 5, 12, 20, 0, 0)));
+    }
+
+    /// <summary>
+    /// 构造「本地墙钟」的 DateTimeOffset：任务时刻 / 补发窗口都按 LocalDateTime 比较，
+    /// 写死 TimeSpan.Zero 在非 UTC 机器（如 UTC+8）上会整体平移 8 小时导致测试漂移。
+    /// </summary>
+    private static DateTimeOffset LocalOffset(int year, int month, int day, int hour, int minute)
+    {
+        var wall = new DateTime(year, month, day, hour, minute, 0, DateTimeKind.Unspecified);
+        return new DateTimeOffset(wall, TimeZoneInfo.Local.GetUtcOffset(wall));
     }
 }

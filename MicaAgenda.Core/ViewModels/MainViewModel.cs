@@ -27,7 +27,6 @@ public sealed class MainViewModel : ViewModelBase
     private DateOnly _panelDate;
     private bool _isAddingTodayTask;
     private string _todayTaskDraft = string.Empty;
-    private string _todayTaskLead = ReminderNoneLabel;
     private TimeSpan? _todayTaskTime = CalendarTask.DefaultTime.ToTimeSpan();
 
     /// <summary>本周三个分组共用的 VM 实例池（按任务 Id），保证跨组移动时实例不销毁。</summary>
@@ -35,6 +34,9 @@ public sealed class MainViewModel : ViewModelBase
 
     /// <summary>上一次全量重推派生文本的时刻，用于节流。</summary>
     private DateTimeOffset _lastDerivedTextRefresh = DateTimeOffset.MinValue;
+
+    /// <summary>上一次时钟 tick 时的「未完成且已逾期」任务 Id 集合，用于检测日内跨时刻变化。</summary>
+    private HashSet<Guid>? _lastOverdueTaskIds;
 
     public MainViewModel(
         CalendarData data,
@@ -53,9 +55,13 @@ public sealed class MainViewModel : ViewModelBase
         VisibleDays = [];
         YearMonths = [];
         TodayTasks = [];
+        TodayTaskLeadLabels = [];
+        TodayTaskLeadLabels.CollectionChanged += (_, _) =>
+            OnPropertyChanged(nameof(TodayTaskLeadSummary));
         SetYearCommand = new RelayCommand(_ => SetViewMode(CalendarViewMode.Year));
         SetMonthCommand = new RelayCommand(_ => SetViewMode(CalendarViewMode.Month));
         SetWeekCommand = new RelayCommand(_ => SetViewMode(CalendarViewMode.Week));
+        SetTaskCommand = new RelayCommand(_ => SetViewMode(CalendarViewMode.Tasks));
         PreviousCommand = new RelayCommand(_ => MovePrevious());
         NextCommand = new RelayCommand(_ => MoveNext());
         TodayCommand = new RelayCommand(_ => GoToday());
@@ -80,24 +86,37 @@ public sealed class MainViewModel : ViewModelBase
     public bool IsWeekView => Settings.ViewMode == CalendarViewMode.Week;
     public bool IsYearView => Settings.ViewMode == CalendarViewMode.Year;
 
+    /// <summary>纯任务视图：主区不显示日历格子，只留「今日 + 本周」任务面板。</summary>
+    public bool IsTaskView => Settings.ViewMode == CalendarViewMode.Tasks;
+
     /// <summary>
     /// 月 / 年视图共用的那一套「左侧日历 + 右侧任务面板」布局是否在显示。
-    /// 周视图不一样：它的任务面板在日期格子**下面**、占满剩余高度（老版本就是这个排布），
-    /// 所以周视图下这套布局要整块收起，免得右侧面板从周视图底下透出来。
+    /// 周视图的任务面板在日期格子**下面**、占满剩余高度；任务视图则完全没有日历 ——
+    /// 后两者都要收起这套布局，免得面板从底下透出来。
     /// </summary>
-    public bool IsMonthOrYearView => Settings.ViewMode != CalendarViewMode.Week;
+    public bool IsMonthOrYearView =>
+        Settings.ViewMode is CalendarViewMode.Month or CalendarViewMode.Year;
+
+    /// <summary>顶栏视图下拉按钮上显示的当前视图名（与下拉项文本保持一致）。</summary>
+    public string CurrentViewLabel => Settings.ViewMode switch
+    {
+        CalendarViewMode.Month => "月视图",
+        CalendarViewMode.Week => "周视图",
+        CalendarViewMode.Year => "年视图",
+        CalendarViewMode.Tasks => "任务视图",
+        _ => "月视图"
+    };
 
     /// <summary>今日任务面板数据源（独立于日历格子中的 ViewModel 实例，互不干扰）。</summary>
     public ObservableCollection<TaskItemViewModel> TodayTasks { get; }
 
     /// <summary>
-    /// 本周（今天所在的那一周）未完成且未到期的任务。
-    /// 始终基于"今天"所在的周，**不随选中的日期变化**（与右侧"本周任务完成情况"保持不变一致）。
+    /// 合并后的「未完成」组：所有已逾期的未完成任务（含历史欠账）排在前面，
+    /// 后面接本周（今天所在的那一周）还没到任务时刻的任务。
+    /// 逾期任务在行内挂红色【已逾期】前缀（见 <see cref="TaskItemViewModel.IsOverdueNow"/>），
+    /// 不再单列分组。始终基于"今天"所在的周，不随选中的日期变化。
     /// </summary>
     public ObservableCollection<TaskItemViewModel> WeekOpenTasks { get; } = new();
-
-    /// <summary>所有"日期 &lt; 今天 且 未完成"的任务（涵盖历史欠账），用于"逾期未完成"组。</summary>
-    public ObservableCollection<TaskItemViewModel> WeekOverdueTasks { get; } = new();
 
     /// <summary>本周（今天所在的那一周）已完成的任务。</summary>
     public ObservableCollection<TaskItemViewModel> WeekCompletedTasks { get; } = new();
@@ -122,6 +141,7 @@ public sealed class MainViewModel : ViewModelBase
     public RelayCommand SetYearCommand { get; }
     public RelayCommand SetMonthCommand { get; }
     public RelayCommand SetWeekCommand { get; }
+    public RelayCommand SetTaskCommand { get; }
     public RelayCommand PreviousCommand { get; }
     public RelayCommand NextCommand { get; }
     public RelayCommand TodayCommand { get; }
@@ -148,6 +168,7 @@ public sealed class MainViewModel : ViewModelBase
     {
         CalendarViewMode.Year => $"{SelectedDate.Year}年",
         CalendarViewMode.Week => $"{GetWeekStart(SelectedDate):MM月dd日} - {GetWeekStart(SelectedDate).AddDays(6):MM月dd日}",
+        CalendarViewMode.Tasks => "任务视图",
         _ => $"{SelectedDate:yyyy年M月}"
     };
 
@@ -247,23 +268,25 @@ public sealed class MainViewModel : ViewModelBase
     public bool HasTodayOpen => TodayOpenTasks.Count > 0;
     public bool HasTodayCompleted => TodayCompletedTasks.Count > 0;
 
-    // ===== 本周任务完成情况（始终基于今天所在的那一周） =====
+    // ===== 本周任务完成情况（始终基于今天所在的那一周；未分组合并逾期 + 未到期） =====
 
-    /// <summary>本周未完成任务数（本周内、未完成、未到截止日）。</summary>
+    /// <summary>「未完成」组总数（逾期欠账 + 本周待办）。</summary>
     public int WeekOpenCount => WeekOpenTasks.Count;
 
-    /// <summary>本周逾期未完成任务数（所有未完成且日期 &lt; 今天，覆盖历史欠账）。</summary>
-    public int WeekOverdueCount => WeekOverdueTasks.Count;
+    /// <summary>「未完成」组里此刻已经逾期的数量（标题旁的红色小计数用）。</summary>
+    public int WeekOverdueCount { get; private set; }
 
     /// <summary>本周已完成任务数。</summary>
     public int WeekCompletedCount => WeekCompletedTasks.Count;
 
-    /// <summary>本周总任务数（三组合计）。</summary>
-    public int WeekTotalCount => WeekOpenCount + WeekOverdueCount + WeekCompletedCount;
+    /// <summary>本周总任务数（未完成 + 已完成两组合计）。</summary>
+    public int WeekTotalCount => WeekOpenCount + WeekCompletedCount;
 
     public bool HasWeekOpen => WeekOpenCount > 0;
-    public bool HasWeekOverdue => WeekOverdueCount > 0;
     public bool HasWeekCompleted => WeekCompletedCount > 0;
+
+    /// <summary>合并后的「未完成」组里是否含逾期欠账（组标题旁的红色「N 项已逾期」用）。</summary>
+    public bool HasWeekOverdue => WeekOverdueCount > 0;
 
     /// <summary>
     /// 本周的日期范围显示（如 "8月30日 - 9月5日"）。
@@ -300,30 +323,21 @@ public sealed class MainViewModel : ViewModelBase
         set => SetProperty(ref _todayTaskDraft, value);
     }
 
-    /// <summary>「提醒时间」下拉的「不提醒」项（与 <see cref="Helpers.ReminderLeadCatalog"/> 同一份）。</summary>
-    public const string ReminderNoneLabel = Helpers.ReminderLeadCatalog.NoneLabel;
+    /// <summary>多选下拉里可勾选的提醒档位（不含「不提醒」；与日期格子内快速添加共用同一份）。</summary>
+    public IReadOnlyList<string> ReminderLeadOptions { get; } = Helpers.ReminderLeadCatalog.SelectableLabels;
 
-    /// <summary>「提醒时间」下拉的可选项（与日期格子内快速添加共用）。</summary>
-    public IReadOnlyList<string> ReminderLeadOptions { get; } = Helpers.ReminderLeadCatalog.Labels;
+    /// <summary>今日面板快速添加时勾选的提醒档位标签集合（多选；空集合 = 不提醒）。</summary>
+    public ObservableCollection<string> TodayTaskLeadLabels { get; }
 
-    /// <summary>当前选中的提醒档位（默认「不提醒」）。</summary>
-    public string TodayTaskLead
-    {
-        get => _todayTaskLead;
-        set
-        {
-            var label = string.IsNullOrWhiteSpace(value) ? ReminderNoneLabel : value;
-            if (SetProperty(ref _todayTaskLead, label))
-            {
-                OnPropertyChanged(nameof(TodayTaskReminderLead));
-            }
-        }
-    }
+    /// <summary>下拉按钮上的摘要：空 = 「不提醒」，否则把勾选项顿号连起来。</summary>
+    public string TodayTaskLeadSummary
+        => Helpers.ReminderLeadCatalog.Summarize(TodayTaskLeadLabels);
 
     /// <summary>
-    /// 提前提醒量（分钟）：选了具体档位就是该分钟数，停在「不提醒」返回 null（= 这条任务不推提醒）。
+    /// 草稿勾选的全部提前提醒量（分钟）：空集合 = 这条任务不推；0 = 「到时提醒」。
     /// </summary>
-    public int? TodayTaskReminderLead => Helpers.ReminderLeadCatalog.ToMinutes(_todayTaskLead);
+    public IReadOnlyList<int> TodayTaskReminderLeads
+        => Helpers.ReminderLeadCatalog.ToMinutesList(TodayTaskLeadLabels);
 
     /// <summary>
     /// 面板快速添加时选的任务时刻（默认当天 9:00）。
@@ -367,20 +381,22 @@ public sealed class MainViewModel : ViewModelBase
     public CalendarTask? CommitTodayTask()
     {
         var title = TodayTaskDraft.Trim();
-        var lead = TodayTaskReminderLead;
+        var leads = TodayTaskReminderLeads;
         var time = TodayTaskTimeOnly;
 
         TodayTaskDraft = string.Empty;
         ResetLeadLabel();
         IsAddingTodayTask = false;
 
-        return string.IsNullOrWhiteSpace(title) ? null : AddTask(_panelDate, title, lead, time);
+        return string.IsNullOrWhiteSpace(title)
+            ? null
+            : AddTask(_panelDate, title, leads, time);
     }
 
-    /// <summary>草稿恢复成"刚展开"的样子：提醒回到「不提醒」、任务时刻回到当天 9:00。</summary>
+    /// <summary>草稿恢复成"刚展开"的样子：提醒一个都不勾、任务时刻回到当天 9:00。</summary>
     private void ResetLeadLabel()
     {
-        TodayTaskLead = ReminderNoneLabel;
+        TodayTaskLeadLabels.Clear();
         TodayTaskTime = CalendarTask.DefaultTime.ToTimeSpan();
     }
 
@@ -412,11 +428,7 @@ public sealed class MainViewModel : ViewModelBase
         List<CalendarTask> tasks;
         lock (_syncRoot)
         {
-            tasks = _data.Tasks
-                .Where(task => task.Date == _panelDate)
-                .OrderByDescending(task => task.IsImportant)
-                .ThenBy(task => task.CreatedAt)
-                .ToList();
+            tasks = OrderForDay(_data.Tasks.Where(task => task.Date == _panelDate)).ToList();
         }
 
         // 复用已有 TaskItemViewModel 实例（按 Id 对应），仅做增/删/移动，
@@ -578,54 +590,47 @@ public sealed class MainViewModel : ViewModelBase
     /// </summary>
 
     /// <summary>
-    /// 清空"逾期未完成"组的全部任务。返回删除数。
-    /// 与 <see cref="RefreshWeekTasks"/> 同一个口径（过了任务时刻就算逾期），
-    /// 否则按钮删掉的集合会跟界面上显示的那一组对不上。
+    /// 清空合并后的"未完成"组：逾期欠账 + 本周内还没到点的待办，一起删。返回删除数。
+    /// 与 <see cref="RefreshWeekTasks"/> 显示的那一组同一个口径，
+    /// 否则按钮删掉的集合会跟界面上显示的对不上。
     /// </summary>
-    public int ClearOverdueTasks() => BulkRemove(t => IsOverdueTask(t, _nowProvider().LocalDateTime));
-
-    /// <summary>清空"未完成"组的全部任务（只删本周内还没到点的那些）。返回删除数。</summary>
     public int ClearOpenTasks()
     {
         var weekStart = GetWeekStart(Today);
         var weekEnd = weekStart.AddDays(6);
         var nowLocal = _nowProvider().LocalDateTime;
-        return BulkRemove(t => IsOpenTask(t, nowLocal, weekStart, weekEnd));
+        return BulkRemove(t => IsOverdueTask(t, nowLocal) || IsOpenTask(t, nowLocal, weekStart, weekEnd));
     }
 
-    /// <summary>清空"已完成"组的全部任务（本周内已完成的所有任务）。返回删除数。</summary>
+    /// <summary>清空"已完成"组的全部任务。返回删除数。
+    /// 谓词与 <see cref="RefreshWeekTasks"/> 的显示口径一致（计划日期在本周或完成于本周），
+    /// 否则一条历史日期、本周刚勾完的任务在组里可见却删不掉。</summary>
     public int ClearCompletedTasks()
     {
         var weekStart = GetWeekStart(Today);
         var weekEnd = weekStart.AddDays(6);
-        return BulkRemove(t => t.IsCompleted && t.Date >= weekStart && t.Date <= weekEnd);
+        return BulkRemove(t => t.IsCompleted && IsInWeek(t, weekStart, weekEnd));
     }
 
-    /// <summary>把"逾期未完成"组的全部任务标记为已完成。返回处理数。</summary>
-    public int MarkOverdueCompleted()
-    {
-        var now = _nowProvider();
-        return BulkUpdate(t => IsOverdueTask(t, now.LocalDateTime), t => t.MarkCompleted(now));
-    }
-
-    /// <summary>把"未完成"组的全部任务标记为已完成。返回处理数。</summary>
+    /// <summary>把合并后的"未完成"组（逾期欠账 + 本周待办）全部标记为已完成。返回处理数。</summary>
     public int MarkOpenCompleted()
     {
         var weekStart = GetWeekStart(Today);
         var weekEnd = weekStart.AddDays(6);
         var now = _nowProvider();
         return BulkUpdate(
-            t => IsOpenTask(t, now.LocalDateTime, weekStart, weekEnd),
+            t => IsOverdueTask(t, now.LocalDateTime) || IsOpenTask(t, now.LocalDateTime, weekStart, weekEnd),
             t => t.MarkCompleted(now));
     }
 
-    /// <summary>把"已完成"组的全部任务标记为未完成。返回处理数。</summary>
+    /// <summary>把"已完成"组的全部任务标记为未完成。返回处理数。
+    /// 口径同 <see cref="ClearCompletedTasks"/>：计划日期在本周或完成于本周。</summary>
     public int MarkCompletedIncomplete()
     {
         var weekStart = GetWeekStart(Today);
         var weekEnd = weekStart.AddDays(6);
         return BulkUpdate(
-            t => t.IsCompleted && t.Date >= weekStart && t.Date <= weekEnd,
+            t => t.IsCompleted && IsInWeek(t, weekStart, weekEnd),
             t => t.MarkIncomplete());
     }
 
@@ -686,41 +691,44 @@ public sealed class MainViewModel : ViewModelBase
         // 今天 9:00 的任务到 10:00 还没勾就算逾期，今天 23:00 的还留在「未完成」。
         var nowLocal = _nowProvider().LocalDateTime;
 
-        List<CalendarTask> open;
-        List<CalendarTask> overdue;
+        List<CalendarTask> mergedOpen;
         List<CalendarTask> completed;
         lock (_syncRoot)
         {
-            open = _data.Tasks
-                .Where(t => IsOpenTask(t, nowLocal, weekStart, weekEnd))
-                .OrderBy(t => t.Date)
-                .ThenBy(t => t.CreatedAt)
-                .ToList();
-            overdue = _data.Tasks
+            // 合并后的「未完成」：逾期欠账（日期最早的排最前）在前，本周待办按日期接在后面。
+            var overdue = _data.Tasks
                 .Where(t => IsOverdueTask(t, nowLocal))
                 .OrderBy(t => t.Date)
+                .ThenBy(t => t.Time ?? CalendarTask.DefaultTime)
                 .ThenBy(t => t.CreatedAt)
                 .ToList();
+            var open = _data.Tasks
+                .Where(t => IsOpenTask(t, nowLocal, weekStart, weekEnd))
+                .OrderBy(t => t.Date)
+                .ThenBy(t => t.Time ?? CalendarTask.DefaultTime)
+                .ThenBy(t => t.CreatedAt)
+                .ToList();
+            mergedOpen = [..overdue, ..open];
 
             // 判定用「计划日期在本周」或「实际完成于本周」的并集：
-            // 只用 Date 判定的话，一条 8 月的逾期任务在今天勾完就会从三组里同时消失
-            // （既不再是"逾期未完成"，也不算"本周完成"），看起来像任务凭空丢了。
+            // 只用 Date 判定的话，一条 8 月的逾期任务在今天勾完就会从组里凭空消失
+            // （既不再是"逾期未完成"，也不算"本周完成"），看起来像任务丢了。
             completed = _data.Tasks
                 .Where(t => t.IsCompleted && IsInWeek(t, weekStart, weekEnd))
                 .OrderByDescending(t => t.CompletedAt ?? t.CreatedAt)
                 .ThenBy(t => t.CreatedAt)
                 .ToList();
+
+            WeekOverdueCount = overdue.Count;
         }
 
-        var openVms = open.Select(GetWeekVm).ToList();
-        var overdueVms = overdue.Select(GetWeekVm).ToList();
+        var openVms = mergedOpen.Select(GetWeekVm).ToList();
         var completedVms = completed.Select(GetWeekVm).ToList();
 
         Reconcile(WeekOpenTasks, openVms);
-        Reconcile(WeekOverdueTasks, overdueVms);
         Reconcile(WeekCompletedTasks, completedVms);
 
-        PruneWeekVmPool(openVms, overdueVms, completedVms);
+        PruneWeekVmPool(openVms, completedVms);
 
         OnPropertyChanged(nameof(WeekOpenCount));
         OnPropertyChanged(nameof(WeekOverdueCount));
@@ -734,8 +742,22 @@ public sealed class MainViewModel : ViewModelBase
     }
 
     /// <summary>
+    /// 清空所有「已逾期未完成」任务（只动逾期欠账，不含本周待办）。返回删除数。
+    /// Avalonia 宿主的分组合并后入口统一走 <see cref="ClearOpenTasks"/>；
+    /// WPF 宿主仍保留独立的「逾期未完成」组，继续用这个方法。
+    /// </summary>
+    public int ClearOverdueTasks() => BulkRemove(t => IsOverdueTask(t, _nowProvider().LocalDateTime));
+
+    /// <summary>把所有「已逾期未完成」任务标记为已完成（只动逾期欠账）。返回处理数。WPF 宿主仍在用。</summary>
+    public int MarkOverdueCompleted()
+    {
+        var now = _nowProvider();
+        return BulkUpdate(t => IsOverdueTask(t, now.LocalDateTime), t => t.MarkCompleted(now));
+    }
+
+    /// <summary>
     /// 「逾期未完成」：未完成，且已经过了任务时刻（日期 + 时间，没设时间按当天 9:00）。
-    /// 右侧三组、清空/批量完成的按钮都走这一个口径，界面显示的与按钮作用到的才是同一批任务。
+    /// 右侧分组合并后，清空/批量完成按钮与 <see cref="RefreshWeekTasks"/> 都走这一个口径。
     /// </summary>
     private static bool IsOverdueTask(CalendarTask task, DateTime nowLocal) => task.IsOverdueAt(nowLocal);
 
@@ -933,11 +955,44 @@ public sealed class MainViewModel : ViewModelBase
             {
                 RebuildCalendar();
             }
+
+            // 重建已经按最新时刻算过分组，顺手把基线换掉，免得下一分钟误判成"集合变化"
+            OverdueSetChanged();
+        }
+        else if (OverdueSetChanged())
+        {
+            // 日内跨过某条未完成任务的时刻：它会从「未完成」语义变成「逾期」。
+            // 行内红色【已逾期】前缀由各行的时钟通知自行刷新，但本周分组标题上的
+            // 「N 项已逾期」计数 / 红点只在 RefreshWeekTasks 里重算，这里补一次。
+            // （分组合并后组成员不变、排序也天然稳定，只需重算计数，成本很低。）
+            RefreshWeekTasks();
         }
 
         // 让"未完成 N 天 / 逾期 N 天"这类与时间相关的文本跟着走。
         // 悬浮提示本身是在弹出时实时计算的，这里主要服务于行内徽标。
         RefreshDerivedText(force: dayChanged);
+    }
+
+    /// <summary>
+    /// 重新计算「未完成且已逾期」任务的 Id 集合并与上一次基线比较；
+    /// 无论是否变化都会把基线更新为当前集合。首次调用（基线为 null）返回 true。
+    /// </summary>
+    private bool OverdueSetChanged()
+    {
+        HashSet<Guid> current;
+        var nowLocal = _nowProvider().LocalDateTime;
+        lock (_syncRoot)
+        {
+            current = _data.Tasks
+                .Where(t => !t.IsCompleted && t.IsOverdueAt(nowLocal))
+                .Select(t => t.Id)
+                .ToHashSet();
+        }
+
+        var changed = _lastOverdueTaskIds is null
+                      || !_lastOverdueTaskIds.SetEquals(current);
+        _lastOverdueTaskIds = current;
+        return changed;
     }
 
     /// <summary>
@@ -994,23 +1049,36 @@ public sealed class MainViewModel : ViewModelBase
     /// 任务时刻（几点几分）；null 或正好 09:00 都按"没选"处理（= 当天默认时刻 9:00）。
     /// </param>
     public CalendarTask AddTask(DateOnly date, string title, int? reminderLeadMinutes = null, TimeOnly? time = null)
+        => AddTask(date, title, reminderLeadMinutes is null ? null : [reminderLeadMinutes.Value], time);
+
+    /// <summary>
+    /// 多选提醒版添加任务：<paramref name="reminderLeads"/> 为勾选的全部提前量（分钟），
+    /// 空集合 / null = 不提醒；0 = 「到时提醒」。第一个成为主提醒，其余进额外档位。
+    /// </summary>
+    public CalendarTask AddTask(DateOnly date, string title, IReadOnlyList<int>? reminderLeads, TimeOnly? time)
     {
+        CalendarTask task;
         lock (_syncRoot)
         {
-            var task = new CalendarTask
+            task = new CalendarTask
             {
                 Date = date,
                 Title = title.Trim(),
                 CreatedAt = _nowProvider(),
-                Time = NormalizeTaskTime(time),
-                // 0 是「到时提醒」，要如实存下来；只有负数（以及没选）才算「不提醒」。
-                ReminderLeadMinutes = NormalizeReminderLead(reminderLeadMinutes)
+                Time = NormalizeTaskTime(time)
             };
+            task.SetReminderLeads(reminderLeads);
+            // 新建时触发时刻已经过去（且超出该档位补发宽限）的档位直接记为已推：
+            // 例如给今天的任务勾「提前一天」，保存瞬间不该蹦出一条陈旧提醒。
+            task.SuppressMissedLeadReminders(_nowProvider());
             _data.Tasks.Add(task);
             IsDirty = true;
-            RebuildCalendar();
-            return task;
         }
+
+        // RebuildCalendar 内含 UI 集合增删与属性通知，放到锁外执行，
+        // 避免后台轮询 / API 线程在整轮界面重建期间被堵住。
+        RebuildCalendar();
+        return task;
     }
 
     /// <summary>
@@ -1021,15 +1089,9 @@ public sealed class MainViewModel : ViewModelBase
     private static TimeOnly? NormalizeTaskTime(TimeOnly? time)
         => time is null || time == CalendarTask.DefaultTime ? null : time;
 
-    /// <summary>
-    /// 落盘前的提醒档位归一化：只有负数（没有意义的提前量）算「不提醒」存 null。
-    /// 0 必须原样保留 —— 它是「到时提醒」，和 null（不提醒）是两种不同行为。
-    /// </summary>
-    private static int? NormalizeReminderLead(int? reminderLeadMinutes)
-        => reminderLeadMinutes is < 0 ? null : reminderLeadMinutes;
-
     public void RenameTask(Guid taskId, string title)
     {
+        bool changed;
         lock (_syncRoot)
         {
             var task = FindTask(taskId);
@@ -1040,6 +1102,11 @@ public sealed class MainViewModel : ViewModelBase
 
             task.Title = title.Trim();
             IsDirty = true;
+            changed = true;
+        }
+
+        if (changed)
+        {
             RebuildCalendar();
         }
     }
@@ -1056,7 +1123,16 @@ public sealed class MainViewModel : ViewModelBase
     /// <param name="reminderLeadMinutes">新提醒档位；null = 不提醒，0 = 到时提醒。</param>
     /// <returns>任务存在并已写回返回 true；找不到（刚被删掉）返回 false。</returns>
     public bool UpdateTask(Guid taskId, string title, TimeOnly? time, int? reminderLeadMinutes)
+        => UpdateTask(taskId, title, time,
+            reminderLeadMinutes is null ? null : [reminderLeadMinutes.Value]);
+
+    /// <summary>
+    /// 多选提醒版编辑任务：<paramref name="reminderLeads"/> 为勾选的全部提前量（分钟），
+    /// 空集合 / null = 不提醒。时刻或档位真的变了就作废全部档位的「已推」标记。
+    /// </summary>
+    public bool UpdateTask(Guid taskId, string title, TimeOnly? time, IReadOnlyList<int>? reminderLeads)
     {
+        bool scheduleChanged;
         lock (_syncRoot)
         {
             var task = FindTask(taskId);
@@ -1067,25 +1143,34 @@ public sealed class MainViewModel : ViewModelBase
 
             var newTitle = title.Trim();
             var newTime = NormalizeTaskTime(time);
-            var newLead = NormalizeReminderLead(reminderLeadMinutes);
+            var newLeads = (reminderLeads ?? [])
+                .Select(lead => Math.Max(0, lead))
+                .Distinct()
+                .ToList();
+            var oldLeads = task.AllReminderLeads;
 
             if (newTitle.Length > 0)
             {
                 task.Title = newTitle;
             }
 
-            var scheduleChanged = task.Time != newTime || task.ReminderLeadMinutes != newLead;
+            scheduleChanged = task.Time != newTime || !oldLeads.SequenceEqual(newLeads);
             task.Time = newTime;
-            task.ReminderLeadMinutes = newLead;
+            task.SetReminderLeads(newLeads);
             if (scheduleChanged)
             {
                 task.ResetReminder();
+                // 改期/改时刻后，新计划里已经过了补发窗口的档位直接视为已推，
+                // 否则把任务改到今天并勾「提前一天」，保存瞬间就会收到一条陈旧提醒。
+                task.SuppressMissedLeadReminders(_nowProvider());
             }
 
             IsDirty = true;
-            RebuildCalendar();
-            return true;
         }
+
+        // UI 重建放锁外（见 AddTask 同样的理由）
+        RebuildCalendar();
+        return true;
     }
 
     public void ToggleTaskCompletion(Guid taskId)
@@ -1182,12 +1267,15 @@ public sealed class MainViewModel : ViewModelBase
         Settings.ViewMode = viewMode;
         OnPropertyChanged(nameof(Settings));
 
-        // 视图容器的可见性绑的是下面这三个单层布尔值（见属性注释），
+        // 视图容器的可见性绑的是下面这几个单层布尔值（见属性注释），
         // 换视图时必须一起通知，否则画面不会跟着切。
         OnPropertyChanged(nameof(IsMonthView));
         OnPropertyChanged(nameof(IsWeekView));
         OnPropertyChanged(nameof(IsYearView));
+        OnPropertyChanged(nameof(IsTaskView));
         OnPropertyChanged(nameof(IsMonthOrYearView));
+        OnPropertyChanged(nameof(CurrentViewLabel));
+        OnPropertyChanged(nameof(Title));
 
         // 切换视图时清除选中状态，让右侧面板回到今日任务
         ClearCellSelection();
@@ -1197,6 +1285,13 @@ public sealed class MainViewModel : ViewModelBase
             _timelineAnchor = new DateOnly(SelectedDate.Year, SelectedDate.Month, 1);
             BuildTimeline();
             RefreshHeightProperties();
+        }
+        else if (viewMode == CalendarViewMode.Tasks)
+        {
+            // 任务视图不渲染日历格子，只要保证两个任务列表是最新的即可
+            // （它们在每次数据变更时本来就会刷新，这里补一次覆盖首次切入的场景）。
+            RefreshTodayTasks();
+            RefreshWeekTasks();
         }
         else
         {
@@ -1210,6 +1305,8 @@ public sealed class MainViewModel : ViewModelBase
         {
             CalendarViewMode.Year => SelectedDate.AddYears(-1),
             CalendarViewMode.Week => SelectedDate.AddDays(-7),
+            // 任务视图没有翻页概念（顶栏也没有上一页/下一页按钮）
+            CalendarViewMode.Tasks => SelectedDate,
             _ => SelectedDate.AddMonths(-1)
         };
     }
@@ -1220,6 +1317,7 @@ public sealed class MainViewModel : ViewModelBase
         {
             CalendarViewMode.Year => SelectedDate.AddYears(1),
             CalendarViewMode.Week => SelectedDate.AddDays(7),
+            CalendarViewMode.Tasks => SelectedDate,
             _ => SelectedDate.AddMonths(1)
         };
     }
@@ -1311,6 +1409,19 @@ public sealed class MainViewModel : ViewModelBase
 
     public void RebuildCalendar()
     {
+        // 任务视图不渲染任何日历格子：数据变更时只刷新两个任务列表即可，
+        // 没必要去构建屏幕上根本不存在的月/周格子（任务多的时候能省掉整轮 UI VM 分配）。
+        if (Settings.ViewMode == CalendarViewMode.Tasks)
+        {
+            RefreshTodayTasks();
+            RefreshWeekTasks();
+            OnPropertyChanged(nameof(Title));
+            OnPropertyChanged(nameof(TodayDisplay));
+            OnPropertyChanged(nameof(TodayTaskCount));
+            OnPropertyChanged(nameof(ThisWeekTaskCount));
+            return;
+        }
+
         if (Settings.ViewMode == CalendarViewMode.Month)
         {
             // 锚点月份变化才重建时间轴结构；否则仅增量刷新任务，避免滚动位置跳变。
@@ -1471,11 +1582,7 @@ public sealed class MainViewModel : ViewModelBase
                 List<CalendarTask> tasks;
                 lock (_syncRoot)
                 {
-                tasks = _data.Tasks
-                    .Where(task => task.Date == cell.Date)
-                    .OrderByDescending(task => task.IsImportant)
-                    .ThenBy(task => task.CreatedAt)
-                    .ToList();
+                tasks = OrderForDay(_data.Tasks.Where(task => task.Date == cell.Date)).ToList();
                 }
 
                 var holidays = _holidays
@@ -1499,11 +1606,7 @@ public sealed class MainViewModel : ViewModelBase
         List<CalendarTask> tasks;
         lock (_syncRoot)
         {
-            tasks = _data.Tasks
-                .Where(task => task.Date == day.Date)
-                .OrderByDescending(task => task.IsImportant)
-                .ThenBy(task => task.CreatedAt)
-                .ToList();
+            tasks = OrderForDay(_data.Tasks.Where(task => task.Date == day.Date)).ToList();
         }
 
         var taskViewModels = tasks.Select(task => new TaskItemViewModel(task, _nowProvider));
@@ -1526,4 +1629,15 @@ public sealed class MainViewModel : ViewModelBase
     {
         return date.AddDays(-(int)date.DayOfWeek);
     }
+
+    /// <summary>
+    /// 同一天任务的统一显示顺序：<b>未完成在前、已完成自动沉到该日最后</b>；
+    /// 未完成 / 已完成两段内部再按「重要优先 → 创建时间」排。
+    /// 日历格子与今日任务面板共用这一个口径，避免两处排序漂移。
+    /// </summary>
+    private static IOrderedEnumerable<CalendarTask> OrderForDay(IEnumerable<CalendarTask> tasks)
+        => tasks
+            .OrderBy(task => task.IsCompleted)
+            .ThenByDescending(task => task.IsImportant)
+            .ThenBy(task => task.CreatedAt);
 }

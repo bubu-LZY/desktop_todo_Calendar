@@ -515,9 +515,12 @@ public sealed class TaskApiServer : IDisposable
             task.Title = op.Title.Trim();
         }
 
-        if (op.Date is not null)
+        if (op.Date is not null && task.Date != op.Date.Value)
         {
             task.Date = op.Date.Value;
+            // 日期移动后，旧时刻的「已推」标记必须作废，否则改到明天的任务到点不会再提醒
+            // （与 MCP update_task / 界面编辑同一口径）。
+            task.ResetReminder();
         }
 
         if (op.IsImportant is not null)
@@ -656,9 +659,11 @@ public sealed class TaskApiServer : IDisposable
                         task.Title = payload.Title.Trim();
                     }
 
-                    if (payload.Date is not null)
+                    if (payload.Date is not null && task.Date != payload.Date.Value)
                     {
                         task.Date = payload.Date.Value;
+                        // 改期后作废旧计划的已推标记，否则新日期到点不再提醒（与 MCP / 界面编辑同口径）
+                        task.ResetReminder();
                     }
 
                     if (payload.IsImportant is not null)

@@ -11,7 +11,6 @@ public sealed class DayCellViewModel : ViewModelBase
     private bool _isAddingTask;
     private string _draftTitle = string.Empty;
     private TimeSpan _draftTime = DefaultDraftTime;
-    private string _reminderLead = Helpers.ReminderLeadCatalog.NoneLabel;
     private bool _isSelected;
 
     public DayCellViewModel(
@@ -26,6 +25,8 @@ public sealed class DayCellViewModel : ViewModelBase
         IsToday = isToday;
         Tasks = new ObservableCollection<TaskItemViewModel>(tasks);
         Holidays = new ObservableCollection<ChinaHoliday>(holidays);
+        ReminderLeadLabels = [];
+        ReminderLeadLabels.CollectionChanged += (_, _) => OnPropertyChanged(nameof(ReminderLeadSummary));
         RenumberTasks();
     }
 
@@ -86,20 +87,18 @@ public sealed class DayCellViewModel : ViewModelBase
     /// <summary>草稿任务时刻对应的 <see cref="TimeOnly"/>（落盘时用它）。</summary>
     public TimeOnly DraftTimeOnly => TimeOnly.FromTimeSpan(_draftTime);
 
-    /// <summary>格子里快速添加时可选的「提醒时间」档位（与右侧面板同一份）。</summary>
-    public IReadOnlyList<string> ReminderLeadOptions => Helpers.ReminderLeadCatalog.Labels;
+    /// <summary>多选下拉里可勾选的提醒档位（不含「不提醒」；一个都不勾就是不提醒）。</summary>
+    public IReadOnlyList<string> ReminderLeadOptions => Helpers.ReminderLeadCatalog.SelectableLabels;
 
-    /// <summary>格子里快速添加时选中的提醒档位。</summary>
-    public string ReminderLead
-    {
-        get => _reminderLead;
-        set => SetProperty(ref _reminderLead, string.IsNullOrWhiteSpace(value)
-            ? Helpers.ReminderLeadCatalog.NoneLabel
-            : value);
-    }
+    /// <summary>格子里快速添加时勾选的提醒档位标签集合（多选）。</summary>
+    public ObservableCollection<string> ReminderLeadLabels { get; }
 
-    /// <summary>格子草稿对应的提前提醒量（分钟）；「不提醒」为 null。</summary>
-    public int? DraftReminderLead => Helpers.ReminderLeadCatalog.ToMinutes(_reminderLead);
+    /// <summary>下拉按钮上的摘要文本：空 = 「不提醒」，否则把勾选项顿号连起来。</summary>
+    public string ReminderLeadSummary => Helpers.ReminderLeadCatalog.Summarize(ReminderLeadLabels);
+
+    /// <summary>格子草稿对应的全部提前提醒量（分钟）；空集合 = 不提醒。</summary>
+    public IReadOnlyList<int> DraftReminderLeads
+        => Helpers.ReminderLeadCatalog.ToMinutesList(ReminderLeadLabels);
 
     public void BeginAdd()
     {
@@ -113,12 +112,12 @@ public sealed class DayCellViewModel : ViewModelBase
         IsAddingTask = false;
     }
 
-    /// <summary>把草稿恢复成"刚打开表单"的样子：内容空、时刻 9:00、提醒不提醒。</summary>
+    /// <summary>把草稿恢复成"刚打开表单"的样子：内容空、时刻 9:00、一个提醒都不勾。</summary>
     private void ResetDraft()
     {
         DraftTitle = string.Empty;
         DraftTime = DefaultDraftTime;
-        ReminderLead = Helpers.ReminderLeadCatalog.NoneLabel;
+        ReminderLeadLabels.Clear();
     }
 
     /// <summary>

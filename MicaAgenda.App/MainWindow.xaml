@@ -1627,6 +1627,17 @@
                                     Content="{Binding}"
                                     ContentTemplate="{StaticResource RightPanelTemplate}" />
                     </Grid>
+
+                <!-- 任务视图：与 Avalonia 版同口径 —— 不渲染日历格子，整个主区只留任务面板。
+                     共用同一份设置文件，若不补这块，Avalonia 里切到任务视图后再开 WPF 会是一片空白。 -->
+                <Grid Visibility="{Binding Settings.ViewMode, Converter={StaticResource EnumVisibility}, ConverterParameter=Tasks}">
+                    <ContentControl Margin="8"
+                                    MaxWidth="580"
+                                    HorizontalAlignment="Stretch"
+                                    HorizontalContentAlignment="Stretch"
+                                    Content="{Binding}"
+                                    ContentTemplate="{StaticResource RightPanelTemplate}" />
+                </Grid>
                 </Grid>
                     <ContentControl x:Name="NarrowTaskOnlyView"
                                     Visibility="Collapsed"

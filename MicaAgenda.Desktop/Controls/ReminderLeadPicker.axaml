@@ -1,0 +1,60 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="MicaAgenda.Desktop.Controls.ReminderLeadPicker"
+             Focusable="False">
+  <!--
+    「提醒时间」多选下拉：按钮上显示当前勾选项摘要（空 = 不提醒），
+    点开是一组可勾选的固定档位（到时提醒 / 提前 3 分钟 …… / 提前一天），
+    勾多个就到点各推一次。勾选项直接在绑定进来的字符串集合上增删，VM 与本控件共享同一份。
+  -->
+  <UserControl.Styles>
+    <Style Selector="Button.picker">
+      <Setter Property="Height" Value="24" />
+      <Setter Property="MinWidth" Value="112" />
+      <Setter Property="Padding" Value="8,0" />
+      <Setter Property="Background" Value="#FFFFFF" />
+      <Setter Property="BorderBrush" Value="#CBD5E1" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="6" />
+      <Setter Property="HorizontalContentAlignment" Value="Left" />
+      <Setter Property="VerticalContentAlignment" Value="Center" />
+      <Setter Property="Cursor" Value="Hand" />
+    </Style>
+    <Style Selector="Button.picker:pointerover /template/ ContentPresenter">
+      <Setter Property="Background" Value="#F1F5F9" />
+    </Style>
+    <Style Selector="Border.popupCard">
+      <Setter Property="Background" Value="#FFFFFF" />
+      <Setter Property="BorderBrush" Value="#CBD5E1" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="8" />
+      <Setter Property="Padding" Value="4" />
+    </Style>
+    <Style Selector="CheckBox.option">
+      <Setter Property="Margin" Value="2,1" />
+      <Setter Property="FontSize" Value="11.5" />
+      <Setter Property="Cursor" Value="Hand" />
+    </Style>
+  </UserControl.Styles>
+
+  <Grid>
+    <Button x:Name="RootButton" Classes="picker" Click="TogglePopup">
+      <Grid ColumnDefinitions="*,Auto" VerticalAlignment="Center">
+        <TextBlock x:Name="SummaryText" Grid.Column="0" FontSize="11"
+                   Foreground="#334155" TextTrimming="CharacterEllipsis"
+                   VerticalAlignment="Center" Text="不提醒" />
+        <Path Grid.Column="1" Margin="6,0,0,0" VerticalAlignment="Center"
+              Fill="#64748B" Data="M 0,0 L 5,5 L 10,0 Z" />
+      </Grid>
+    </Button>
+    <Popup x:Name="Popup"
+           PlacementTarget="{Binding #RootButton}"
+           Placement="BottomEdgeAlignedLeft"
+           VerticalOffset="3"
+           IsLightDismissEnabled="True">
+      <Border Classes="popupCard" MinWidth="150">
+        <StackPanel x:Name="OptionsHost" Spacing="0" />
+      </Border>
+    </Popup>
+  </Grid>
+</UserControl>

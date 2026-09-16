@@ -596,6 +596,9 @@ public partial class MainWindow : Window
             CanResize = !config.LockWindow;
         }
 
+        // 设置窗里也可能改了这一项，顶栏按钮文案 / 颜色跟着同步。
+        UpdateLockButton();
+
         ApplyDesktopEmbed();
 
         // 关掉嵌入：窗口还压在最底层，得把它捞回前台，否则用户会以为"设置没生效"。
@@ -1379,7 +1382,62 @@ public partial class MainWindow : Window
     private void MonthView_Click(object? sender, RoutedEventArgs e) => SwitchView(CalendarViewMode.Month);
     private void WeekView_Click(object? sender, RoutedEventArgs e) => SwitchView(CalendarViewMode.Week);
     private void YearView_Click(object? sender, RoutedEventArgs e) => SwitchView(CalendarViewMode.Year);
+    private void TaskView_Click(object? sender, RoutedEventArgs e) => SwitchView(CalendarViewMode.Tasks);
     private void Settings_Click(object? sender, RoutedEventArgs e) => OpenSettings();
+
+    /// <summary>
+    /// 视图下拉打开前：把当前所在视图的那一项加粗，菜单里不用再靠勾选标记也能看出当前选择。
+    /// </summary>
+    private void ViewMenu_Opening(object? sender, EventArgs e)
+    {
+        if (_viewModel is null)
+        {
+            return;
+        }
+
+        var mode = _viewModel.Settings.ViewMode;
+        ViewMonthItem.FontWeight = mode == CalendarViewMode.Month ? FontWeight.Bold : FontWeight.Normal;
+        ViewWeekItem.FontWeight = mode == CalendarViewMode.Week ? FontWeight.Bold : FontWeight.Normal;
+        ViewYearItem.FontWeight = mode == CalendarViewMode.Year ? FontWeight.Bold : FontWeight.Normal;
+        ViewTaskItem.FontWeight = mode == CalendarViewMode.Tasks ? FontWeight.Bold : FontWeight.Normal;
+    }
+
+    // ===== 顶栏「锁定位置」快捷开关（与设置里的「锁定位置，禁止拖动或缩放」是同一项）=====
+
+    /// <summary>
+    /// 顶栏快捷切换锁定：锁住后窗口既不能拖动也不能拖边缩放（拖拽 / 缩放热区都先看
+    /// <see cref="AppConfig.LockWindow"/>）。改完立即落盘，省得重启后状态丢失。
+    /// </summary>
+    private void LockPosition_Click(object? sender, RoutedEventArgs e)
+    {
+        _config.LockWindow = !_config.LockWindow;
+
+        if (OperatingSystem.IsWindows())
+        {
+            CanResize = !_config.LockWindow;
+        }
+
+        UpdateLockButton();
+        _ = _configStore.SaveAsync(_config);
+    }
+
+    /// <summary>按当前锁定状态刷新顶栏按钮的文案 / 颜色 / 悬浮提示。</summary>
+    private void UpdateLockButton()
+    {
+        if (LockButton is null)
+        {
+            return;
+        }
+
+        var locked = _config.LockWindow;
+        LockButton.Content = locked ? "🔒 已锁" : "🔓 锁定";
+        LockButton.Classes.Set("locked", locked);
+        ToolTip.SetTip(
+            LockButton,
+            locked
+                ? "当前已锁定：窗口不可拖动、不可缩放。点击解除锁定。"
+                : "锁定位置：禁止拖动窗口或缩放窗口。");
+    }
 
     // ===== 视觉对等：背景模式 / 透明度 / 按视图记忆窗口位置 =====
 
@@ -1397,6 +1455,27 @@ public partial class MainWindow : Window
         _viewModel.SetViewMode(mode);
         ApplyWindowBounds(GetBoundsForView(mode));
         SaveCurrentViewBounds();
+        PlayContentFadeIn();
+    }
+
+    /// <summary>
+    /// 视图切换后对当前可见的主内容做一次 0.62 → 1 的快速淡入，
+    /// 让日历格子 / 任务面板的硬切变得柔和；宿主上挂了 DoubleTransition，这里只改值。
+    /// </summary>
+    private void PlayContentFadeIn()
+    {
+        var narrow = Bounds.Width > 0 && Bounds.Width <= NarrowLayoutThreshold;
+        var host = narrow ? (InputElement?)NarrowTaskOnlyView : NormalViewHost;
+        if (host is null)
+        {
+            return;
+        }
+
+        host.Opacity = 0.62;
+        // 先让低透明度落一帧，再在下一布局周期恢复，过渡才会真正跑起来
+        Dispatcher.UIThread.Post(
+            () => host.Opacity = 1,
+            DispatcherPriority.Background);
     }
 
     /// <summary>数据就位后：把工具栏控件、背景、窗口尺寸同步到当前设置。</summary>
@@ -1421,6 +1500,7 @@ public partial class MainWindow : Window
 
         ApplyBackground();
         ApplyWindowBounds(GetBoundsForView(s.ViewMode));
+        UpdateLockButton();
     }
 
     private void SelectBackgroundMode(CalendarBackgroundMode mode)
@@ -1470,6 +1550,24 @@ public partial class MainWindow : Window
         _viewModel.Settings.Opacity = Math.Round(e.NewValue, 2);
         ApplyBackground();
         _viewModel.MarkDirty();
+    }
+
+    /// <summary>
+    /// 鼠标悬停在透明度滑块上滚动滚轮：上滚更不透明、下滚更透明，步进 0.02；
+    /// 按住 Shift 时步进放大到 0.05，快速拉满/拉低用。事件标记为已处理，
+    /// 避免滚轮同时把外层滚动条带着跑。
+    /// </summary>
+    private void OpacitySlider_Wheel(object? sender, PointerWheelEventArgs e)
+    {
+        if (_viewModel is null || e.Delta.Y == 0)
+        {
+            return;
+        }
+
+        var step = e.KeyModifiers.HasFlag(KeyModifiers.Shift) ? 0.05 : 0.02;
+        var next = Math.Round(OpacitySlider.Value + Math.Sign(e.Delta.Y) * step, 2);
+        OpacitySlider.Value = Math.Clamp(next, OpacitySlider.Minimum, OpacitySlider.Maximum);
+        e.Handled = true;
     }
 
     /// <summary>
@@ -1783,9 +1881,9 @@ public partial class MainWindow : Window
 
     /// <summary>
     /// 窄窗版式：窗口窄到放不下日历格子时，主体只留「今日任务」这一块
-    /// （今日任务 + 本周任务完成情况 + 逾期未完成 / 未完成 / 已完成）。
-    /// 顶栏的视图切换 / 背景 / 透明度一起收起 —— 否则按了按钮画面没反应，反而更迷惑。
-    /// 行为与 WPF 宿主的 UpdateResponsiveLayout 完全一致。
+    /// （今日任务 + 本周任务完成情况 + 未完成 / 已完成）。
+    /// 只收起背景 / 透明度这组装饰控件；「今天 + 视图下拉 + 设置 + 锁定」全部常驻，
+    /// 窄屏下依然能切视图、开设置、快速锁定。
     /// </summary>
     private void UpdateResponsiveLayout()
     {
@@ -1797,7 +1895,8 @@ public partial class MainWindow : Window
 
         var narrow = Bounds.Width > 0 && Bounds.Width <= NarrowLayoutThreshold;
         ViewControlsPanel.IsVisible = !narrow;
-        ViewSwitchPanel.IsVisible = !narrow;
+        // 视图切换已经收纳成一个下拉按钮，窄屏也放得下，必须常驻（否则窄屏无法退出任务视图）
+        ViewSwitchPanel.IsVisible = true;
         NormalViewHost.IsVisible = !narrow;
         NarrowTaskOnlyView.IsVisible = narrow;
     }
@@ -1890,6 +1989,19 @@ public partial class MainWindow : Window
         }
     }
 
+    /// <summary>
+    /// 已完成行行首悬停浮现的「↺」：把删除线任务还原为未完成（会自动回到未完成那一段的排序位置）。
+    /// 不复用勾选框事件，是因为已完成行根本没有勾选框 —— 还原入口只有这个小箭头和右键菜单。
+    /// </summary>
+    private void RestoreTask_Click(object? sender, RoutedEventArgs e)
+    {
+        if (TaskFrom(sender) is { IsCompleted: true } task)
+        {
+            _viewModel?.ToggleTaskCompletion(task.Id);
+            _ = PushCompletionToMindMapAsync(task.Model);
+        }
+    }
+
     private void ImportantTask_Click(object? sender, RoutedEventArgs e)
     {
         if (TaskFrom(sender) is { IsImportant: false } task)
@@ -1929,7 +2041,7 @@ public partial class MainWindow : Window
             _modalDialogOpen = false;
             if (dialog.Saved)
             {
-                _viewModel?.UpdateTask(item.Id, dialog.EditedTitle, dialog.EditedTime, dialog.EditedLeadMinutes);
+                _viewModel?.UpdateTask(item.Id, dialog.EditedTitle, dialog.EditedTime, dialog.EditedLeads);
             }
         };
 
@@ -2060,7 +2172,7 @@ public partial class MainWindow : Window
     private void CommitAdd(DayCellViewModel cell)
     {
         var title = cell.DraftTitle?.Trim();
-        var lead = cell.DraftReminderLead;
+        var leads = cell.DraftReminderLeads;
         var time = cell.DraftTimeOnly;   // CancelAdd 会把草稿清掉，先取值
         cell.CancelAdd();
         if (ReferenceEquals(_pendingAddCell, cell))
@@ -2071,7 +2183,7 @@ public partial class MainWindow : Window
         // 以前这里没有落盘：格子里加完任务要等下一次别的改动才写文件。
         if (!string.IsNullOrWhiteSpace(title))
         {
-            _viewModel?.AddTask(cell.Date, title, lead, time);
+            _viewModel?.AddTask(cell.Date, title, leads, time);
             _ = SaveAsync();
         }
     }
@@ -2258,43 +2370,33 @@ public partial class MainWindow : Window
     private void CommitTodayTask_Click(object? sender, RoutedEventArgs e) => CommitTodayAdd();
 
     /// <summary>
-    /// 右侧面板的「提醒时间」换档：选了真的提醒档、但飞书还没配好 → 说清楚这条提醒送不出去。
+    /// 右侧面板的「提醒时间」多选下拉：第一次勾上任一档位、但推送通道还没配好 → 说清楚送不出去。
     ///
-    /// 只认「从『不提醒』切到某个提醒档」这一次（见 <see cref="ReminderGate.ShouldWarnOnLeadChange"/>），
-    /// 档位之间来回换不重复弹。
-    /// IsEffectivelyVisible 这层判断是因为面板模板在宿主里有两份实例（右侧面板 + 窄窗视图），
-    /// 两边绑的是同一个 TodayTaskLead，改一次会同时回调 —— 不挡一下会弹出两个一模一样的窗。
+    /// 面板模板在宿主里有两份实例（右侧面板 + 窄窗视图），两边绑的是同一个
+    /// TodayTaskLeadLabels，同一次勾选两个实例都会回调 —— 只让当前可见的那个弹，免得弹两遍。
     /// </summary>
-    private void TaskLeadBox_SelectionChanged(object? sender, SelectionChangedEventArgs e)
+    private void TodayLeadPicker_FirstSelected(object? sender, EventArgs e)
     {
-        if (_viewModel?.IsAddingTodayTask != true || sender is not Control { IsEffectivelyVisible: true })
+        if (_viewModel?.IsAddingTodayTask == true && sender is Control { IsEffectivelyVisible: true })
         {
-            return;
+            WarnIfReminderChannelMissing();
         }
-
-        WarnIfFeishuNotConfigured(FirstLeadLabel(e.RemovedItems), FirstLeadLabel(e.AddedItems));
     }
 
-    /// <summary>日期格子里那张悬浮表单的「提醒时间」换档，判断与提示同上。</summary>
-    private void CellLeadBox_SelectionChanged(object? sender, SelectionChangedEventArgs e)
+    /// <summary>日期格子里那张悬浮表单的多选下拉，判断与提示同上。</summary>
+    private void CellLeadPicker_FirstSelected(object? sender, EventArgs e)
     {
-        if (sender is not Control { DataContext: DayCellViewModel cell } || !cell.IsAddingTask)
+        if (sender is Control { DataContext: DayCellViewModel cell } && cell.IsAddingTask)
         {
-            return;
+            WarnIfReminderChannelMissing();
         }
-
-        WarnIfFeishuNotConfigured(FirstLeadLabel(e.RemovedItems), FirstLeadLabel(e.AddedItems));
     }
 
-    /// <summary>下拉的变更项里取出档位文案（Avalonia 给的 AddedItems/RemovedItems 是 IList）。</summary>
-    private static string? FirstLeadLabel(IList items)
-        => items.Count > 0 ? items[0] as string : null;
-
-    /// <summary>提醒是走 webhook 推的：飞书没配好就提醒用户"这条提醒到点也不会响"。</summary>
-    private void WarnIfFeishuNotConfigured(string? previousLabel, string? newLabel)
+    /// <summary>提醒是走 webhook 推的：一个通道都没配就提醒用户"这条提醒到点也不会响"。</summary>
+    private void WarnIfReminderChannelMissing()
     {
         // 飞书 webhook 在 AppConfig 里（日历数据那份 CalendarSettings 不管提醒）。
-        if (!ReminderGate.ShouldWarnOnLeadChange(_config, previousLabel, newLabel))
+        if (!ReminderGate.ShouldWarnOnLeadToggle(_config, hadAny: false, hasAny: true))
         {
             return;
         }
@@ -2535,17 +2637,11 @@ public partial class MainWindow : Window
         _ = SaveAsync();
     }
 
-    private void ClearOverdueTasks_Click(object? sender, RoutedEventArgs e)
-        => BulkWeekAction("删除逾期任务", "确定删除全部「逾期未完成」的任务吗？此操作不可撤销。", () => _viewModel!.ClearOverdueTasks());
-
-    private void MarkOverdueCompleted_Click(object? sender, RoutedEventArgs e)
-        => BulkWeekAction("标记逾期完成", "把全部「逾期未完成」的任务标记为已完成？", () => _viewModel!.MarkOverdueCompleted());
-
     private void ClearOpenTasks_Click(object? sender, RoutedEventArgs e)
-        => BulkWeekAction("删除本周未完成任务", "确定删除全部本周「未完成」的任务吗？此操作不可撤销。", () => _viewModel!.ClearOpenTasks());
+        => BulkWeekAction("删除未完成任务", "确定删除全部「未完成」的任务吗（含已逾期的历史欠账）？此操作不可撤销。", () => _viewModel!.ClearOpenTasks());
 
     private void MarkOpenCompleted_Click(object? sender, RoutedEventArgs e)
-        => BulkWeekAction("标记本周完成", "把全部本周「未完成」的任务标记为已完成？", () => _viewModel!.MarkOpenCompleted());
+        => BulkWeekAction("标记完成", "把全部「未完成」的任务标记为已完成吗（含已逾期的历史欠账）？", () => _viewModel!.MarkOpenCompleted());
 
     private void ClearCompletedTasks_Click(object? sender, RoutedEventArgs e)
         => BulkWeekAction("删除本周已完成任务", "确定删除全部本周「已完成」的任务吗？此操作不可撤销。", () => _viewModel!.ClearCompletedTasks());

@@ -2,8 +2,8 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         x:Class="MicaAgenda.Desktop.SettingsWindow"
         Title="设置"
-        Width="660" Height="620"
-        MinWidth="580" MinHeight="460"
+        Width="720" Height="600"
+        MinWidth="560" MinHeight="440"
         WindowStartupLocation="CenterOwner"
         CanResize="True"
         Background="#F7F8FA"
@@ -11,11 +11,26 @@
         x:CompileBindings="False">
 
   <Window.Styles>
+    <!-- 卡片标题：左侧一道蓝色竖条（Border.titleBar），替代过去光秃秃的粗体黑字 -->
+    <Style Selector="Border.titleBar">
+      <Setter Property="Width" Value="3.5" />
+      <Setter Property="Height" Value="14" />
+      <Setter Property="CornerRadius" Value="2" />
+      <Setter Property="Background" Value="#2563EB" />
+      <Setter Property="Margin" Value="0,0,9,0" />
+      <Setter Property="VerticalAlignment" Value="Center" />
+    </Style>
+    <Style Selector="Border.titleBar.danger">
+      <Setter Property="Background" Value="#DC2626" />
+    </Style>
     <Style Selector="TextBlock.groupTitle">
-      <Setter Property="FontSize" Value="15" />
+      <Setter Property="FontSize" Value="14" />
       <Setter Property="FontWeight" Value="Bold" />
       <Setter Property="Foreground" Value="#111827" />
-      <Setter Property="Margin" Value="0,0,0,10" />
+      <Setter Property="VerticalAlignment" Value="Center" />
+    </Style>
+    <Style Selector="DockPanel.cardHead">
+      <Setter Property="Margin" Value="0,0,0,11" />
     </Style>
     <Style Selector="TextBlock.fieldLabel">
       <Setter Property="Foreground" Value="#6B7280" />
@@ -29,7 +44,7 @@
     </Style>
     <Style Selector="TextBox.inputBox">
       <Setter Property="Padding" Value="8,6" />
-      <Setter Property="BorderBrush" Value="#D1D5DB" />
+      <Setter Property="BorderBrush" Value="#E2E6EB" />
       <Setter Property="BorderThickness" Value="1" />
       <Setter Property="Background" Value="#FFFFFF" />
       <Setter Property="CornerRadius" Value="7" />
@@ -42,10 +57,11 @@
       <Setter Property="HorizontalContentAlignment" Value="Left" />
     </Style>
     <Style Selector="Button.actionButton">
-      <Setter Property="Padding" Value="14,7" />
+      <Setter Property="Padding" Value="13,6" />
       <Setter Property="BorderThickness" Value="1" />
-      <Setter Property="BorderBrush" Value="#D1D5DB" />
+      <Setter Property="BorderBrush" Value="#E2E6EB" />
       <Setter Property="Background" Value="#FFFFFF" />
+      <Setter Property="Foreground" Value="#374151" />
       <Setter Property="CornerRadius" Value="7" />
       <Setter Property="Cursor" Value="Hand" />
     </Style>
@@ -57,7 +73,7 @@
       <Setter Property="Background" Value="#E5E7EB" />
     </Style>
     <Style Selector="Button.primaryButton">
-      <Setter Property="Padding" Value="14,7" />
+      <Setter Property="Padding" Value="16,7" />
       <Setter Property="BorderThickness" Value="1" />
       <Setter Property="Background" Value="#2563EB" />
       <Setter Property="Foreground" Value="#FFFFFF" />
@@ -74,22 +90,93 @@
       <Setter Property="Background" Value="#1E40AF" />
       <Setter Property="BorderBrush" Value="#1E40AF" />
     </Style>
+    <!-- 白色卡片：细边 + 12px 圆角，比旧版大间距硬色块轻 -->
     <Style Selector="Border.card">
       <Setter Property="Background" Value="#FFFFFF" />
-      <Setter Property="CornerRadius" Value="10" />
-      <Setter Property="Padding" Value="16" />
-      <Setter Property="Margin" Value="0,0,0,12" />
+      <Setter Property="BorderBrush" Value="#EDF0F3" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="12" />
+      <Setter Property="Padding" Value="15,13" />
+      <Setter Property="Margin" Value="0,0,0,10" />
+    </Style>
+
+    <!-- ===== 左侧目录按钮 ===== -->
+    <Style Selector="Button.navItem">
+      <Setter Property="Height" Value="32" />
+      <Setter Property="MinHeight" Value="0" />
+      <Setter Property="Padding" Value="10,0" />
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="BorderThickness" Value="0" />
+      <Setter Property="CornerRadius" Value="7" />
+      <Setter Property="HorizontalContentAlignment" Value="Left" />
+      <Setter Property="VerticalContentAlignment" Value="Center" />
+      <Setter Property="FontSize" Value="12.5" />
+      <Setter Property="Foreground" Value="#4B5563" />
+      <Setter Property="Cursor" Value="Hand" />
+    </Style>
+    <Style Selector="Button.navItem /template/ ContentPresenter#PART_ContentPresenter">
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="BorderThickness" Value="0" />
+      <Setter Property="Foreground" Value="#4B5563" />
+    </Style>
+    <Style Selector="Button.navItem:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+      <Setter Property="Background" Value="#F1F3F6" />
+    </Style>
+    <Style Selector="Button.navItem.active">
+      <Setter Property="FontWeight" Value="SemiBold" />
+    </Style>
+    <Style Selector="Button.navItem.active /template/ ContentPresenter#PART_ContentPresenter">
+      <Setter Property="Background" Value="#EAF1FE" />
+      <Setter Property="Foreground" Value="#1D4ED8" />
+    </Style>
+    <Style Selector="Button.navItem.danger /template/ ContentPresenter#PART_ContentPresenter">
+      <Setter Property="Foreground" Value="#B91C1C" />
+    </Style>
+    <Style Selector="Button.navItem.active.danger /template/ ContentPresenter#PART_ContentPresenter">
+      <Setter Property="Background" Value="#FDECEC" />
+      <Setter Property="Foreground" Value="#B91C1C" />
     </Style>
   </Window.Styles>
 
-  <Grid Margin="18" RowDefinitions="*,Auto">
-    <ScrollViewer Grid.Row="0" VerticalScrollBarVisibility="Auto">
-      <StackPanel>
+  <Grid RowDefinitions="*,Auto">
+    <Grid Grid.Row="0" ColumnDefinitions="150,*">
+
+      <!-- ===== 左侧固定目录：不随右侧内容滚动（粘性），点击即跳转 ===== -->
+      <Border Grid.Column="0" Background="#FFFFFF" BorderBrush="#EDF0F3" BorderThickness="0,0,1,0">
+        <DockPanel Margin="10,12,8,12">
+          <StackPanel DockPanel.Dock="Top" Margin="2,0,2,8">
+            <TextBlock Text="设置" FontSize="15" FontWeight="Bold" Foreground="#111827" />
+            <TextBlock Text="点击目录快速跳转" FontSize="10.5" Foreground="#9CA3AF" Margin="2,3,0,0" />
+          </StackPanel>
+          <ScrollViewer VerticalScrollBarVisibility="Disabled">
+            <StackPanel x:Name="TocPanel" Spacing="1">
+              <Button Classes="navItem" Content="HTTP API" Tag="api" Click="Nav_Click" />
+              <Button Classes="navItem" Content="定时提醒" Tag="reminder" Click="Nav_Click" />
+              <Button Classes="navItem" Content="定时报告" Tag="report" Click="Nav_Click" />
+              <Button Classes="navItem" Content="自动备份" Tag="backup" Click="Nav_Click" />
+              <Button Classes="navItem" Content="MCP 接口" Tag="mcp" Click="Nav_Click" />
+              <Button Classes="navItem" Content="桌面行为" Tag="desktop" Click="Nav_Click" />
+              <Button Classes="navItem" Content="版本更新" Tag="update" Click="Nav_Click" />
+              <Button Classes="navItem" Content="节假日数据" Tag="holiday" Click="Nav_Click" />
+              <Button Classes="navItem danger" Content="重置" Tag="reset" Click="Nav_Click" />
+            </StackPanel>
+          </ScrollViewer>
+        </DockPanel>
+      </Border>
+
+      <!-- ===== 右侧：只让这一块滚动，目录与底部按钮始终钉在原位 ===== -->
+      <ScrollViewer Grid.Column="1" x:Name="ContentScroll"
+                    VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
+                    ScrollChanged="ContentScroll_ScrollChanged">
+        <StackPanel x:Name="SettingsContent" Margin="14,12,14,4">
 
         <!-- ===== HTTP API ===== -->
-        <Border Classes="card">
+        <Border x:Name="CardApi" Classes="card">
           <StackPanel>
-            <TextBlock Text="HTTP API" Classes="groupTitle" />
+            <DockPanel Classes="cardHead">
+              <Border DockPanel.Dock="Left" Classes="titleBar" />
+              <TextBlock Text="HTTP API" Classes="groupTitle" />
+            </DockPanel>
             <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
               <CheckBox x:Name="ApiEnabledBox" Content="启用 API" VerticalAlignment="Center" Margin="0,0,16,0" />
               <TextBlock Text="端口" Classes="fieldLabel" />
@@ -108,9 +195,12 @@
         </Border>
 
         <!-- ===== 定时提醒 ===== -->
-        <Border Classes="card">
+        <Border x:Name="CardReminder" Classes="card">
           <StackPanel>
-            <TextBlock Text="定时提醒" Classes="groupTitle" />
+            <DockPanel Classes="cardHead">
+              <Border DockPanel.Dock="Left" Classes="titleBar" />
+              <TextBlock Text="定时提醒" Classes="groupTitle" />
+            </DockPanel>
             <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
               <CheckBox x:Name="ReminderEnabledBox" Content="启用提醒" VerticalAlignment="Center" Margin="0,0,16,0" />
               <TextBlock Text="提醒时间" Classes="fieldLabel" />
@@ -128,9 +218,12 @@
         </Border>
 
         <!-- ===== 定时报告 ===== -->
-        <Border Classes="card">
+        <Border x:Name="CardReport" Classes="card">
           <StackPanel>
-            <TextBlock Text="定时报告（任务完成情况）" Classes="groupTitle" />
+            <DockPanel Classes="cardHead">
+              <Border DockPanel.Dock="Left" Classes="titleBar" />
+              <TextBlock Text="定时报告（任务完成情况）" Classes="groupTitle" />
+            </DockPanel>
             <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
               <CheckBox x:Name="ReportEnabledBox" Content="启用报告" VerticalAlignment="Center" Margin="0,0,16,0" />
               <TextBlock Text="发送时间" Classes="fieldLabel" />
@@ -168,9 +261,12 @@
         </Border>
 
         <!-- ===== 自动备份 ===== -->
-        <Border Classes="card">
+        <Border x:Name="CardBackup" Classes="card">
           <StackPanel>
-            <TextBlock Text="自动备份" Classes="groupTitle" />
+            <DockPanel Classes="cardHead">
+              <Border DockPanel.Dock="Left" Classes="titleBar" />
+              <TextBlock Text="自动备份" Classes="groupTitle" />
+            </DockPanel>
             <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
               <CheckBox x:Name="BackupEnabledBox" Content="启用自动备份" VerticalAlignment="Center" Margin="0,0,16,0" />
               <TextBlock Text="备份时间" Classes="fieldLabel" />
@@ -192,9 +288,12 @@
         </Border>
 
         <!-- ===== MCP + my-mindmap 同步 ===== -->
-        <Border Classes="card">
+        <Border x:Name="CardMcp" Classes="card">
           <StackPanel>
-            <TextBlock Text="MCP 接口（供外部 AI 客户端连接）" Classes="groupTitle" />
+            <DockPanel Classes="cardHead">
+              <Border DockPanel.Dock="Left" Classes="titleBar" />
+              <TextBlock Text="MCP 接口（供外部 AI 客户端连接）" Classes="groupTitle" />
+            </DockPanel>
             <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
               <CheckBox x:Name="McpEnabledBox" Content="启用 MCP" VerticalAlignment="Center" Margin="0,0,16,0" />
               <TextBlock Text="端口" Classes="fieldLabel" />
@@ -226,9 +325,12 @@
         </Border>
 
         <!-- ===== 桌面行为 ===== -->
-        <Border Classes="card">
+        <Border x:Name="CardDesktop" Classes="card">
           <StackPanel>
-            <TextBlock Text="桌面行为" Classes="groupTitle" />
+            <DockPanel Classes="cardHead">
+              <Border DockPanel.Dock="Left" Classes="titleBar" />
+              <TextBlock Text="桌面行为" Classes="groupTitle" />
+            </DockPanel>
             <CheckBox x:Name="EmbedDesktopBox" Content="嵌入桌面（置底模式：沉在其他窗口之下）" Margin="0,0,0,8" />
             <CheckBox x:Name="LockWindowBox" Content="锁定位置（禁止拖动 / 缩放）" Margin="0,0,0,8" />
             <!-- 开机启动两项是 Windows 专属（注册表 / 计划任务）：非 Windows 平台整块隐藏，
@@ -247,9 +349,12 @@
         </Border>
 
         <!-- ===== 版本更新 ===== -->
-        <Border Classes="card">
+        <Border x:Name="CardUpdate" Classes="card">
           <StackPanel>
-            <TextBlock Text="版本更新" Classes="groupTitle" />
+            <DockPanel Classes="cardHead">
+              <Border DockPanel.Dock="Left" Classes="titleBar" />
+              <TextBlock Text="版本更新" Classes="groupTitle" />
+            </DockPanel>
             <TextBlock x:Name="UpdateVersionText" Foreground="#374151" FontSize="12" TextWrapping="Wrap" Margin="0,0,0,8" />
             <CheckBox x:Name="AutoCheckUpdateBox" Content="启动时自动检测更新" Margin="0,0,0,6" />
             <CheckBox x:Name="SkipUpdateTodayBox" Content="今日内不再提示更新" Margin="0,0,0,8" />
@@ -263,25 +368,13 @@
           </StackPanel>
         </Border>
 
-        <!-- ===== 重置 ===== -->
-        <Border Classes="card" BorderBrush="#FCA5A5" BorderThickness="1">
-          <StackPanel>
-            <TextBlock Text="重置" Classes="groupTitle" Foreground="#991B1B" />
-            <TextBlock Text="一键清空所有任务：删除数据库里的全部任务，并把右侧面板 / 日历格 / 本周统计 / 备份里的任务都清掉。重置后程序相当于新装状态，下次保存会自动落盘。"
-                       Foreground="#7F1D1D" FontSize="12" TextWrapping="Wrap" Margin="0,0,0,8" />
-            <StackPanel Orientation="Horizontal">
-              <Button x:Name="DeleteAllTasksButton" Content="一键删除所有任务" Padding="14,7"
-                      BorderThickness="1" BorderBrush="#DC2626" Background="#DC2626"
-                      Foreground="#FFFFFF" FontWeight="SemiBold" Cursor="Hand" Click="DeleteAllTasks_Click" />
-              <TextBlock x:Name="DeleteAllTasksStatus" Foreground="#157347" FontSize="11" Margin="10,0,0,0" VerticalAlignment="Center" />
-            </StackPanel>
-          </StackPanel>
-        </Border>
-
         <!-- ===== 节假日数据 ===== -->
-        <Border Classes="card">
+        <Border x:Name="CardHoliday" Classes="card">
           <StackPanel>
-            <TextBlock Text="节假日数据" Classes="groupTitle" />
+            <DockPanel Classes="cardHead">
+              <Border DockPanel.Dock="Left" Classes="titleBar" />
+              <TextBlock Text="节假日数据" Classes="groupTitle" />
+            </DockPanel>
             <TextBlock Text="数据来自 timor.tech/api/holiday（每年首次进入时联网拉取，缓存 TTL 7 天）。国务院临时调休会在下次联网时自动同步。"
                        Classes="hint" Margin="0,0,0,8" />
             <TextBlock x:Name="HolidayStatusText" Foreground="#374151" FontSize="12" TextWrapping="Wrap" Margin="0,0,0,8" Text="读取中…" />
@@ -293,12 +386,34 @@
           </StackPanel>
         </Border>
 
-      </StackPanel>
-    </ScrollViewer>
+        <!-- ===== 重置（危险操作，放在最后）===== -->
+        <Border x:Name="CardReset" Classes="card" BorderBrush="#FCA5A5" BorderThickness="1">
+          <StackPanel>
+            <DockPanel Classes="cardHead">
+              <Border DockPanel.Dock="Left" Classes="titleBar danger" />
+              <TextBlock Text="重置" Classes="groupTitle" Foreground="#991B1B" />
+            </DockPanel>
+            <TextBlock Text="一键清空所有任务：删除数据库里的全部任务，并把右侧面板 / 日历格 / 本周统计 / 备份里的任务都清掉。重置后程序相当于新装状态，下次保存会自动落盘。"
+                       Foreground="#7F1D1D" FontSize="12" TextWrapping="Wrap" Margin="0,0,0,8" />
+            <StackPanel Orientation="Horizontal">
+              <Button x:Name="DeleteAllTasksButton" Content="一键删除所有任务" Padding="14,7"
+                      BorderThickness="1" BorderBrush="#DC2626" Background="#DC2626"
+                      Foreground="#FFFFFF" FontWeight="SemiBold" Cursor="Hand" Click="DeleteAllTasks_Click" />
+              <TextBlock x:Name="DeleteAllTasksStatus" Foreground="#157347" FontSize="11" Margin="10,0,0,0" VerticalAlignment="Center" />
+            </StackPanel>
+          </StackPanel>
+        </Border>
 
-    <StackPanel Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,14,0,0">
-      <Button Content="取消" Classes="actionButton" Click="Cancel_Click" Margin="0,0,10,0" />
-      <Button Content="保存" Classes="primaryButton" Click="Save_Click" />
-    </StackPanel>
+        </StackPanel>
+      </ScrollViewer>
+    </Grid>
+
+    <!-- ===== 底部固定操作条：不随内容滚动 ===== -->
+    <Border Grid.Row="1" Background="#FFFFFF" BorderBrush="#EDF0F3" BorderThickness="0,1,0,0" Padding="14,9">
+      <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+        <Button Content="取消" Classes="actionButton" Click="Cancel_Click" Margin="0,0,8,0" />
+        <Button Content="保存" Classes="primaryButton" Click="Save_Click" />
+      </StackPanel>
+    </Border>
   </Grid>
 </Window>

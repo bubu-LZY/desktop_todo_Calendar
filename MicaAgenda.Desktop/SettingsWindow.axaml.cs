@@ -919,4 +919,92 @@ public partial class SettingsWindow : Window
         await win.ShowDialog(this);
         return result;
     }
+
+    // ===== 左侧固定目录：点击跳转 + 滚动时高亮当前章节 =====
+
+    /// <summary>目录 Tag → 对应卡片。顺序就是目录顺序，滚动高亮也按它从上往下找。</summary>
+    private static readonly (string Tag, string CardName)[] NavMap =
+    [
+        ("api", nameof(CardApi)),
+        ("reminder", nameof(CardReminder)),
+        ("report", nameof(CardReport)),
+        ("backup", nameof(CardBackup)),
+        ("mcp", nameof(CardMcp)),
+        ("desktop", nameof(CardDesktop)),
+        ("update", nameof(CardUpdate)),
+        ("holiday", nameof(CardHoliday)),
+        ("reset", nameof(CardReset))
+    ];
+
+    private Button? _activeNav;
+
+    /// <summary>点击目录：把对应卡片滚到右侧滚动区顶部（留 4px 呼吸位）。</summary>
+    private void Nav_Click(object? sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { Tag: string tag } nav
+            || this.FindControl<Border>(NavNameFor(tag)) is not { } card)
+        {
+            return;
+        }
+
+        SetActiveNav(nav);
+
+        var top = card.TranslatePoint(new Point(0, 0), SettingsContent)?.Y ?? 0;
+        var maxY = Math.Max(0, ContentScroll.Extent.Height - ContentScroll.Viewport.Height);
+        ContentScroll.Offset = new Vector(0, Math.Clamp(top - 4, 0, maxY));
+    }
+
+    /// <summary>
+    /// 滚动联动高亮：以视口上 1/3 处为基准线，最后一个顶边已越过该线的章节就是当前章。
+    /// 滚到最底部时直接高亮最后一项（最后一张卡片通常够不到基准线）。
+    /// </summary>
+    private void ContentScroll_ScrollChanged(object? sender, ScrollChangedEventArgs e)
+    {
+        if (TocPanel is null)
+        {
+            return;
+        }
+
+        var offsetY = ContentScroll.Offset.Y;
+        var atBottom = offsetY + ContentScroll.Viewport.Height >= ContentScroll.Extent.Height - 1;
+        var anchorY = offsetY + ContentScroll.Viewport.Height / 3.0;
+
+        string? activeTag = atBottom ? NavMap[^1].Tag : null;
+        foreach (var (tag, cardName) in NavMap)
+        {
+            if (this.FindControl<Border>(cardName) is not { } card)
+            {
+                continue;
+            }
+
+            var top = card.TranslatePoint(new Point(0, 0), SettingsContent)?.Y ?? double.MaxValue;
+            if (top <= anchorY)
+            {
+                activeTag = tag;
+            }
+        }
+
+        if (activeTag is null)
+        {
+            return;
+        }
+
+        var nav = TocPanel.Children.OfType<Button>().FirstOrDefault(b => b.Tag as string == activeTag);
+        SetActiveNav(nav);
+    }
+
+    private static string NavNameFor(string tag)
+        => NavMap.First(item => item.Tag == tag).CardName;
+
+    private void SetActiveNav(Button? nav)
+    {
+        if (nav is null || ReferenceEquals(nav, _activeNav))
+        {
+            return;
+        }
+
+        _activeNav?.Classes.Set("active", false);
+        nav.Classes.Set("active", true);
+        _activeNav = nav;
+    }
 }

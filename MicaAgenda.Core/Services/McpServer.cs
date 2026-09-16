@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.IO;
 using System.Net;
 using System.Security.Cryptography;
@@ -17,7 +18,12 @@ public sealed class McpServer : IDisposable
 {
     private const string ProtocolVersion = "2024-11-05";
     private const string ServerName = "micaagenda";
-    private const string ServerVersion = "1.4.0";
+
+    /// <summary>
+    /// 握手时上报的版本号：直接取程序集版本（单一来源 Directory.Build.props），
+    /// 不再手写常量——否则每次发版都要记得回来改，容易和真实版本漂移。
+    /// </summary>
+    private static string ServerVersion => UpdateService.Normalize(UpdateService.CurrentAppVersion());
 
     private readonly CalendarData _data;
     private readonly object _syncRoot;
@@ -366,8 +372,19 @@ public sealed class McpServer : IDisposable
     {
         return name switch
         {
-            "query_tasks" => QueryTasks(GetArgString(args, "range"), GetArgDate(args, "date")),
-            "add_task" => AddTask(GetArgDate(args, "date"), GetArgString(args, "title"), GetArgBool(args, "isImportant")),
+            "query_tasks" => QueryTasks(
+                GetArgString(args, "range"),
+                GetArgDate(args, "date"),
+                GetArgDate(args, "start"),
+                GetArgDate(args, "end"),
+                GetArgString(args, "status"),
+                GetArgString(args, "q")),
+            "add_task" => AddTask(
+                GetArgDate(args, "date"),
+                GetArgString(args, "title"),
+                GetArgBool(args, "isImportant"),
+                GetArgTime(args, "time"),
+                GetArgReminderLeads(args, "reminders")),
             "update_task" => UpdateTask(GetArgGuid(args, "id"), args),
             "delete_task" => DeleteTask(GetArgGuid(args, "id")),
             "complete_task" => SetCompletion(GetArgGuid(args, "id"), true),
@@ -377,39 +394,95 @@ public sealed class McpServer : IDisposable
         };
     }
 
-    private object QueryTasks(string? range, DateOnly? exactDate)
+    /// <summary>
+    /// 测试入口：MCP 的工具层不依赖 HTTP 监听，直接喂 JSON 字符串就能调，
+    /// 避免单测去绑定端口（HttpListener 在非 Windows / 无 urlacl 环境下不稳定）。
+    /// </summary>
+    internal object InvokeToolForTest(string name, string? argumentsJson = null)
+    {
+        using var doc = JsonDocument.Parse(string.IsNullOrWhiteSpace(argumentsJson) ? "{}" : argumentsJson);
+        return InvokeTool(name, doc.RootElement.Clone());
+    }
+
+    private object QueryTasks(string? range, DateOnly? exactDate, DateOnly? start, DateOnly? end, string? status, string? keyword)
     {
         var today = DateOnly.FromDateTime(DateTime.Now);
+        var nowLocal = DateTime.Now;
+
+        // status 白名单：写错了直接报错并给出合法值，AI 看到错误能自我修正；
+        // 静默忽略只会让它拿到"莫名其妙被过滤/没过滤"的结果。
+        status = string.IsNullOrWhiteSpace(status) ? "all" : status.Trim().ToLowerInvariant();
+        if (status is not ("all" or "open" or "completed" or "overdue"))
+        {
+            throw new ArgumentException("status must be one of: all, open, completed, overdue");
+        }
+
+        if (start is { } s && end is { } e && s > e)
+        {
+            throw new ArgumentException("start date must not be later than end date");
+        }
+
+        var q = keyword?.Trim();
         List<CalendarTask> tasks;
         lock (_syncRoot)
         {
+            IEnumerable<CalendarTask> source = _data.Tasks;
+
             if (exactDate is not null)
             {
-                tasks = _data.Tasks.Where(t => t.Date == exactDate.Value).ToList();
+                source = source.Where(t => t.Date == exactDate.Value);
+            }
+            else if (start is not null || end is not null)
+            {
+                // 只给一边时，另一边开口：start = 从那天起；end = 截止那天（含）
+                source = source.Where(t =>
+                    (start is null || t.Date >= start.Value)
+                    && (end is null || t.Date <= end.Value));
             }
             else
             {
-                tasks = (range ?? "today") switch
+                source = (range ?? "today").Trim().ToLowerInvariant() switch
                 {
-                    "today" => _data.Tasks.Where(t => t.Date == today).ToList(),
-                    "week" => _data.Tasks.Where(t => t.Date >= GetWeekStart(today) && t.Date <= GetWeekStart(today).AddDays(6)).ToList(),
-                    "month" => _data.Tasks.Where(t => t.Date.Year == today.Year && t.Date.Month == today.Month).ToList(),
-                    "year" => _data.Tasks.Where(t => t.Date.Year == today.Year).ToList(),
-                    "all" => _data.Tasks.ToList(),
-                    _ => _data.Tasks.Where(t => t.Date == today).ToList()
+                    "today" => source.Where(t => t.Date == today),
+                    "week" => source.Where(t => t.Date >= GetWeekStart(today) && t.Date <= GetWeekStart(today).AddDays(6)),
+                    "month" => source.Where(t => t.Date.Year == today.Year && t.Date.Month == today.Month),
+                    "year" => source.Where(t => t.Date.Year == today.Year),
+                    "all" => source,
+                    var other => throw new ArgumentException(
+                        $"unknown range: {other}; valid values: today, week, month, year, all")
                 };
+            }
+
+            tasks = status switch
+            {
+                "open" => source.Where(t => !t.IsCompleted).ToList(),
+                "completed" => source.Where(t => t.IsCompleted).ToList(),
+                // 逾期口径与右侧任务面板一致：未完成且已过任务时刻（没设时间按当天 9:00）
+                "overdue" => source.Where(t => t.IsOverdueAt(nowLocal)).ToList(),
+                _ => source.ToList()
+            };
+
+            if (!string.IsNullOrEmpty(q))
+            {
+                tasks = tasks.Where(t => t.Title.Contains(q, StringComparison.OrdinalIgnoreCase)).ToList();
             }
         }
 
         return new
         {
             range = range ?? "today",
+            date = exactDate?.ToString("yyyy-MM-dd"),
+            start = start?.ToString("yyyy-MM-dd"),
+            end = end?.ToString("yyyy-MM-dd"),
+            status,
+            query = string.IsNullOrEmpty(q) ? null : q,
             count = tasks.Count,
-            tasks = tasks.OrderBy(t => t.Date).Select(ToDto)
+            // 同一天内按任务时刻（没设时间按 9:00）排，而不是随机的列表顺序
+            tasks = tasks.OrderBy(t => t.Date).ThenBy(t => t.ScheduledAt).Select(ToDto)
         };
     }
 
-    private object AddTask(DateOnly? date, string? title, bool? isImportant)
+    private object AddTask(DateOnly? date, string? title, bool? isImportant, TimeOnly? time, IReadOnlyList<int>? reminderLeads)
     {
         if (string.IsNullOrWhiteSpace(title))
         {
@@ -421,8 +494,13 @@ public sealed class McpServer : IDisposable
             Date = date ?? DateOnly.FromDateTime(DateTime.Now),
             Title = title.Trim(),
             IsImportant = isImportant ?? false,
+            // 与界面编辑同一口径：显式 09:00 也按"没选时间"落 null，避免同一种语义存成两种形态
+            Time = NormalizeTaskTime(time),
             CreatedAt = DateTimeOffset.Now
         };
+        task.SetReminderLeads(reminderLeads);
+        // 新建时已超出补发窗口的档位（如给今天的任务勾「提前一天」）直接记为已推，不发陈旧提醒
+        task.SuppressMissedLeadReminders(DateTimeOffset.Now);
 
         lock (_syncRoot)
         {
@@ -445,9 +523,33 @@ public sealed class McpServer : IDisposable
                 task.Title = titleEl.GetString()!.Trim();
             }
 
-            if (TryGetArg(args, "date", out var dateEl) && DateOnly.TryParse(dateEl.GetString(), out var d))
+            var scheduleChanged = false;
+            if (TryGetArg(args, "date", out var dateEl) && DateOnly.TryParse(dateEl.GetString(), out var d) && task.Date != d)
             {
                 task.Date = d;
+                scheduleChanged = true;
+            }
+
+            // time：显式给 null / 空串 = 清除时刻（回到当天 9:00 语义）；给了就必须是 HH:mm
+            if (TryGetArg(args, "time", out var timeEl))
+            {
+                var newTime = NormalizeTaskTime(ParseTimeElement(timeEl));
+                if (task.Time != newTime)
+                {
+                    task.Time = newTime;
+                    scheduleChanged = true;
+                }
+            }
+
+            // reminders：只要带了这个键就是「整组替换」；[] 或 null = 清空全部提醒
+            if (TryGetArg(args, "reminders", out var reminderEl))
+            {
+                var newLeads = ParseReminderLeadsElement(reminderEl);
+                if (!task.AllReminderLeads.SequenceEqual(newLeads))
+                {
+                    task.SetReminderLeads(newLeads);
+                    scheduleChanged = true;
+                }
             }
 
             if (TryGetArg(args, "isImportant", out var impEl) && impEl.ValueKind == JsonValueKind.True)
@@ -457,6 +559,15 @@ public sealed class McpServer : IDisposable
             else if (TryGetArg(args, "isImportant", out impEl) && impEl.ValueKind == JsonValueKind.False)
             {
                 task.IsImportant = false;
+            }
+
+            // 日期 / 时刻 / 提醒档位任一变化，都要把各档位的「已推」标记作废，
+            // 否则旧的到点标记会让新时刻的提醒永远推不出来；
+            // 同时把新计划里已经过了补发窗口的档位直接记账，避免改完立刻蹦陈旧提醒。
+            if (scheduleChanged)
+            {
+                task.ResetReminder();
+                task.SuppressMissedLeadReminders(DateTimeOffset.Now);
             }
         }
 
@@ -542,10 +653,17 @@ public sealed class McpServer : IDisposable
 
             try
             {
+                // time / reminders 的校验也放在 try 内：某一条操作的格式错误只让这一条失败，
+                // 不能让它中断整批（其余操作已经按"各自独立"的契约执行）。
+                var opTime = op.TryGetProperty("time", out var timeEl) ? ParseTimeElement(timeEl) : null;
+                var opReminders = op.TryGetProperty("reminders", out var remEl) ? ParseReminderLeadsElement(remEl) : null;
+
+                // update 直接走 UpdateTask(Guid, JsonElement)，与单工具调用同一套口径
+                // （白名单参数、改时刻作废已推标记），避免两条实现慢慢跑偏。
                 results.Add(action?.ToLowerInvariant() switch
                 {
-                    "add" or "create" => AddTask(opDate, opTitle, opImportant),
-                    "update" or "edit" => UpdateTaskById(opId ?? Guid.Empty, opTitle, opDate, opImportant),
+                    "add" or "create" => AddTask(opDate, opTitle, opImportant, opTime, opReminders),
+                    "update" or "edit" => UpdateTask(opId ?? Guid.Empty, op),
                     "delete" or "remove" => DeleteTask(opId ?? Guid.Empty),
                     "complete" => SetCompletion(opId ?? Guid.Empty, true),
                     "uncomplete" or "incomplete" => SetCompletion(opId ?? Guid.Empty, false),
@@ -562,50 +680,32 @@ public sealed class McpServer : IDisposable
         return new { results };
     }
 
-    private object UpdateTaskById(Guid id, string? title, DateOnly? date, bool? isImportant)
-    {
-        lock (_syncRoot)
-        {
-            var task = _data.Tasks.FirstOrDefault(t => t.Id == id)
-                ?? throw new KeyNotFoundException($"task not found: {id}");
-
-            if (title is not null)
-            {
-                task.Title = title.Trim();
-            }
-
-            if (date is not null)
-            {
-                task.Date = date.Value;
-            }
-
-            if (isImportant is not null)
-            {
-                task.IsImportant = isImportant.Value;
-            }
-        }
-
-        _onDataChanged();
-        lock (_syncRoot)
-        {
-            return ToDto(_data.Tasks.First(t => t.Id == id));
-        }
-    }
-
     private static DateOnly GetWeekStart(DateOnly date) => date.AddDays(-(int)date.DayOfWeek);
 
-    private static object ToDto(CalendarTask task) => new
+    private static object ToDto(CalendarTask task)
     {
-        id = task.Id,
-        date = task.Date.ToString("yyyy-MM-dd"),
-        title = task.Title,
-        isCompleted = task.IsCompleted,
-        isImportant = task.IsImportant,
-        createdAt = task.CreatedAt,
-        completedAt = task.CompletedAt,
-        // 状态最后变更时间（完成和取消完成都会刷新），供对端做时间戳仲裁
-        updatedAt = task.UpdatedAt
-    };
+        var reminderLeads = task.AllReminderLeads;
+        return new
+        {
+            id = task.Id,
+            date = task.Date.ToString("yyyy-MM-dd"),
+            // 没设时间为 null（语义上按当天 9:00 处理）；scheduledAt 是真正参与提醒/逾期计算的本地时刻
+            time = task.Time?.ToString("HH:mm", CultureInfo.InvariantCulture),
+            scheduledAt = task.ScheduledAt.ToString("yyyy-MM-ddTHH:mm:ss", CultureInfo.InvariantCulture),
+            title = task.Title,
+            isCompleted = task.IsCompleted,
+            isImportant = task.IsImportant,
+            // 未完成且已过任务时刻；与任务面板「未完成」组里挂【已逾期】红标的口径一致
+            isOverdue = task.IsOverdueAt(DateTime.Now),
+            // 多选提醒：分钟数（机器友好）+ 档位标签（人/AI 友好，可原样回传给 add/update）
+            reminderLeadMinutes = reminderLeads,
+            reminders = ReminderLeadCatalog.ToLabels(reminderLeads),
+            createdAt = task.CreatedAt,
+            completedAt = task.CompletedAt,
+            // 状态最后变更时间（完成和取消完成都会刷新），供对端做时间戳仲裁
+            updatedAt = task.UpdatedAt
+        };
+    }
 
     private static bool TryGetArg(JsonElement args, string key, out JsonElement value)
     {
@@ -630,30 +730,134 @@ public sealed class McpServer : IDisposable
     private static Guid GetArgGuid(JsonElement args, string key)
         => TryGetArg(args, key, out var el) && el.ValueKind == JsonValueKind.String && Guid.TryParse(el.GetString(), out var g) ? g : Guid.Empty;
 
+    /// <summary>落盘前的时刻归一化：没选、或正好 09:00 都记 null（与界面 / ViewModel 同一口径）。</summary>
+    private static TimeOnly? NormalizeTaskTime(TimeOnly? time)
+        => time is null || time == CalendarTask.DefaultTime ? null : time;
+
+    private static readonly string[] TimeFormats = ["HH:mm", "H:mm", "HH:mm:ss"];
+
+    /// <summary>add_task 的 time 参数：缺省 / null / 空串 = 不设时刻（按当天 9:00）；格式错直接抛异常。</summary>
+    private static TimeOnly? GetArgTime(JsonElement args, string key)
+        => !TryGetArg(args, key, out var el) ? null : ParseTimeElement(el);
+
+    /// <summary>
+    /// 解析时刻元素。JSON null / 空串 = 清除（null）；
+    /// 只接受 HH:mm（也兼容 H:mm、HH:mm:ss），拒绝 "9点"、"25:00" 这类值，避免静默吞掉 AI 的笔误。
+    /// </summary>
+    private static TimeOnly? ParseTimeElement(JsonElement el)
+    {
+        if (el.ValueKind == JsonValueKind.Null)
+        {
+            return null;
+        }
+
+        if (el.ValueKind != JsonValueKind.String)
+        {
+            throw new ArgumentException("time must be a string in HH:mm format (e.g. \"14:30\")");
+        }
+
+        var text = el.GetString()?.Trim();
+        if (string.IsNullOrEmpty(text))
+        {
+            return null;
+        }
+
+        if (TimeOnly.TryParseExact(text, TimeFormats, CultureInfo.InvariantCulture, DateTimeStyles.None, out var time))
+        {
+            return time;
+        }
+
+        throw new ArgumentException($"invalid time: \"{text}\"; expected HH:mm (e.g. \"14:30\")");
+    }
+
+    /// <summary>add_task 的 reminders 参数：缺省 = 不提醒；档位标签数组（可多选，如 ["提前30分钟","提前一天"]）。</summary>
+    private static IReadOnlyList<int>? GetArgReminderLeads(JsonElement args, string key)
+        => !TryGetArg(args, key, out var el) ? null : ParseReminderLeadsElement(el);
+
+    /// <summary>
+    /// 把提醒档位标签数组换算成分钟列表。
+    /// JSON null / 空数组 = 不提醒；元素必须是字符串且落在固定档位表内，
+    /// 无法识别的标签直接报错并附上合法值——AI 拼错档位名时能照错误信息改正。
+    /// </summary>
+    private static IReadOnlyList<int> ParseReminderLeadsElement(JsonElement el)
+    {
+        if (el.ValueKind == JsonValueKind.Null)
+        {
+            return [];
+        }
+
+        if (el.ValueKind != JsonValueKind.Array)
+        {
+            throw new ArgumentException(
+                $"reminders must be an array of labels, e.g. [\"提前30分钟\",\"提前一天\"]; valid: {string.Join(", ", ReminderLeadCatalog.SelectableLabels)}");
+        }
+
+        var labels = new List<string>();
+        foreach (var item in el.EnumerateArray())
+        {
+            if (item.ValueKind != JsonValueKind.String)
+            {
+                throw new ArgumentException("each reminder must be a string label");
+            }
+
+            var label = item.GetString();
+            if (string.IsNullOrWhiteSpace(label) || ReminderLeadCatalog.ToMinutes(label) is null)
+            {
+                throw new ArgumentException(
+                    $"unknown reminder label: \"{label}\"; valid: {string.Join(", ", ReminderLeadCatalog.SelectableLabels)}");
+            }
+
+            labels.Add(label);
+        }
+
+        return ReminderLeadCatalog.ToMinutesList(labels);
+    }
+
+    /// <summary>提醒档位的固定枚举，schema 与 <see cref="ReminderLeadCatalog"/> 共用一份，避免两处漂移。</summary>
+    private static string[] ReminderEnum => ReminderLeadCatalog.SelectableLabels.ToArray();
+
     private static object[] GetToolDefinitions()
     {
         return new object[]
         {
-            Tool("query_tasks", "查询任务清单。range 可选 today(今日,默认)/week(本周)/month(本月)/year(本年)/all(全部)；date 可选，指定某一天(YYYY-MM-DD)。",
+            Tool("query_tasks", "查询任务清单。range 可选 today(今日,默认)/week(本周)/month(本月)/year(本年)/all(全部)；date 指定某一天(YYYY-MM-DD)；也可用 start/end 查任意日期区间(含端点)。status 可选 all(默认)/open(未完成,含逾期)/completed(已完成)/overdue(仅逾期)。q 可选,按标题关键词模糊匹配。date 与 start/end 都给时以 date 为准。",
                 new { type = "object", properties = new
                 {
-                    range = new { type = "string", description = "查询范围", @enum = new[] { "today", "week", "month", "year", "all" } },
-                    date = new { type = "string", description = "指定日期 YYYY-MM-DD" }
+                    range = new { type = "string", description = "查询范围(无 date、start、end 时生效)", @enum = new[] { "today", "week", "month", "year", "all" } },
+                    date = new { type = "string", description = "指定某一天 YYYY-MM-DD" },
+                    start = new { type = "string", description = "区间起始日期 YYYY-MM-DD(含)" },
+                    end = new { type = "string", description = "区间结束日期 YYYY-MM-DD(含)" },
+                    status = new { type = "string", description = "完成状态过滤", @enum = new[] { "all", "open", "completed", "overdue" } },
+                    q = new { type = "string", description = "标题关键词(不区分大小写,包含匹配)" }
                 } }),
-            Tool("add_task", "在某一天添加任务。date 省略默认今天。",
+            Tool("add_task", "在某一天添加任务。date 省略默认今天；time 为任务时刻 HH:mm(省略或 null 表示不设具体时间,按当天 9:00 处理)；reminders 为提醒档位标签数组,可多选,空数组/省略表示不提醒,可选值到时提醒/提前3分钟/提前5分钟/提前10分钟/提前15分钟/提前30分钟/提前1个小时/提前3个小时/提前一天。",
                 new { type = "object", properties = new
                 {
                     title = new { type = "string", description = "任务标题" },
                     date = new { type = "string", description = "日期 YYYY-MM-DD" },
-                    isImportant = new { type = "boolean", description = "是否重要" }
+                    time = new { type = "string", description = "任务时刻 HH:mm,如 14:30；null 表示不设具体时间" },
+                    isImportant = new { type = "boolean", description = "是否重要" },
+                    reminders = new
+                    {
+                        type = "array",
+                        description = "提醒档位标签,可多选;每个档位各提醒一次,如 [\"提前一天\",\"提前30分钟\"]",
+                        items = new { type = "string", @enum = ReminderEnum }
+                    }
                 }, required = new[] { "title" } }),
-            Tool("update_task", "编辑任务。id 必填，title/date/isImportant 可选。",
+            Tool("update_task", "编辑任务。id 必填,title/date/time/isImportant/reminders 均可选,只改传入的字段。time 传 null 或空串清除时刻；reminders 只要传入就整组替换,传 [] 清空全部提醒。修改日期/时刻/提醒后,旧的已提醒记录会作废,按新计划重新提醒。",
                 new { type = "object", properties = new
                 {
                     id = new { type = "string", description = "任务 id" },
                     title = new { type = "string", description = "新标题" },
                     date = new { type = "string", description = "新日期 YYYY-MM-DD" },
-                    isImportant = new { type = "boolean", description = "是否重要" }
+                    time = new { type = "string", description = "新时刻 HH:mm；null/空串 = 清除时刻" },
+                    isImportant = new { type = "boolean", description = "是否重要" },
+                    reminders = new
+                    {
+                        type = "array",
+                        description = "整组替换提醒档位；[] = 不提醒",
+                        items = new { type = "string", @enum = ReminderEnum }
+                    }
                 }, required = new[] { "id" } }),
             Tool("delete_task", "删除任务。",
                 new { type = "object", properties = new
@@ -670,7 +874,7 @@ public sealed class McpServer : IDisposable
                 {
                     id = new { type = "string", description = "任务 id" }
                 }, required = new[] { "id" } }),
-            Tool("batch_tasks", "批量增删改查任务。operations 为操作数组，每项 action 可取 add/create、update/edit、delete/remove、complete、uncomplete。",
+            Tool("batch_tasks", "批量增删改任务。operations 为操作数组,每项 action 可取 add/create、update/edit、delete/remove、complete、uncomplete；add/update 同样支持 time 与 reminders 字段。",
                 new { type = "object", properties = new
                 {
                     operations = new { type = "array", description = "操作数组" }

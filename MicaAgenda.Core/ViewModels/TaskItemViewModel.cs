@@ -20,7 +20,8 @@ public sealed class TaskItemViewModel : ViewModelBase
     private bool _shownIsImportant;
     private string _shownTitle;
     private TimeOnly? _shownTime;
-    private int? _shownLeadMinutes;
+    private string _shownLeadsSignature;
+    private bool _shownIsOverdue;
     private int _orderIndex;
 
     public TaskItemViewModel(CalendarTask task, Func<DateTimeOffset>? nowProvider = null)
@@ -32,7 +33,8 @@ public sealed class TaskItemViewModel : ViewModelBase
         _shownIsImportant = task.IsImportant;
         _shownTitle = task.Title;
         _shownTime = task.Time;
-        _shownLeadMinutes = task.ReminderLeadMinutes;
+        _shownLeadsSignature = BuildLeadsSignature(task);
+        _shownIsOverdue = ComputeIsOverdue();
     }
 
     public Guid Id => _task.Id;
@@ -100,12 +102,28 @@ public sealed class TaskItemViewModel : ViewModelBase
     /// <summary>序号文本（"1." / "2."）；未编号时是空串。</summary>
     public string OrderText => _orderIndex > 0 ? $"{_orderIndex}." : string.Empty;
 
-    /// <summary>提醒时刻文本（"08:30"，= 基准时刻减掉提前量）；没设提醒是空串。</summary>
+    /// <summary>
+    /// 最早一次提醒的时刻文本（"08:30"，= 基准时刻减掉最大提前量）；没设提醒是空串。
+    /// 多选时徽标只展示最早一响，全部档位在悬浮提示里列全。
+    /// </summary>
     public string ReminderTimeText
-        => _task.ReminderTriggerAt() is { } trigger ? trigger.ToString("HH:mm") : string.Empty;
+        => _task.EarliestReminderTriggerAt() is { } trigger ? trigger.ToString("HH:mm") : string.Empty;
 
-    /// <summary>是否设了提前提醒。UI 用它在标题前面留出提醒小字的位置。</summary>
-    public bool HasReminder => _task.ReminderLeadMinutes is not null;
+    /// <summary>是否设了至少一个提醒。UI 用它在标题前面留出提醒小字的位置。</summary>
+    public bool HasReminder => _task.HasReminders;
+
+    /// <summary>是否勾选了多个提醒档位（徽标上补一个「多」提示）。</summary>
+    public bool HasMultipleReminders => _task.AllReminderLeads.Count > 1;
+
+    /// <summary>
+    /// 此刻是否已逾期（未完成且过了任务时刻）。
+    /// 与本周分组的口径一致：没设时间按当天 9:00 算。
+    /// 合并后的「未完成」组里，逾期任务标题前要挂红色的【已逾期】。
+    /// </summary>
+    public bool IsOverdueNow => !IsCompleted && _task.IsOverdueAt(_now().LocalDateTime);
+
+    /// <summary>逾期前缀文本；未逾期 / 已完成时是空串（占位不换行）。</summary>
+    public string OverduePrefix => IsOverdueNow ? "【已逾期】" : string.Empty;
 
     public bool IsEditing
     {
@@ -149,6 +167,7 @@ public sealed class TaskItemViewModel : ViewModelBase
             OnPropertyChanged(nameof(IsCompleted));
             OnPropertyChanged(nameof(TooltipText));
             OnPropertyChanged(nameof(TimeBadge));
+            NotifyOverdueChanged();
         }
 
         if (_shownIsImportant != _task.IsImportant)
@@ -164,16 +183,42 @@ public sealed class TaskItemViewModel : ViewModelBase
             OnPropertyChanged(nameof(TooltipText));
         }
 
-        if (_shownTime != _task.Time || _shownLeadMinutes != _task.ReminderLeadMinutes)
+        var leadsSignature = BuildLeadsSignature(_task);
+        if (_shownTime != _task.Time || !string.Equals(_shownLeadsSignature, leadsSignature, StringComparison.Ordinal))
         {
             _shownTime = _task.Time;
-            _shownLeadMinutes = _task.ReminderLeadMinutes;
+            _shownLeadsSignature = leadsSignature;
             OnPropertyChanged(nameof(ReminderTimeText));
             OnPropertyChanged(nameof(HasReminder));
+            OnPropertyChanged(nameof(HasMultipleReminders));
+            OnPropertyChanged(nameof(TimeBadge));
+            OnPropertyChanged(nameof(TooltipText));
+        }
+
+        // 不依赖完成态切换：时间一分一秒往前走，任务也可能从「未到期」跨进「逾期」。
+        NotifyOverdueChanged();
+    }
+
+    /// <summary>逾期状态发生变化时通知前缀相关属性（红色【已逾期】的显隐全靠它）。</summary>
+    private void NotifyOverdueChanged()
+    {
+        var isOverdue = ComputeIsOverdue();
+        if (_shownIsOverdue != isOverdue)
+        {
+            _shownIsOverdue = isOverdue;
+            OnPropertyChanged(nameof(IsOverdueNow));
+            OnPropertyChanged(nameof(OverduePrefix));
             OnPropertyChanged(nameof(TimeBadge));
             OnPropertyChanged(nameof(TooltipText));
         }
     }
+
+    private bool ComputeIsOverdue()
+        => !_task.IsCompleted && _task.IsOverdueAt(_now().LocalDateTime);
+
+    /// <summary>全部提醒档位的快照签名：档位集合没变就不重推提醒相关的 UI 属性。</summary>
+    private static string BuildLeadsSignature(CalendarTask task)
+        => string.Join(",", task.AllReminderLeads);
 
     /// <summary>
     /// 无条件重推全部展示属性（含与时间相关的派生文本）。
@@ -236,13 +281,29 @@ public sealed class TaskItemViewModel : ViewModelBase
             sb.AppendLine(Title);
 
             var createdDay = _task.CreatedDate;
-            if (_task.ReminderLeadMinutes is { } lead)
+            var leads = _task.AllReminderLeads;
+            if (leads.Count > 0)
             {
                 var anchor = _task.Time ?? CalendarTask.DefaultTime;
-                // 提前量 0 就是「到时提醒」：不提前，任务时刻那一刻推
-                var leadText = lead > 0 ? $"提前 {Helpers.TimeText.FormatLead(lead)}" : "到时提醒";
-                sb.AppendLine(
-                    $"提醒：{_task.ReminderTriggerAt():HH:mm}（{leadText}，任务时刻 {anchor:HH:mm}）");
+                if (leads.Count == 1)
+                {
+                    // 提前量 0 就是「到时提醒」：不提前，任务时刻那一刻推
+                    var leadText = leads[0] > 0
+                        ? $"提前 {Helpers.TimeText.FormatLead(leads[0])}"
+                        : "到时提醒";
+                    sb.AppendLine(
+                        $"提醒：{_task.ScheduledAt.AddMinutes(-leads[0]):HH:mm}（{leadText}，任务时刻 {anchor:HH:mm}）");
+                }
+                else
+                {
+                    // 多选：把每个档位的触发时刻列全，按时间从早到晚。
+                    var parts = _task.ReminderTriggers()
+                        .OrderBy(item => item.TriggerAt)
+                        .Select(item => item.Lead > 0
+                            ? $"{item.TriggerAt:HH:mm}（提前{Helpers.TimeText.FormatLead(item.Lead)}）"
+                            : $"{item.TriggerAt:HH:mm}（到时）");
+                    sb.AppendLine($"提醒 {leads.Count} 次：{string.Join("、", parts)}");
+                }
             }
 
             sb.Append($"创建：{_task.CreatedAt:MM/dd HH:mm}");

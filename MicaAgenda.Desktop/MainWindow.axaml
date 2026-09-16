@@ -1,6 +1,7 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:conv="using:MicaAgenda.Desktop.Converters"
+        xmlns:ctl="using:MicaAgenda.Desktop.Controls"
         xmlns:vm="using:MicaAgenda.App.ViewModels"
         x:Class="MicaAgenda.Desktop.MainWindow"
         Width="980" Height="680"
@@ -112,12 +113,9 @@
                整行共用一个 IsVisible，编辑时连同勾选框之外的内容一起让位给下面的输入框。 -->
           <Grid Grid.Column="0" ColumnDefinitions="Auto,Auto,Auto,Auto,*"
                 IsVisible="{Binding IsEditing, Converter={StaticResource InverseBool}}">
-            <!-- 自动序号：跟着"重要优先 → 创建时间"的排序走，由 DayCellViewModel 统一写入 -->
+            <!-- 自动序号：跟着"未完成在前 → 重要优先 → 创建时间"的排序走，由 DayCellViewModel 统一写入 -->
             <TextBlock Grid.Column="0" Text="{Binding OrderText}" FontSize="8" MinWidth="9"
                        Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center" />
-            <TextBlock Grid.Column="1" Text="✓" Margin="0,0,2,0" FontSize="8.5" FontWeight="Bold"
-                       Foreground="{DynamicResource WeekDoneCheckBrush}"
-                       VerticalAlignment="Center" IsVisible="{Binding IsCompleted}" />
             <TextBlock Grid.Column="2" Text="★" Margin="0,0,2,0" FontSize="8.5" FontWeight="Bold"
                        Foreground="{DynamicResource ImportantTaskTextBrush}"
                        VerticalAlignment="Center" IsVisible="{Binding IsImportant}" />
@@ -125,16 +123,24 @@
                        ToolTip.Tip="提醒时刻（提前量见悬浮提示）"
                        Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center"
                        IsVisible="{Binding HasReminder}" />
+            <!-- 已完成：不显示勾选框，标题直接加删除线、整体变淡；还原入口在行首悬停出现 -->
             <TextBlock Grid.Column="4" Classes="taskTitle" Classes.important="{Binding IsImportant}"
                        Text="{Binding Title}" FontSize="8.5" VerticalAlignment="Center"
                        TextTrimming="CharacterEllipsis"
                        Opacity="{Binding IsCompleted, Converter={StaticResource TaskTitleOpacity}}"
                        TextDecorations="{Binding IsCompleted, Converter={StaticResource CompletedStrikethrough}}" />
           </Grid>
-          <CheckBox Grid.Column="1" Theme="{StaticResource DayTaskCheckBox}"
-                    IsChecked="{Binding IsCompleted, Mode=OneWay}"
-                    IsCheckedChanged="TaskCheckBox_Changed"
-                    Margin="3,0,0,0" VerticalAlignment="Center" />
+          <!-- 右侧状态位：未完成 = 小勾选框；已完成 = 悬停才浮现的还原箭头（平时完全不占位干扰） -->
+          <Grid Grid.Column="1" Width="15" Margin="2,0,0,0" VerticalAlignment="Center">
+            <CheckBox Theme="{StaticResource DayTaskCheckBox}"
+                      IsChecked="{Binding IsCompleted, Mode=OneWay}"
+                      IsCheckedChanged="TaskCheckBox_Changed"
+                      IsVisible="{Binding IsCompleted, Converter={StaticResource InverseBool}}" />
+            <Button Classes="rowRestore" Content="↺" FontSize="9"
+                    IsVisible="{Binding IsCompleted}"
+                    Click="RestoreTask_Click"
+                    ToolTip.Tip="还原为未完成" />
+          </Grid>
           <TextBox Grid.Column="0" Grid.ColumnSpan="2" Text="{Binding EditTitle}"
                    IsVisible="{Binding IsEditing}" FontSize="10" Padding="3,1" MinHeight="18"
                    KeyDown="TaskEditTextBox_KeyDown" LostFocus="TaskEditTextBox_LostFocus" />
@@ -190,17 +196,15 @@
             <Border Classes="panel" CornerRadius="8" Padding="8,7" BorderThickness="1" Width="216"
                     Tag="CellAddForm">
               <StackPanel Spacing="5">
-                <!-- 表头：左边日期，右边直接选「几点」。
+                <!-- 表头：左边日期，右边直接显示「时:分」，点哪改哪。
                      选中的时刻就是这条任务的时刻；下面的「提醒时间」相对它往前推。 -->
                 <DockPanel LastChildFill="False">
                   <TextBlock DockPanel.Dock="Left" Text="{Binding Header}" FontSize="11" FontWeight="SemiBold"
                              Foreground="{DynamicResource PrimaryTextBrush}" VerticalAlignment="Center" />
-                  <TimePicker DockPanel.Dock="Right" Tag="CellTimeBox" Width="116" MinWidth="0" MinHeight="24"
-                              FontSize="10.5"
-                              HorizontalAlignment="Right" VerticalAlignment="Center"
-                              ClockIdentifier="24HourClock" UseSeconds="False"
-                              SelectedTime="{Binding DraftTime, Mode=TwoWay}"
-                              ToolTip.Tip="任务时刻，默认 09:00" />
+                  <ctl:TimeField DockPanel.Dock="Right" Tag="CellTimeBox"
+                                 HorizontalAlignment="Right" VerticalAlignment="Center"
+                                 Time="{Binding DraftTime, Mode=TwoWay}"
+                                 ToolTip.Tip="任务时刻，默认 09:00（滚轮 / ↑↓ 微调，Shift 分钟步进 1）" />
                 </DockPanel>
                 <TextBox Tag="CellDraftBox" Text="{Binding DraftTitle}"
                          Padding="4,3" FontSize="11.5" MinHeight="22"
@@ -209,11 +213,10 @@
                 <Grid ColumnDefinitions="Auto,*">
                   <TextBlock Grid.Column="0" Text="提醒时间" FontSize="10.5" Margin="0,0,5,0"
                              Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center" />
-                  <ComboBox Grid.Column="1" Tag="CellLeadBox" HorizontalAlignment="Left" MinWidth="112" FontSize="10.5"
-                            MinHeight="24" Padding="6,1"
-                            ItemsSource="{Binding ReminderLeadOptions}"
-                            SelectedItem="{Binding ReminderLead}"
-                            SelectionChanged="CellLeadBox_SelectionChanged" />
+                  <ctl:ReminderLeadPicker Grid.Column="1" Tag="CellLeadBox"
+                                          HorizontalAlignment="Left"
+                                          SelectedLabels="{Binding ReminderLeadLabels}"
+                                          FirstLeadSelected="CellLeadPicker_FirstSelected" />
                 </Grid>
                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="4">
                   <Button Content="取消" FontSize="10.5" Padding="8,2" MinHeight="0"
@@ -313,11 +316,21 @@
           </ContextMenu>
         </Border.ContextMenu>
         <Grid ColumnDefinitions="Auto,*">
-          <CheckBox Grid.Column="0" IsChecked="{Binding IsCompleted, Mode=OneWay}"
-                    IsCheckedChanged="TaskCheckBox_Changed" VerticalAlignment="Top" Margin="0,0,5,0" />
+          <!-- 未完成：勾选框；已完成：勾选框消失，行首悬停浮现 ↺ 还原（平时整行只剩删除线文字） -->
+          <Grid Grid.Column="0" Width="16" Margin="1,2,5,0" VerticalAlignment="Top">
+            <CheckBox Theme="{StaticResource DayTaskCheckBox}"
+                      IsChecked="{Binding IsCompleted, Mode=OneWay}"
+                      IsCheckedChanged="TaskCheckBox_Changed"
+                      IsVisible="{Binding IsCompleted, Converter={StaticResource InverseBool}}" />
+            <Button Classes="rowRestore" Content="↺" FontSize="11"
+                    IsVisible="{Binding IsCompleted}"
+                    Click="RestoreTask_Click"
+                    ToolTip.Tip="还原为未完成" />
+          </Grid>
           <StackPanel Grid.Column="1" IsVisible="{Binding IsEditing, Converter={StaticResource InverseBool}}">
             <TextBlock Classes="taskTitle" Classes.important="{Binding IsImportant}"
-                       Text="{Binding Title}" FontSize="11.5" TextWrapping="Wrap" />
+                       Text="{Binding Title}" FontSize="11.5" TextWrapping="Wrap"
+                       TextDecorations="{Binding IsCompleted, Converter={StaticResource CompletedStrikethrough}}" />
             <TextBlock Text="{Binding TimeBadge}" FontSize="9.5" Foreground="{DynamicResource MutedTextBrush}" Margin="0,1,0,0" />
           </StackPanel>
           <TextBox Grid.Column="1" Text="{Binding EditTitle}" IsVisible="{Binding IsEditing}"
@@ -327,7 +340,8 @@
       </Border>
     </DataTemplate>
 
-    <!-- ===== 右侧面板：本周任务行（复选框 + 日期 + 标题/徽标 + 完成勾）===== -->
+    <!-- ===== 右侧面板：本周任务行（复选框 + 日期 + 标题/徽标 + 完成勾）
+         「逾期未完成」已并入「未完成」一组：逾期任务只在标题前多一段红色【已逾期】。 ===== -->
     <DataTemplate x:Key="WeekTaskItemTemplate" DataType="vm:TaskItemViewModel">
       <Border Classes="weekRow" Classes.important="{Binding IsImportant}" ToolTip.Tip="{Binding TooltipText}" PointerPressed="WeekTaskRow_PointerPressed">
         <Border.ContextMenu>
@@ -344,54 +358,35 @@
             <MenuItem Header="删除" Click="DeleteTask_Click" />
           </ContextMenu>
         </Border.ContextMenu>
-        <Grid ColumnDefinitions="26,34,*,Auto">
-          <CheckBox Grid.Column="0" IsChecked="{Binding IsCompleted, Mode=OneWay}"
-                    IsCheckedChanged="TaskCheckBox_Changed" VerticalAlignment="Center"
-                    HorizontalAlignment="Center" Margin="0,0,2,0" />
+        <Grid ColumnDefinitions="20,32,*">
+          <!-- 未完成：勾选框；已完成：勾选框消失，悬停该行时行首浮现 ↺ 还原 -->
+          <Grid Grid.Column="0" VerticalAlignment="Center" HorizontalAlignment="Center" Margin="0,0,2,0">
+            <CheckBox Theme="{StaticResource DayTaskCheckBox}"
+                      IsChecked="{Binding IsCompleted, Mode=OneWay}"
+                      IsCheckedChanged="TaskCheckBox_Changed"
+                      IsVisible="{Binding IsCompleted, Converter={StaticResource InverseBool}}" />
+            <Button Classes="rowRestore" Content="↺" FontSize="10"
+                    IsVisible="{Binding IsCompleted}"
+                    Click="RestoreTask_Click"
+                    ToolTip.Tip="还原为未完成" />
+          </Grid>
           <TextBlock Grid.Column="1" Text="{Binding Date, Converter={StaticResource ShortDate}}" FontSize="10.5"
                      Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center"
                      Opacity="{Binding IsCompleted, Converter={StaticResource TaskTitleOpacity}}" />
           <StackPanel Grid.Column="2" VerticalAlignment="Center" Margin="2,0,4,0">
-            <TextBlock Classes="taskTitle" Classes.important="{Binding IsImportant}"
-                       Text="{Binding Title}" FontSize="11" TextTrimming="CharacterEllipsis"
-                       Opacity="{Binding IsCompleted, Converter={StaticResource TaskTitleOpacity}}"
-                       TextDecorations="{Binding IsCompleted, Converter={StaticResource CompletedStrikethrough}}" />
+            <!-- 标题行：逾期任务前置红色【已逾期】，与标题同一行、不换行；已完成整行删除线、自动沉到该日最后 -->
+            <StackPanel Orientation="Horizontal">
+              <TextBlock Text="{Binding OverduePrefix}" FontSize="10.5" FontWeight="SemiBold"
+                         Foreground="{DynamicResource ImportantTaskTextBrush}"
+                         VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+              <TextBlock Classes="taskTitle" Classes.important="{Binding IsImportant}"
+                         Text="{Binding Title}" FontSize="11" TextTrimming="CharacterEllipsis"
+                         VerticalAlignment="Center"
+                         Opacity="{Binding IsCompleted, Converter={StaticResource TaskTitleOpacity}}"
+                         TextDecorations="{Binding IsCompleted, Converter={StaticResource CompletedStrikethrough}}" />
+            </StackPanel>
             <TextBlock Text="{Binding TimeBadge}" FontSize="9" Foreground="{DynamicResource MutedTextBrush}" />
           </StackPanel>
-          <TextBlock Grid.Column="3" Text="✓" FontSize="11" FontWeight="Bold" Foreground="{DynamicResource WeekDoneCheckBrush}"
-                     VerticalAlignment="Center" IsVisible="{Binding IsCompleted}" />
-        </Grid>
-      </Border>
-    </DataTemplate>
-
-    <!-- ===== 右侧面板：逾期未完成行（日期/标题/徽标全红 + “逾期”标签）===== -->
-    <DataTemplate x:Key="WeekOverdueTaskItemTemplate" DataType="vm:TaskItemViewModel">
-      <Border Classes="weekRow" Classes.important="{Binding IsImportant}" ToolTip.Tip="{Binding TooltipText}" PointerPressed="WeekTaskRow_PointerPressed">
-        <Border.ContextMenu>
-          <ContextMenu>
-            <MenuItem Header="标记为已完成" Click="CompleteTask_Click" />
-            <MenuItem Header="标记为未完成" Click="IncompleteTask_Click" />
-            <Separator />
-            <MenuItem Header="标为重要" Click="ImportantTask_Click"
-                      IsVisible="{Binding IsImportant, Converter={StaticResource InverseBool}}" />
-            <MenuItem Header="取消重要" Click="UnimportantTask_Click"
-                      IsVisible="{Binding IsImportant}" />
-            <Separator />
-            <MenuItem Header="编辑" Click="EditTask_Click" />
-            <MenuItem Header="删除" Click="DeleteTask_Click" />
-          </ContextMenu>
-        </Border.ContextMenu>
-        <Grid ColumnDefinitions="26,34,*,Auto">
-          <CheckBox Grid.Column="0" IsChecked="{Binding IsCompleted, Mode=OneWay}"
-                    IsCheckedChanged="TaskCheckBox_Changed" VerticalAlignment="Center"
-                    HorizontalAlignment="Center" Margin="0,0,2,0" />
-          <TextBlock Grid.Column="1" Text="{Binding Date, Converter={StaticResource ShortDate}}" FontSize="10.5"
-                     FontWeight="SemiBold" Foreground="{DynamicResource ImportantTaskTextBrush}" VerticalAlignment="Center" />
-          <StackPanel Grid.Column="2" VerticalAlignment="Center" Margin="2,0,4,0">
-            <TextBlock Text="{Binding Title}" FontSize="11" TextTrimming="CharacterEllipsis" Foreground="{DynamicResource ImportantTaskTextBrush}" />
-            <TextBlock Text="{Binding TimeBadge}" FontSize="9" Foreground="{DynamicResource ImportantTaskTextBrush}" />
-          </StackPanel>
-          <TextBlock Grid.Column="3" Text="逾期" FontSize="10" Foreground="{DynamicResource ImportantTaskTextBrush}" VerticalAlignment="Center" />
         </Grid>
       </Border>
     </DataTemplate>
@@ -429,22 +424,19 @@
             <Grid ColumnDefinitions="Auto,*">
               <TextBlock Grid.Column="0" Text="任务时间" FontSize="10.5" Margin="0,0,5,0"
                          Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center" />
-              <TimePicker Grid.Column="1" Tag="TodayTimeBox" HorizontalAlignment="Left" Width="140" MinWidth="0"
-                          MinHeight="24" FontSize="10.5" Padding="4,0"
-                          ClockIdentifier="24HourClock" UseSeconds="False"
-                          SelectedTime="{Binding TodayTaskTime, Mode=TwoWay}"
-                          ToolTip.Tip="任务时刻，默认 09:00" />
+              <ctl:TimeField Grid.Column="1" Tag="TodayTimeBox" HorizontalAlignment="Left"
+                             Time="{Binding TodayTaskTime, Mode=TwoWay}"
+                             ToolTip.Tip="任务时刻，默认 09:00（滚轮 / ↑↓ 微调，Shift 分钟步进 1）" />
             </Grid>
             <Grid ColumnDefinitions="Auto,*">
               <TextBlock Grid.Column="0" Text="提醒时间" FontSize="10.5" Margin="0,0,5,0"
                          Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center" />
-              <ComboBox Grid.Column="1" Tag="TaskLeadBox" HorizontalAlignment="Left" MinWidth="112"
-                        FontSize="10.5" MinHeight="24" Padding="6,1"
-                        ItemsSource="{Binding ReminderLeadOptions}"
-                        SelectedItem="{Binding TodayTaskLead}"
-                        SelectionChanged="TaskLeadBox_SelectionChanged" />
+              <ctl:ReminderLeadPicker Grid.Column="1" Tag="TaskLeadBox"
+                                      HorizontalAlignment="Left"
+                                      SelectedLabels="{Binding TodayTaskLeadLabels}"
+                                      FirstLeadSelected="TodayLeadPicker_FirstSelected" />
             </Grid>
-            <TextBlock Text="提醒按「任务时间」往前推；「到时提醒」＝到点那一刻推，「不提醒」＝完全不推。"
+            <TextBlock Text="提醒按「任务时间」往前推，可多选；「到时提醒」＝到点那一刻推，一个都不勾＝完全不推。"
                        FontSize="9.5" TextWrapping="Wrap"
                        Foreground="{DynamicResource MutedTextBrush}" />
             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="4">
@@ -474,44 +466,30 @@
                   <TextBlock Text="{Binding WeekSummary}" FontSize="10.5" Foreground="{DynamicResource MutedTextBrush}"
                              Margin="0,2,0,0" TextWrapping="Wrap" />
 
-                  <!-- ① 逾期未完成 -->
+                  <!-- ① 未完成（逾期欠账排在前面，行内挂红色【已逾期】前缀，不再单列一组） -->
                   <Border Classes="weekGroup">
                     <StackPanel>
                       <DockPanel LastChildFill="False">
                         <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
                           <Button Classes="weekIcon" Content="✕" Foreground="{DynamicResource ImportantTaskTextBrush}"
-                                  ToolTip.Tip="一键删除全部逾期未完成的任务" Click="ClearOverdueTasks_Click" />
+                                  ToolTip.Tip="一键删除全部未完成任务（含逾期欠账）" Click="ClearOpenTasks_Click" />
                           <Button Classes="weekIcon" Content="✓" Foreground="{DynamicResource WeekDoneCheckBrush}"
-                                  ToolTip.Tip="一键把所有逾期任务标记为已完成" Click="MarkOverdueCompleted_Click" />
-                          <TextBlock Margin="6,0,0,0" Text="{Binding WeekOverdueCount, StringFormat=({0})}"
-                                     FontSize="10.5" Foreground="{DynamicResource ImportantTaskTextBrush}" VerticalAlignment="Center" />
-                        </StackPanel>
-                        <TextBlock Text="逾期未完成" FontSize="10.5" FontWeight="SemiBold"
-                                   Foreground="{DynamicResource ImportantTaskTextBrush}" VerticalAlignment="Center" />
-                      </DockPanel>
-                      <ItemsControl ItemsSource="{Binding WeekOverdueTasks}" ItemTemplate="{StaticResource WeekOverdueTaskItemTemplate}" />
-                      <TextBlock Text="所有过期未完成的任务（含历史欠账）" FontSize="10.5" Foreground="{DynamicResource MutedTextBrush}"
-                                 Margin="2,2,0,0" IsVisible="{Binding HasWeekOverdue, Converter={StaticResource InverseBool}}" />
-                    </StackPanel>
-                  </Border>
-
-                  <!-- ② 未完成 -->
-                  <Border Classes="weekGroup">
-                    <StackPanel>
-                      <DockPanel LastChildFill="False">
-                        <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
-                          <Button Classes="weekIcon" Content="✕" Foreground="{DynamicResource ImportantTaskTextBrush}"
-                                  ToolTip.Tip="一键删除全部本周未完成的任务" Click="ClearOpenTasks_Click" />
-                          <Button Classes="weekIcon" Content="✓" Foreground="{DynamicResource WeekDoneCheckBrush}"
-                                  ToolTip.Tip="一键把所有本周未完成任务标记为已完成" Click="MarkOpenCompleted_Click" />
+                                  ToolTip.Tip="一键把所有未完成任务标记为已完成（含逾期欠账）" Click="MarkOpenCompleted_Click" />
                           <TextBlock Margin="6,0,0,0" Text="{Binding WeekOpenCount, StringFormat=({0})}"
                                      FontSize="10.5" Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center" />
                         </StackPanel>
-                        <TextBlock Text="未完成" FontSize="10.5" FontWeight="SemiBold"
-                                   Foreground="{DynamicResource PrimaryTextBrush}" VerticalAlignment="Center" />
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Spacing="6">
+                          <TextBlock Text="未完成" FontSize="10.5" FontWeight="SemiBold"
+                                     Foreground="{DynamicResource PrimaryTextBrush}" VerticalAlignment="Center" />
+                          <TextBlock Text="{Binding WeekOverdueCount, StringFormat=N 项已逾期({0})}"
+                                     FontSize="9.5" FontWeight="SemiBold"
+                                     Foreground="{DynamicResource ImportantTaskTextBrush}" VerticalAlignment="Center"
+                                     IsVisible="{Binding HasWeekOverdue}"
+                                     ToolTip.Tip="含已经过了任务时刻、仍未完成的历史欠账" />
+                        </StackPanel>
                       </DockPanel>
                       <ItemsControl ItemsSource="{Binding WeekOpenTasks}" ItemTemplate="{StaticResource WeekTaskItemTemplate}" />
-                      <TextBlock Text="本周内待办的任务" FontSize="10.5" Foreground="{DynamicResource MutedTextBrush}"
+                      <TextBlock Text="没有未完成任务（逾期欠账也会显示在这一组）" FontSize="10.5" Foreground="{DynamicResource MutedTextBrush}"
                                  Margin="2,2,0,0" IsVisible="{Binding HasWeekOpen, Converter={StaticResource InverseBool}}" />
                     </StackPanel>
                   </Border>
@@ -661,11 +639,21 @@
     <Style Selector="Border.holidayBadge.workday TextBlock.holidayText">
       <Setter Property="Foreground" Value="{DynamicResource HolidayWorkTextBrush}" />
     </Style>
-    <!-- 顶栏按钮：深色模式下不能是一排浅色按钮 -->
+    <!-- 顶栏按钮：紧凑小尺寸（高度 24、字号 11.5），深色模式下也不能是一排浅色按钮 -->
     <Style Selector="Button.toolbar">
+      <Setter Property="Height" Value="24" />
+      <Setter Property="MinHeight" Value="0" />
+      <Setter Property="Padding" Value="9,0" />
+      <Setter Property="FontSize" Value="11.5" />
+      <Setter Property="CornerRadius" Value="6" />
       <Setter Property="Background" Value="{DynamicResource ToolbarControlBackgroundBrush}" />
       <Setter Property="BorderBrush" Value="{DynamicResource ToolbarControlBorderBrush}" />
       <Setter Property="Foreground" Value="{DynamicResource PrimaryTextBrush}" />
+    </Style>
+    <!-- 锁定按钮按下后的"已锁"态：边框/字换成提醒色，一眼能看出当前是锁住的 -->
+    <Style Selector="Button.toolbar.locked">
+      <Setter Property="Foreground" Value="{DynamicResource ImportantTaskTextBrush}" />
+      <Setter Property="BorderBrush" Value="#66EF4444" />
     </Style>
     <Style Selector="Button.toolbar /template/ ContentPresenter#PART_ContentPresenter">
       <Setter Property="Background" Value="{DynamicResource ToolbarControlBackgroundBrush}" />
@@ -681,6 +669,81 @@
       <Setter Property="Background" Value="{DynamicResource ToolbarControlPressedBrush}" />
       <Setter Property="BorderBrush" Value="{DynamicResource ToolbarControlBorderBrush}" />
       <Setter Property="Foreground" Value="{DynamicResource PrimaryTextBrush}" />
+    </Style>
+
+    <!-- ===== 已完成任务的「↺ 还原」小按钮 =====
+         默认透明（只在已完成行里存在），鼠标悬停整行时柔和浮现；
+         不画边框底色，避免在已经变淡的删除线行上又出现一个扎眼的方块。 -->
+    <Style Selector="Button.rowRestore">
+      <Setter Property="Width" Value="16" />
+      <Setter Property="Height" Value="16" />
+      <Setter Property="Padding" Value="0" />
+      <Setter Property="MinWidth" Value="0" />
+      <Setter Property="MinHeight" Value="0" />
+      <Setter Property="BorderThickness" Value="0" />
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="Foreground" Value="{DynamicResource MutedTextBrush}" />
+      <Setter Property="Cursor" Value="Hand" />
+      <Setter Property="VerticalAlignment" Value="Center" />
+      <Setter Property="HorizontalAlignment" Value="Center" />
+      <Setter Property="Opacity" Value="0" />
+      <Setter Property="Transitions">
+        <Transitions>
+          <DoubleTransition Property="Opacity" Duration="0:0:0.16" Easing="CubicEaseOut" />
+        </Transitions>
+      </Setter>
+    </Style>
+    <Style Selector="Button.rowRestore /template/ ContentPresenter#PART_ContentPresenter">
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="BorderThickness" Value="0" />
+      <Setter Property="Foreground" Value="{DynamicResource MutedTextBrush}" />
+      <Setter Property="Padding" Value="0" />
+    </Style>
+    <!-- 鼠标进入整行（或按钮自身）时浮现 -->
+    <Style Selector="Border.weekRow:pointerover Button.rowRestore">
+      <Setter Property="Opacity" Value="0.85" />
+    </Style>
+    <Style Selector="Border.taskPill:pointerover Button.rowRestore">
+      <Setter Property="Opacity" Value="0.85" />
+    </Style>
+    <Style Selector="Button.rowRestore:pointerover">
+      <Setter Property="Opacity" Value="1" />
+    </Style>
+    <Style Selector="Button.rowRestore:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+      <Setter Property="Foreground" Value="{DynamicResource ImportantTaskTextBrush}" />
+    </Style>
+
+    <!-- ===== 全局柔和化：背景色变化都走 120ms 过渡，悬停不再生硬跳变 ===== -->
+    <Style Selector="Border.weekRow">
+      <Setter Property="Transitions">
+        <Transitions>
+          <BrushTransition Property="Background" Duration="0:0:0.12" />
+        </Transitions>
+      </Setter>
+    </Style>
+    <Style Selector="Border.weekGroup">
+      <Setter Property="Transitions">
+        <Transitions>
+          <BrushTransition Property="Background" Duration="0:0:0.12" />
+        </Transitions>
+      </Setter>
+    </Style>
+    <Style Selector="Border.taskPill">
+      <Setter Property="Transitions">
+        <Transitions>
+          <BrushTransition Property="Background" Duration="0:0:0.12" />
+          <BrushTransition Property="BorderBrush" Duration="0:0:0.12" />
+          <DoubleTransition Property="Opacity" Duration="0:0:0.18" Easing="CubicEaseOut" />
+        </Transitions>
+      </Setter>
+    </Style>
+    <Style Selector="Button.toolbar /template/ ContentPresenter#PART_ContentPresenter">
+      <Setter Property="Transitions">
+        <Transitions>
+          <BrushTransition Property="Background" Duration="0:0:0.12" />
+          <BrushTransition Property="BorderBrush" Duration="0:0:0.12" />
+        </Transitions>
+      </Setter>
     </Style>
   </Window.Styles>
 
@@ -698,46 +761,72 @@
             PointerPressed="Shell_PointerPressed"
             PointerMoved="Shell_PointerMoved">
       <Grid RowDefinitions="Auto,*">
-        <!-- ===== 顶栏：日期信息 + 视图切换 + 背景/透明度 ===== -->
-        <Border Grid.Row="0" Padding="10,6" BorderBrush="{DynamicResource CellBorderBrush}" BorderThickness="0,0,0,1">
-          <StackPanel Spacing="5">
-            <DockPanel LastChildFill="False">
-              <StackPanel DockPanel.Dock="Left" Orientation="Horizontal" Spacing="12" VerticalAlignment="Center">
-                <TextBlock Text="{Binding TodayDisplay}" FontSize="14" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryTextBrush}" />
-                <TextBlock Text="{Binding TodayTaskCount}" FontSize="12" Foreground="{DynamicResource MutedTextBrush}" />
-                <TextBlock Text="{Binding ThisWeekTaskCount}" FontSize="12" Foreground="{DynamicResource MutedTextBrush}" />
-              </StackPanel>
-              <StackPanel x:Name="ViewSwitchPanel" DockPanel.Dock="Right" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
+        <!-- ===== 顶栏（单行紧凑）：日期信息 + 背景/透明度 + 视图切换 + 锁定/设置 =====
+             窄屏下视图切换与背景控件会收起，但「锁定 / 设置」始终保留 ——
+             否则缩成今日任务单面板后，既进不了设置也解不了锁。 -->
+        <Border Grid.Row="0" Padding="8,4" BorderBrush="{DynamicResource CellBorderBrush}" BorderThickness="0,0,0,1">
+          <DockPanel LastChildFill="False">
+            <!-- 右侧：「今天」常驻 + 视图切换收纳进下拉（窄屏也保留）+ 锁定 / 设置（常驻） -->
+            <StackPanel x:Name="TopActionPanel" DockPanel.Dock="Right" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
+              <StackPanel x:Name="ViewSwitchPanel" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
                 <Button Classes="toolbar" Content="今天" Click="Today_Click" />
-                <Button Classes="toolbar" Content="月视图" Click="MonthView_Click" />
-                <Button Classes="toolbar" Content="周视图" Click="WeekView_Click" />
-                <Button Classes="toolbar" Content="年视图" Click="YearView_Click" />
-                <Button Classes="toolbar" Content="设置" Click="Settings_Click" />
+                <!-- 视图切换下拉：月 / 周 / 年 / 任务视图都收在这里，顶栏不再一字排开 -->
+                <Button x:Name="ViewMenuButton" Classes="toolbar" MinHeight="0">
+                  <Button.Flyout>
+                    <MenuFlyout Opening="ViewMenu_Opening">
+                      <MenuItem x:Name="ViewMonthItem" Header="月视图" Click="MonthView_Click" />
+                      <MenuItem x:Name="ViewWeekItem" Header="周视图" Click="WeekView_Click" />
+                      <MenuItem x:Name="ViewYearItem" Header="年视图" Click="YearView_Click" />
+                      <MenuItem x:Name="ViewTaskItem" Header="任务视图" Click="TaskView_Click" />
+                    </MenuFlyout>
+                  </Button.Flyout>
+                  <StackPanel Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
+                    <TextBlock Text="{Binding CurrentViewLabel}" VerticalAlignment="Center" />
+                    <TextBlock Text="▾" FontSize="9" Opacity="0.55" VerticalAlignment="Center" Margin="0,1,0,0" />
+                  </StackPanel>
+                </Button>
               </StackPanel>
-            </DockPanel>
-            <StackPanel x:Name="ViewControlsPanel" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
-              <TextBlock Text="背景" FontSize="12" Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center" />
-              <ComboBox x:Name="BackgroundModeBox" Width="112" FontSize="12" SelectionChanged="BackgroundMode_Changed">
-                <ComboBoxItem Content="无背景" Tag="None" />
-                <ComboBoxItem Content="白雾玻璃" Tag="FrostedWhite" />
-                <ComboBoxItem Content="灰雾玻璃" Tag="FrostedGray" />
-                <ComboBoxItem Content="暗色磨砂" Tag="FrostedDark" />
-                <ComboBoxItem Content="蓝色亚克力" Tag="AcrylicBlue" />
-                <ComboBoxItem Content="薄荷玻璃" Tag="AcrylicMint" />
-                <ComboBoxItem Content="纸感浅白" Tag="PaperLight" />
-                <ComboBoxItem Content="石墨深色" Tag="Graphite" />
-              </ComboBox>
-              <TextBlock Text="透明度" FontSize="12" Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center" Margin="8,0,0,0" />
-              <Slider x:Name="OpacitySlider" Width="96" Minimum="0.02" Maximum="1" VerticalAlignment="Center"
-                      ValueChanged="Opacity_Changed" />
+              <StackPanel x:Name="UtilityPanel" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center" Margin="4,0,0,0">
+                <Button Classes="toolbar" Content="设置" Click="Settings_Click" />
+                <Button x:Name="LockButton" Classes="toolbar" Click="LockPosition_Click" />
+              </StackPanel>
             </StackPanel>
-          </StackPanel>
+            <!-- 左侧：日期 + 任务计数 + 背景/透明度（后两者窄屏隐藏） -->
+            <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+              <TextBlock Text="{Binding TodayDisplay}" FontSize="12.5" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryTextBrush}" VerticalAlignment="Center" />
+              <TextBlock Text="{Binding TodayTaskCount}" FontSize="10.5" Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center" />
+              <TextBlock Text="{Binding ThisWeekTaskCount}" FontSize="10.5" Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center" />
+              <StackPanel x:Name="ViewControlsPanel" Orientation="Horizontal" Spacing="5" VerticalAlignment="Center" Margin="2,0,0,0">
+                <TextBlock Text="背景" FontSize="10.5" Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center" />
+                <ComboBox x:Name="BackgroundModeBox" Width="98" FontSize="10.5" MinHeight="24" SelectionChanged="BackgroundMode_Changed">
+                  <ComboBoxItem Content="无背景" Tag="None" />
+                  <ComboBoxItem Content="白雾玻璃" Tag="FrostedWhite" />
+                  <ComboBoxItem Content="灰雾玻璃" Tag="FrostedGray" />
+                  <ComboBoxItem Content="暗色磨砂" Tag="FrostedDark" />
+                  <ComboBoxItem Content="蓝色亚克力" Tag="AcrylicBlue" />
+                  <ComboBoxItem Content="薄荷玻璃" Tag="AcrylicMint" />
+                  <ComboBoxItem Content="纸感浅白" Tag="PaperLight" />
+                  <ComboBoxItem Content="石墨深色" Tag="Graphite" />
+                </ComboBox>
+                <TextBlock Text="透明度" FontSize="10.5" Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center" Margin="4,0,0,0" />
+                <Slider x:Name="OpacitySlider" Width="76" Minimum="0.02" Maximum="1" VerticalAlignment="Center"
+                        ValueChanged="Opacity_Changed"
+                        PointerWheelChanged="OpacitySlider_Wheel"
+                        ToolTip.Tip="鼠标悬停在此处滚动滚轮可微调透明度（按住 Shift 步进更大）" />
+              </StackPanel>
+            </StackPanel>
+          </DockPanel>
         </Border>
 
         <!-- ===== 主体：按 ViewMode 切换 =====
              月 / 年视图：左侧日历 + 右侧任务面板（两者共用同一份面板实例）；
              周视图：顶部 7 个日期格子 + 下方任务面板（与老版本一致，面板占满剩余高度）。 -->
         <Grid x:Name="NormalViewHost" Grid.Row="1">
+          <Grid.Transitions>
+            <Transitions>
+              <DoubleTransition Property="Opacity" Duration="0:0:0.18" Easing="CubicEaseOut" />
+            </Transitions>
+          </Grid.Transitions>
 
           <!-- 周视图：星期标题 + 7 个日期格子 + 下方任务面板 -->
           <Grid IsVisible="{Binding IsWeekView}" RowDefinitions="Auto,Auto,*" Margin="8">
@@ -794,6 +883,21 @@
                           Content="{Binding}"
                           ContentTemplate="{StaticResource RightPanelTemplate}" />
           </Grid>
+
+          <!-- 任务视图：没有日历格子，整个主区就是任务面板；宽屏下居中限宽，避免行宽过长难读。
+               切换时由 SwitchView 做一次淡入（见容器上的 Opacity 过渡）。 -->
+          <Grid x:Name="TaskViewHost" IsVisible="{Binding IsTaskView}">
+            <Grid.Transitions>
+              <Transitions>
+                <DoubleTransition Property="Opacity" Duration="0:0:0.2" Easing="CubicEaseOut" />
+              </Transitions>
+            </Grid.Transitions>
+            <ContentControl Margin="8"
+                            HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch"
+                            MaxWidth="580"
+                            Content="{Binding}"
+                            ContentTemplate="{StaticResource RightPanelTemplate}" />
+          </Grid>
         </Grid>
 
         <!-- ===== 窄窗视图：窗口窄到放不下日历格子时，整个主体只剩「今日任务」这一块 =====
@@ -803,7 +907,13 @@
                         HorizontalAlignment="Stretch" VerticalAlignment="Stretch"
                         Margin="8,8,8,8"
                         Content="{Binding}"
-                        ContentTemplate="{StaticResource RightPanelTemplate}" />
+                        ContentTemplate="{StaticResource RightPanelTemplate}">
+          <ContentControl.Transitions>
+            <Transitions>
+              <DoubleTransition Property="Opacity" Duration="0:0:0.18" Easing="CubicEaseOut" />
+            </Transitions>
+          </ContentControl.Transitions>
+        </ContentControl>
       </Grid>
     </Border>
 

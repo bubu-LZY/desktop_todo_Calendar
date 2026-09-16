@@ -37,4 +37,11 @@ public static class ReminderGate
         => !HasDeliveryChannel(config)
            && ReminderLeadCatalog.ToMinutes(newLabel) is not null
            && ReminderLeadCatalog.ToMinutes(previousLabel) is null;
+
+    /// <summary>
+    /// 多选下拉版守门：勾选数从 0 变成 ≥1（第一次有任一档位）、且没有任何推送通道时提示。
+    /// 之后在档位之间增删不再重复提示。
+    /// </summary>
+    public static bool ShouldWarnOnLeadToggle(AppConfig? config, bool hadAny, bool hasAny)
+        => !HasDeliveryChannel(config) && hasAny && !hadAny;
 }

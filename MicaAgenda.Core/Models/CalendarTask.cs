@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace MicaAgenda.App.Models;
 
 public sealed class CalendarTask
@@ -32,18 +34,33 @@ public sealed class CalendarTask
     public TimeOnly? Time { get; set; }
 
     /// <summary>
-    /// 提前提醒量（分钟）：在「当天基准时刻 - 本值」推一次提醒。
-    /// UI 上是单个下拉列表（提前 3 分钟 … 提前 3 个小时），直接存总分钟数。
-    /// null = 不提醒：没选提前量就完全不推。
+    /// 主提醒的提前量（分钟）：在「当天基准时刻 - 本值」推一次提醒。
+    /// 多选提醒时它是第一个勾选项；其余档位在 <see cref="AdditionalReminderLeadMinutes"/>。
+    /// null = 一个提醒都没设：完全不推。
+    /// 历史数据只有这一个字段，保留它也是为了旧版本 / API / WPF 宿主读得懂。
     /// </summary>
     public int? ReminderLeadMinutes { get; set; }
 
     /// <summary>
-    /// 这条任务的一次性提醒已经推送过的时刻，null = 还没推。
+    /// 主提醒之外的其他提醒提前量（分钟），多选下拉里除第一个勾选项外的档位都在这里。
+    /// 为 null / 空表示没有额外提醒；落盘时空列表不写出。
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<int>? AdditionalReminderLeadMinutes { get; set; }
+
+    /// <summary>
+    /// 主提醒已经推送过的时刻，null = 还没推。
     /// 30 秒轮询靠它去重，也是「程序重启后不会把当天早已到点的提醒重复推一遍」的依据。
     /// 改动时间 / 提前量后由 <see cref="ResetReminder"/> 清空。
     /// </summary>
     public DateTimeOffset? ReminderSentAt { get; set; }
+
+    /// <summary>
+    /// 额外提醒（<see cref="AdditionalReminderLeadMinutes"/>）里已经推送过的提前量。
+    /// 主提醒的去重走 <see cref="ReminderSentAt"/>；这里只记额外档位，各推一次、互不挡。
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<int>? FiredReminderLeads { get; set; }
 
     public void MarkCompleted(DateTimeOffset completedAt)
     {
@@ -147,14 +164,194 @@ public sealed class CalendarTask
         return DateOnly.FromDateTime(CompletedAt!.Value.LocalDateTime).DayNumber - Date.DayNumber;
     }
 
-    // ===== 到点提醒 =====
+    // ===== 到点提醒（支持多选：每个勾选项各推一次）=====
 
     /// <summary>
-    /// 提醒触发时刻（当天基准时刻提前 <see cref="ReminderLeadMinutes"/> 分钟）；
+    /// 合法提前量上界（7 天）。档位表里最大只有「提前一天」(1440)，
+    /// 这里留到 7 天只是防御手改 JSON：过大的值会让 <see cref="ScheduledAt.AddMinutes"/> 抛
+    /// ArgumentOutOfRangeException，把每 30 秒一次的整轮轮询全部打挂。
+    /// </summary>
+    public const int MaxLeadMinutes = 7 * 24 * 60;
+
+    /// <summary>
+    /// 这条任务设置的全部提醒提前量：主提醒在前，去重、非负、不超过 <see cref="MaxLeadMinutes"/>。空列表 = 不提醒。
+    /// 负的提前量没有意义，读的时候统一钳到 0（=「到时提醒」）。
+    /// </summary>
+    [JsonIgnore]
+    public IReadOnlyList<int> AllReminderLeads
+    {
+        get
+        {
+            var result = new List<int>();
+            if (ReminderLeadMinutes is { } primary)
+            {
+                result.Add(ClampLead(primary));
+            }
+
+            if (AdditionalReminderLeadMinutes is { } extra)
+            {
+                foreach (var lead in extra)
+                {
+                    var value = ClampLead(lead);
+                    if (!result.Contains(value))
+                    {
+                        result.Add(value);
+                    }
+                }
+            }
+
+            return result;
+        }
+    }
+
+    /// <summary>把单个提前量钳进 [0, <see cref="MaxLeadMinutes"/>]。</summary>
+    private static int ClampLead(int lead) => Math.Clamp(lead, 0, MaxLeadMinutes);
+
+    /// <summary>是否设了至少一个提醒。</summary>
+    [JsonIgnore]
+    public bool HasReminders => AllReminderLeads.Count > 0;
+
+    /// <summary>
+    /// 一次性写回全部提醒档位（多选下拉保存时用）：第一个成为主提醒（<see cref="ReminderLeadMinutes"/>），
+    /// 其余进 <see cref="AdditionalReminderLeadMinutes"/>；空集合 = 不提醒（两处都清空）。
+    /// </summary>
+    public void SetReminderLeads(IEnumerable<int>? leads)
+    {
+        var normalized = (leads ?? [])
+            .Select(ClampLead)
+            .Distinct()
+            .ToList();
+
+        ReminderLeadMinutes = normalized.Count > 0 ? normalized[0] : null;
+        AdditionalReminderLeadMinutes = normalized.Count > 1 ? normalized.Skip(1).ToList() : null;
+    }
+
+    /// <summary>
+    /// 主提醒触发时刻（当天基准时刻提前 <see cref="ReminderLeadMinutes"/> 分钟）；
     /// 没设提前量返回 null（= 这条任务不提醒）。
+    /// 多选时它只是第一个勾选项的时刻；全部时刻见 <see cref="ReminderTriggers"/>。
     /// </summary>
     public DateTime? ReminderTriggerAt()
-        => ReminderLeadMinutes is not { } lead ? null : ScheduledAt.AddMinutes(-lead);
+        => ReminderLeadMinutes is not { } lead ? null : ScheduledAt.AddMinutes(-ClampLead(lead));
+
+    /// <summary>指定档位的触发时刻（任务时刻往前推 lead 分钟）。</summary>
+    public DateTime ReminderTriggerAt(int lead) => ScheduledAt.AddMinutes(-ClampLead(lead));
+
+    /// <summary>全部提醒档位各自的触发时刻（提前量, 时刻），按勾选顺序。</summary>
+    public IEnumerable<(int Lead, DateTime TriggerAt)> ReminderTriggers()
+        => AllReminderLeads.Select(lead => (lead, ScheduledAt.AddMinutes(-lead)));
+
+    /// <summary>最早的一次提醒时刻（任务条小字只展示一个时间时用它）；没设提醒为 null。</summary>
+    public DateTime? EarliestReminderTriggerAt()
+    {
+        var triggers = ReminderTriggers().Select(item => item.TriggerAt).ToList();
+        return triggers.Count == 0 ? null : triggers.Min();
+    }
+
+    /// <summary>这个档位的提醒是否已经推送过（主提醒看 <see cref="ReminderSentAt"/>，额外档看 <see cref="FiredReminderLeads"/>）。</summary>
+    public bool IsReminderFired(int lead)
+    {
+        var leads = AllReminderLeads;
+        if (leads.Count > 0 && lead == leads[0])
+        {
+            return ReminderSentAt is not null;
+        }
+
+        return FiredReminderLeads?.Contains(lead) == true;
+    }
+
+    /// <summary>记下某个档位的提醒已推送。</summary>
+    public void MarkReminderSent(int lead, DateTimeOffset at)
+    {
+        var leads = AllReminderLeads;
+        if (leads.Count > 0 && lead == leads[0])
+        {
+            ReminderSentAt = at;
+            return;
+        }
+
+        FiredReminderLeads ??= [];
+        if (!FiredReminderLeads.Contains(lead))
+        {
+            FiredReminderLeads.Add(lead);
+        }
+    }
+
+    /// <summary>
+    /// 新建 / 编辑保存时调用：把「触发时刻已过、且已经超出该档位补发窗口」的档位直接记为已推，
+    /// 避免保存一条任务就立刻蹦出陈旧提醒（典型：给今天的任务勾「提前一天」）。
+    /// 仍在补发窗口内（如小档位当天刚过点几分钟）的档位不动，保留开机/新建后的补发机会。
+    /// </summary>
+    public void SuppressMissedLeadReminders(DateTimeOffset now)
+    {
+        var nowLocal = now.LocalDateTime;
+        foreach (var (lead, trigger) in ReminderTriggers())
+        {
+            var catchUpEnd = lead >= LongLeadThresholdMinutes
+                ? trigger.AddMinutes(LongLeadCatchUpGraceMinutes)
+                : ReminderWindowEnd;
+            if (nowLocal > catchUpEnd && !IsReminderFired(lead))
+            {
+                MarkReminderSent(lead, now);
+            }
+        }
+    }
+
+    /// <summary>
+    /// 「提前一天」这类跨天长档位的补发宽限：触发后 60 分钟内开机/轮询仍补发，超过就不再补。
+    /// 小档位（到时 / 提前几十分钟）沿用任务当天 23:59:59 的补发窗口——当天开机补发是刻意保留的。
+    /// 不给长档位限宽限的话，任务日当天早上开机还会收到一条「还有 1 天」的误导提醒（实际几小时后就到点）。
+    /// </summary>
+    public const int LongLeadCatchUpGraceMinutes = 60;
+
+    /// <summary>提前量达到「提前一天」即视为跨天长档位，补发走短宽限而不是当天窗口。</summary>
+    public const int LongLeadThresholdMinutes = 24 * 60;
+
+    /// <summary>
+    /// 此刻到点、还没推、仍在补发窗口内的全部档位（可能一次有多个，例如「提前一天」和「到时提醒」同一次轮询都到期）。
+    /// </summary>
+    public List<int> DueReminderLeads(DateTime nowLocal)
+    {
+        if (IsCompleted)
+        {
+            return [];
+        }
+
+        var due = new List<int>();
+        foreach (var (lead, trigger) in ReminderTriggers())
+        {
+            // 长档位：只在触发后一小段宽限内补发；小档位：任务当天结束前都允许补发
+            var windowEnd = lead >= LongLeadThresholdMinutes
+                ? trigger.AddMinutes(LongLeadCatchUpGraceMinutes)
+                : ReminderWindowEnd;
+            if (!IsReminderFired(lead) && nowLocal >= trigger && nowLocal <= windowEnd)
+            {
+                due.Add(lead);
+            }
+        }
+
+        return due;
+    }
+
+    /// <summary>已到点但超出当天窗口（隔天才开机）、还没推的档位：应直接记成「已推」，不要补发。</summary>
+    public List<int> ExpiredReminderLeads(DateTime nowLocal)
+    {
+        if (IsCompleted)
+        {
+            return [];
+        }
+
+        var expired = new List<int>();
+        foreach (var (lead, trigger) in ReminderTriggers())
+        {
+            if (!IsReminderFired(lead) && nowLocal > ReminderWindowEnd && trigger <= ReminderWindowEnd)
+            {
+                expired.Add(lead);
+            }
+        }
+
+        return expired;
+    }
 
     /// <summary>
     /// 任务时刻 = 任务当天 + <see cref="Time"/>；没设时间就是当天 <see cref="DefaultTime"/>（9:00）。
@@ -196,8 +393,12 @@ public sealed class CalendarTask
     /// <summary>标记一次性提醒已推送。</summary>
     public void MarkReminderSent(DateTimeOffset at) => ReminderSentAt = at;
 
-    /// <summary>改时间 / 改提前量后调用：原提醒作废，允许按新时刻重新推一次。</summary>
-    public void ResetReminder() => ReminderSentAt = null;
+    /// <summary>改时间 / 改提醒档位后调用：全部档位的「已推」标记作废，允许按新时刻重新推。</summary>
+    public void ResetReminder()
+    {
+        ReminderSentAt = null;
+        FiredReminderLeads = null;
+    }
 
     /// <summary>
     /// 落盘前的一致性修复：完成态与完成时间戳必须自洽，
@@ -221,15 +422,47 @@ public sealed class CalendarTask
             UpdatedAt = CompletedAt ?? CreatedAt;
         }
 
-        // 提醒相关的自洽：没设提前量就没有提醒可言，顺手清掉遗留标记；
-        // 负的提前量没有意义，钳到 0。
+        // 提醒相关的自洽：没设主提前量时额外档位也不成立，顺手清掉遗留标记；
+        // 负的提前量没有意义，统一钳到 0；已推标记里若混进了当前档位之外的脏值也一并清掉。
         if (ReminderLeadMinutes is null)
         {
             ReminderSentAt = null;
+            AdditionalReminderLeadMinutes = null;
+            FiredReminderLeads = null;
         }
-        else if (ReminderLeadMinutes < 0)
+        else
         {
-            ReminderLeadMinutes = 0;
+            if (ReminderLeadMinutes < 0)
+            {
+                ReminderLeadMinutes = 0;
+            }
+
+            if (AdditionalReminderLeadMinutes is { } extra && extra.Count > 0)
+            {
+                AdditionalReminderLeadMinutes = extra
+                    .Select(lead => lead < 0 ? 0 : lead)
+                    .Where(lead => lead != ReminderLeadMinutes.Value)
+                    .Distinct()
+                    .ToList();
+                if (AdditionalReminderLeadMinutes.Count == 0)
+                {
+                    AdditionalReminderLeadMinutes = null;
+                }
+            }
+            else
+            {
+                AdditionalReminderLeadMinutes = null;
+            }
+
+            if (FiredReminderLeads is { } fired && fired.Count > 0)
+            {
+                var validLeads = AllReminderLeads.Skip(1).ToHashSet();
+                FiredReminderLeads = fired.Where(validLeads.Contains).Distinct().ToList();
+                if (FiredReminderLeads.Count == 0)
+                {
+                    FiredReminderLeads = null;
+                }
+            }
         }
     }
 

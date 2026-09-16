@@ -4,7 +4,10 @@ public enum CalendarViewMode
 {
     Year,
     Month,
-    Week
+    Week,
+
+    /// <summary>纯任务列表视图：不显示日历格子，整个主区只留「今日 + 本周」任务面板。</summary>
+    Tasks
 }
 
 public enum CalendarBackgroundMode

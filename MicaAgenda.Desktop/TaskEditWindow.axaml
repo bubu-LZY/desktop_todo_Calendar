@@ -1,5 +1,6 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:ctl="using:MicaAgenda.Desktop.Controls"
         x:Class="MicaAgenda.Desktop.TaskEditWindow"
         Title="编辑任务"
         Width="420"
@@ -68,19 +69,18 @@
 
     <Grid ColumnDefinitions="Auto,*">
       <TextBlock Grid.Column="0" Classes="fieldLabel" Text="任务时间" />
-      <TimePicker Grid.Column="1" x:Name="TimeBox" HorizontalAlignment="Left"
-                  ClockIdentifier="24HourClock" UseSeconds="False"
-                  ToolTip.Tip="任务时刻，默认 09:00" />
+      <ctl:TimeField Grid.Column="1" x:Name="TimeBox" HorizontalAlignment="Left"
+                     ToolTip.Tip="任务时刻，默认 09:00（滚轮 / ↑↓ 微调，Shift 分钟步进 1）" />
     </Grid>
 
     <Grid ColumnDefinitions="Auto,*">
       <TextBlock Grid.Column="0" Classes="fieldLabel" Text="提醒时间" />
-      <ComboBox Grid.Column="1" x:Name="LeadBox" HorizontalAlignment="Left" MinWidth="130"
-                SelectionChanged="LeadBox_SelectionChanged" />
+      <ctl:ReminderLeadPicker Grid.Column="1" x:Name="LeadBox" HorizontalAlignment="Left"
+                              FirstLeadSelected="LeadBox_FirstSelected" />
     </Grid>
 
     <TextBlock Classes="hint"
-               Text="提醒按「任务时间」往前推；选「到时提醒」就是任务时间到点那一刻推，「不提醒」则完全不推。" />
+               Text="提醒按「任务时间」往前推，可多选；「到时提醒」＝到点那一刻推，一个都不勾＝完全不推。" />
 
     <!-- 提醒是走 webhook 推的：没配通道时在这里直接说清楚，而不是等用户选完了再弹一个框 -->
     <TextBlock x:Name="WarnText" Classes="hint" Foreground="#B45309" IsVisible="False" />
