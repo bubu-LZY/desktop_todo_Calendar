@@ -103,8 +103,8 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
-        FileLog.Write($"[STARTUP] MainWindow ctor - v4.6.0 - exe={Environment.ProcessPath ?? "unknown"}");
-        Title = "MicaAgenda v4.6.0";
+        FileLog.Write($"[STARTUP] MainWindow ctor - v4.6.1 - exe={Environment.ProcessPath ?? "unknown"}");
+        Title = "MicaAgenda v4.6.1";
 
         // 窗口初始化前同步加载配置，确保桌面嵌入/锁定在首帧即生效
         _config = _configStore.Load();
@@ -719,11 +719,12 @@ public partial class MainWindow : Window
                     {
                         ForceLowerToBottom();
                         DesktopEmbedService.SetNoActivateStyle(this, true);
-                        StartEmbedWatchdog();
+                        StartWindowWatchdog();
                     }
                     else
                     {
-                        _embedWatchdog.Stop();
+                        // 看门狗不能停：非嵌入模式仍需还原「显示桌面」造成的最小化。
+                        // tick 内部按 _config.EmbedDesktop 决定是否压底，关掉后只保留巡检。
                         DesktopEmbedService.SetNoActivateStyle(this, false);
                         RaiseToTop();
                     }
@@ -1336,19 +1337,18 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// 启动桌面嵌入看门狗。SourceInitialized 与 Loaded 都会尝试启动，
+    /// 启动窗口外观看门狗。SourceInitialized 与 Loaded 都会尝试启动，
     /// 这里做幂等保护——否则定时器会被订阅两次，每轮重复调用 SetWindowPos，
     /// 还会白白多持有一份窗口引用。
+    ///
+    /// 不管是否开启嵌入桌面都常驻：嵌入模式下每 tick 强制压底；任何模式下都要把被
+    /// 「显示桌面」（Win+D / 任务栏右键 / 右下角细条）最小化的窗口无声还原——本程序
+    /// 没有任务栏按钮，被最小化后用户没有入口找回。
     /// </summary>
     private bool _embedWatchdogHooked;
     private IntPtr _embedHandle;
-    private void StartEmbedWatchdog()
+    private void StartWindowWatchdog()
     {
-        if (!_config.EmbedDesktop)
-        {
-            return;
-        }
-
         // Tick 只挂载一次：嵌入桌面可能被反复开关（设置里勾选/取消），
         // 若每次 Start 都挂一次，会累积多个 Tick 处理器重复压底。
         if (!_embedWatchdogHooked)
@@ -1358,9 +1358,16 @@ public partial class MainWindow : Window
         {
             try
             {
+                // 免疫「显示桌面」：发现窗口被最小化就无激活还原（不抢前台）。
+                // 托盘「隐藏」走 Hide()，IsIconic 为假，不会被误伤。
+                DesktopEmbedService.RestoreIfMinimized(this);
+
                 // 普通嵌入桌面的目标是“始终沉在其他窗口之下”。这里不做悬停豁免，
                 // 每个 tick 都强制压底，避免点击后窗口被系统拉到最上面。
-                DesktopEmbedService.EnsureEmbedded(this);
+                if (_config.EmbedDesktop)
+                {
+                    DesktopEmbedService.EnsureEmbedded(this);
+                }
             }
             catch (Exception ex)
             {
@@ -1374,15 +1381,18 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// 按当前配置执行一次桌面嵌入。
+    /// 按当前配置执行一次桌面嵌入。看门狗本身不依赖嵌入开关（非嵌入模式也要还原最小化），
+    /// 由 SourceInitialized 无条件启动；这里只在开启嵌入时补一次即时压底。
     /// </summary>
     private void ApplyDesktopEmbed()
     {
+        // 幂等：Tick 只挂一次，重复调用 Start 不会叠加处理器。
+        StartWindowWatchdog();
+
         if (_config.EmbedDesktop)
         {
             DesktopEmbedService.EmbedToDesktop(this);
             DesktopEmbedService.SetNoActivateStyle(this, true);
-            StartEmbedWatchdog();
         }
     }
 
@@ -1641,7 +1651,7 @@ public partial class MainWindow : Window
     // 桌面嵌入模式下，窗口常驻 HWND_BOTTOM，被其他窗口（含桌面待办小组件）盖在下面，
     // 点击会落到上层窗口——表现就是"点了没反应"。这里改成"悬停置顶、离开回沉"：
     // 鼠标进入 MicaAgenda 时把窗口提到 HWND_TOP（让点击落到我们自己），短暂离开再回沉。
-    // 看门狗在悬停期间不会把窗口压回去（见 StartEmbedWatchdog）。
+    // 看门狗在悬停期间不会把窗口压回去（见 StartWindowWatchdog）。
     private void Shell_MouseEnter(object sender, MouseEventArgs e)
     {
         // 嵌入模式不再通过“悬停置顶”交互：窗口必须始终沉在其它窗口之下。

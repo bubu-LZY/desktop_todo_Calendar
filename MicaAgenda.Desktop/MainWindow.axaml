@@ -639,12 +639,17 @@
     <Style Selector="Border.holidayBadge.workday TextBlock.holidayText">
       <Setter Property="Foreground" Value="{DynamicResource HolidayWorkTextBrush}" />
     </Style>
-    <!-- 顶栏按钮：紧凑小尺寸（高度 24、字号 11.5），深色模式下也不能是一排浅色按钮 -->
+    <!-- 顶栏按钮：紧凑小尺寸（高度 24、字号 11.5），深色模式下也不能是一排浅色按钮。
+         必须显式钉死两个 ContentAlignment：Fluent Button 模板里 ContentPresenter 默认
+         HorizontalContentAlignment=Stretch、内容靠左，表现就是「今天 / 设置」文字偏左、
+         右侧空出一块。 -->
     <Style Selector="Button.toolbar">
       <Setter Property="Height" Value="24" />
       <Setter Property="MinHeight" Value="0" />
       <Setter Property="Padding" Value="9,0" />
       <Setter Property="FontSize" Value="11.5" />
+      <Setter Property="HorizontalContentAlignment" Value="Center" />
+      <Setter Property="VerticalContentAlignment" Value="Center" />
       <Setter Property="CornerRadius" Value="6" />
       <Setter Property="Background" Value="{DynamicResource ToolbarControlBackgroundBrush}" />
       <Setter Property="BorderBrush" Value="{DynamicResource ToolbarControlBorderBrush}" />
@@ -763,15 +768,18 @@
       <Grid RowDefinitions="Auto,*">
         <!-- ===== 顶栏（单行紧凑）：日期信息 + 背景/透明度 + 视图切换 + 锁定/设置 =====
              窄屏下视图切换与背景控件会收起，但「锁定 / 设置」始终保留 ——
-             否则缩成今日任务单面板后，既进不了设置也解不了锁。 -->
+             否则缩成今日任务单面板后，既进不了设置也解不了锁。
+             行高不锁死：Fluent 滑块拇指是 18px 圆形且模板带触摸边距，固定 26 行会把
+             拇指垂直裁成「穹顶」；只给 MinHeight 保底，让滑块按自然高度把行撑开，
+             其余 24px 高的控件垂直居中，中线自然对齐。 -->
         <Border Grid.Row="0" Padding="8,4" BorderBrush="{DynamicResource CellBorderBrush}" BorderThickness="0,0,0,1">
-          <DockPanel LastChildFill="False">
+          <DockPanel LastChildFill="False" MinHeight="28" VerticalAlignment="Center">
             <!-- 右侧：「今天」常驻 + 视图切换收纳进下拉（窄屏也保留）+ 锁定 / 设置（常驻） -->
             <StackPanel x:Name="TopActionPanel" DockPanel.Dock="Right" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
               <StackPanel x:Name="ViewSwitchPanel" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
-                <Button Classes="toolbar" Content="今天" Click="Today_Click" />
+                <Button Classes="toolbar" Content="今天" VerticalAlignment="Center" Click="Today_Click" />
                 <!-- 视图切换下拉：月 / 周 / 年 / 任务视图都收在这里，顶栏不再一字排开 -->
-                <Button x:Name="ViewMenuButton" Classes="toolbar" MinHeight="0">
+                <Button x:Name="ViewMenuButton" Classes="toolbar" VerticalAlignment="Center">
                   <Button.Flyout>
                     <MenuFlyout Opening="ViewMenu_Opening">
                       <MenuItem x:Name="ViewMonthItem" Header="月视图" Click="MonthView_Click" />
@@ -780,25 +788,42 @@
                       <MenuItem x:Name="ViewTaskItem" Header="任务视图" Click="TaskView_Click" />
                     </MenuFlyout>
                   </Button.Flyout>
-                  <StackPanel Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
+                  <StackPanel Orientation="Horizontal" Spacing="4"
+                              HorizontalAlignment="Center" VerticalAlignment="Center">
                     <TextBlock Text="{Binding CurrentViewLabel}" VerticalAlignment="Center" />
-                    <TextBlock Text="▾" FontSize="9" Opacity="0.55" VerticalAlignment="Center" Margin="0,1,0,0" />
+                    <TextBlock Text="▾" FontSize="9" Opacity="0.55" VerticalAlignment="Center" />
                   </StackPanel>
                 </Button>
               </StackPanel>
               <StackPanel x:Name="UtilityPanel" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center" Margin="4,0,0,0">
-                <Button Classes="toolbar" Content="设置" Click="Settings_Click" />
-                <Button x:Name="LockButton" Classes="toolbar" Click="LockPosition_Click" />
+                <Button Classes="toolbar" Content="设置" VerticalAlignment="Center" Click="Settings_Click" />
+                <!-- 锁定：只留锁形图标，不显示文字；锁住后随 .locked 态变红，含义靠 ToolTip 说明。
+                     用 Shapes.Path 而非 PathIcon：PathIcon 不支持 Stretch、按几何原始尺寸绘制会溢出。 -->
+                <Button x:Name="LockButton" Classes="toolbar" Width="28" Padding="0" VerticalAlignment="Center" Click="LockPosition_Click">
+                  <Path x:Name="LockIcon" Width="13" Height="13" Stretch="Uniform"
+                        Fill="{Binding $parent[Button].Foreground}"
+                        HorizontalAlignment="Center" VerticalAlignment="Center" />
+                </Button>
               </StackPanel>
             </StackPanel>
-            <!-- 左侧：日期 + 任务计数 + 背景/透明度（后两者窄屏隐藏） -->
-            <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+            <!-- 左侧：日期 + 任务计数 + 背景/透明度（后两者窄屏隐藏）。
+                 ClipToBounds 是防遮挡的兜底：水平 StackPanel 超宽时默认会溢出绘制到
+                 右侧按钮上（任务视图窗口很窄时日期文字就会盖住按钮），裁掉保证不越界。 -->
+            <StackPanel x:Name="DateInfoPanel" Orientation="Horizontal" Spacing="8"
+                        VerticalAlignment="Center" ClipToBounds="True">
               <TextBlock Text="{Binding TodayDisplay}" FontSize="12.5" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryTextBrush}" VerticalAlignment="Center" />
-              <TextBlock Text="{Binding TodayTaskCount}" FontSize="10.5" Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center" />
-              <TextBlock Text="{Binding ThisWeekTaskCount}" FontSize="10.5" Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center" />
-              <StackPanel x:Name="ViewControlsPanel" Orientation="Horizontal" Spacing="5" VerticalAlignment="Center" Margin="2,0,0,0">
+              <!-- 今日 / 本周计数：窄屏（含任务视图）下隐藏，给右侧常驻按钮让位 -->
+              <StackPanel x:Name="TaskCountsPanel" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                <TextBlock Text="{Binding TodayTaskCount}" FontSize="10.5" Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center" />
+                <TextBlock Text="{Binding ThisWeekTaskCount}" FontSize="10.5" Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center" />
+              </StackPanel>
+              <StackPanel x:Name="ViewControlsPanel" Orientation="Horizontal" Spacing="5" VerticalAlignment="Center">
                 <TextBlock Text="背景" FontSize="10.5" Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center" />
-                <ComboBox x:Name="BackgroundModeBox" Width="98" FontSize="10.5" MinHeight="24" SelectionChanged="BackgroundMode_Changed">
+                <!-- Height + MinHeight 同时锁死 24：Fluent 主题下 ComboBox 自然高度约 32，
+                     只给 MinHeight 限不住，会比右侧按钮高出一截。Padding 收紧避免文字/箭头被裁。 -->
+                <ComboBox x:Name="BackgroundModeBox" Width="98" Height="24" MinHeight="0" Padding="8,2"
+                          FontSize="10.5" VerticalContentAlignment="Center" VerticalAlignment="Center"
+                          SelectionChanged="BackgroundMode_Changed">
                   <ComboBoxItem Content="无背景" Tag="None" />
                   <ComboBoxItem Content="白雾玻璃" Tag="FrostedWhite" />
                   <ComboBoxItem Content="灰雾玻璃" Tag="FrostedGray" />
@@ -809,10 +834,14 @@
                   <ComboBoxItem Content="石墨深色" Tag="Graphite" />
                 </ComboBox>
                 <TextBlock Text="透明度" FontSize="10.5" Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center" Margin="4,0,0,0" />
-                <Slider x:Name="OpacitySlider" Width="76" Minimum="0.02" Maximum="1" VerticalAlignment="Center"
+                <!-- 不能强压 Height：Fluent 滑块拇指是 18px 圆形且模板带触摸边距，
+                     高度锁 24 会把圆形拇指垂直裁成「半圆穹顶」。保持自然高度，
+                     由固定行高 + VerticalAlignment=Center 保证轨道与其他控件中线对齐。 -->
+                <Slider x:Name="OpacitySlider" Width="76" Minimum="0.02" Maximum="1"
+                        VerticalAlignment="Center"
                         ValueChanged="Opacity_Changed"
                         PointerWheelChanged="OpacitySlider_Wheel"
-                        ToolTip.Tip="鼠标悬停在此处滚动滚轮可微调透明度（按住 Shift 步进更大）" />
+                        ToolTip.Tip="鼠标悬停在此处滚动滚轮可调节透明度（按住 Shift 步进更大）" />
               </StackPanel>
             </StackPanel>
           </DockPanel>

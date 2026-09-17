@@ -34,6 +34,13 @@ public static class DesktopEmbedService
     private const uint SwpFramechanged = 0x0020;
     private static readonly IntPtr HwndBottom = new(1);
 
+    /// <summary>
+    /// ShowWindow 的 SW_SHOWNOACTIVATE：按最近一次的尺寸 / 位置显示窗口但<b>不激活、不抢焦点</b>。
+    /// 对最小化中的窗口等效于「还原」，是把被「显示桌面」带走的窗口无声拉回来的正确指令；
+    /// SW_RESTORE 会顺带激活窗口，用户刚点完显示桌面就被抢前台，体验很突兀。
+    /// </summary>
+    private const int SwShowNoActivate = 4;
+
     /// <summary>Explorer 桌面窗口的类名（Win10：Progman；Win11：WorkerW）。</summary>
     private const string ProgmanClass = "Progman";
     private const string WorkerWClass = "WorkerW";
@@ -278,6 +285,27 @@ public static class DesktopEmbedService
         EmbedToDesktop(handle);
     }
 
+    /// <summary>
+    /// 看门狗用：窗口一旦被系统最小化，立刻在<b>不激活、不抢焦点</b>的前提下还原。
+    ///
+    /// 触发场景：任务栏右键「显示桌面」、Win+D、点击屏幕右下角的显示桌面细条 ——
+    /// Shell 会把所有普通顶层窗口（含本程序这种只做 Z 序置底、没挂 Progman/WorkerW 的窗口）
+    /// 一并最小化。本小部件又刻意隐藏了任务栏按钮，被最小化后用户没有任何入口把它找回；
+    /// 而托盘「隐藏」走的是 Hide()（WS_VISIBLE 翻转），IsIconic 为假，不会与这里打架。
+    ///
+    /// 返回 true 表示本次 tick 确实发生了还原，调用方应紧接着重新压一次 Z 序底。
+    /// </summary>
+    public static bool RestoreIfMinimized(IntPtr handle)
+    {
+        if (!IsWindows || handle == IntPtr.Zero || !IsIconic(handle))
+        {
+            return false;
+        }
+
+        ShowWindow(handle, SwShowNoActivate);
+        return true;
+    }
+
     [DllImport("user32.dll", EntryPoint = "SetWindowPos", SetLastError = true)]
     private static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
 
@@ -289,6 +317,13 @@ public static class DesktopEmbedService
 
     [DllImport("user32.dll", EntryPoint = "IsWindowVisible", SetLastError = true)]
     private static extern bool IsWindowVisible(IntPtr hWnd);
+
+    [DllImport("user32.dll", EntryPoint = "IsIconic", SetLastError = true)]
+    private static extern bool IsIconic(IntPtr hWnd);
+
+    [DllImport("user32.dll", EntryPoint = "ShowWindow", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
 
     [DllImport("user32.dll", EntryPoint = "GetClassNameW", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern int GetClassName(IntPtr hWnd, StringBuilder lpClassName, int nMaxCount);

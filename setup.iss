@@ -4,7 +4,7 @@
 #define MyAppName "desktop_todo_Calendar"
 ; 允许 CI 用 /DMyAppVersion=... 覆盖；本地直接编译时用兜底值
 #ifndef MyAppVersion
-  #define MyAppVersion "4.6.0"
+  #define MyAppVersion "4.6.1"
 #endif
 #define MyAppPublisher "MicaAgenda"
 #define MyAppExeName "MicaAgenda.Desktop.exe"

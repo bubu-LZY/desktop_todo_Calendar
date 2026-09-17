@@ -22,6 +22,12 @@ public static class DesktopEmbedService
     private const uint SwpShowwindow = 0x0040;
     private const int HwndBottom = 1;
 
+    /// <summary>
+    /// ShowWindow 的 SW_SHOWNOACTIVATE：按最近尺寸 / 位置显示窗口但不激活、不抢焦点。
+    /// 对最小化中的窗口等效于「还原」，用于把被「显示桌面」带走的窗口无声拉回来。
+    /// </summary>
+    private const int SwShowNoActivate = 4;
+
     /// <summary>隐藏任务栏图标（设为 TOOLWINDOW，去 APPWINDOW）。</summary>
     public static void HideFromTaskbar(Window window)
     {
@@ -101,6 +107,26 @@ public static class DesktopEmbedService
         EmbedToDesktop(window);
     }
 
+    /// <summary>
+    /// 窗口一旦被系统最小化，立刻在不激活、不抢焦点的前提下还原。
+    ///
+    /// 任务栏右键「显示桌面」、Win+D、右下角显示桌面细条会把所有普通顶层窗口最小化，
+    /// 而本窗口刻意没有任务栏按钮，被最小化后用户没有任何入口找回；托盘「隐藏」走的是
+    /// Hide()（WS_VISIBLE 翻转）而非最小化，IsIconic 为假，不会与这里打架。
+    /// 返回 true 表示本次确实发生了还原（调用方可紧接着重新压底）。
+    /// </summary>
+    public static bool RestoreIfMinimized(Window window)
+    {
+        var handle = new WindowInteropHelper(window).Handle;
+        if (handle == IntPtr.Zero || !IsIconic(handle))
+        {
+            return false;
+        }
+
+        ShowWindow(handle, SwShowNoActivate);
+        return true;
+    }
+
     /// <summary>锁定窗口：禁止拖动/缩放，固定当前位置。</summary>
     public static void LockWindow(Window window)
     {
@@ -115,4 +141,12 @@ public static class DesktopEmbedService
 
     [DllImport("user32.dll", EntryPoint = "SetWindowLong", SetLastError = true)]
     private static extern int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);
+
+    [DllImport("user32.dll", EntryPoint = "IsIconic", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsIconic(IntPtr hWnd);
+
+    [DllImport("user32.dll", EntryPoint = "ShowWindow", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
 }

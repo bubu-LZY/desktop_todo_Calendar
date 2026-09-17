@@ -132,6 +132,7 @@ public partial class MainWindow : Window
         InitializeComponent();
         _resizeGrips = [ResizeEdgeTop, ResizeEdgeBottom, ResizeEdgeLeft, ResizeEdgeRight];
         _config = _configStore.Load();
+        _opacityTintTimer.Tick += OpacityTintTimer_Tick;
 
         // 桌面小部件不允许用「×」或 Alt+F4 / Cmd+W 关闭：任何模式下都阻断关闭。
         Closing += (_, e) => e.Cancel = !_allowClose;
@@ -328,12 +329,12 @@ public partial class MainWindow : Window
         {
             _embedWatchdogHooked = true;
             // 嵌入桌面模式需要高频压底 + 文本输入宽限期的 200ms 自愈；非嵌入模式只需偶尔把
-            // 偶发的「× 按钮自己回来」纠正一下，没必要 5 次/秒空转。之前非嵌入也以 200ms 轮询，
-            // 且每个 tick 都走窗口样式 / Z 序系统调用，与无边框透明分层窗口在 Win10 上的重绘叠加，
-            // 放大了整窗闪烁。
+            // 偶发的「× 按钮自己回来」纠正一下，并在被「显示桌面」最小化后 1s 内无声还原，
+            // 没必要 5 次/秒空转。非嵌入 tick 只有 GetWindowLong / IsIconic 这类只读检查
+            // （样式已是目标值即提前返回，也不碰 Z 序），1s 一次不会引发当年 200ms 轮询的闪烁。
             var interval = _config.EmbedDesktop
                 ? TimeSpan.FromMilliseconds(200)
-                : TimeSpan.FromMilliseconds(3000);
+                : TimeSpan.FromMilliseconds(1000);
             _embedWatchdog = new DispatcherTimer { Interval = interval };
             _embedWatchdog.Tick += (_, _) =>
             {
@@ -409,6 +410,11 @@ public partial class MainWindow : Window
         // 都会把窗口样式写回去，所以必须周期性重放。
         DesktopEmbedService.RemoveCaptionButtons(hwnd);
         DesktopEmbedService.HideFromTaskbar(hwnd);
+
+        // 免疫「显示桌面」：Win+D / 任务栏右键菜单 / 右下角显示桌面细条会把所有普通顶层窗口
+        // 最小化，本窗口没有任务栏按钮，被最小化后用户无法找回。看门狗发现最小化态就无激活
+        // 还原（托盘「隐藏」走 Hide()，不会误伤）；嵌入模式下面紧接着的 EnsureEmbedded 会重新压底。
+        DesktopEmbedService.RestoreIfMinimized(hwnd);
 
         if (!_config.EmbedDesktop)
         {
@@ -600,6 +606,15 @@ public partial class MainWindow : Window
         UpdateLockButton();
 
         ApplyDesktopEmbed();
+
+        // 看门狗轮询频率跟随嵌入开关：嵌入 200ms（高频压底）/ 非嵌入 1s（巡检还原 + 样式纠偏）。
+        // 间隔此前只在首次启动时按当时配置定死，运行中切换开关不会跟着变。
+        if (OperatingSystem.IsWindows() && _embedWatchdog is not null)
+        {
+            _embedWatchdog.Interval = config.EmbedDesktop
+                ? TimeSpan.FromMilliseconds(200)
+                : TimeSpan.FromMilliseconds(1000);
+        }
 
         // 关掉嵌入：窗口还压在最底层，得把它捞回前台，否则用户会以为"设置没生效"。
         // （禁止激活的样式已经在 ApplyDesktopEmbed 里撤掉了，这里能真的激活起来。）
@@ -1421,7 +1436,18 @@ public partial class MainWindow : Window
         _ = _configStore.SaveAsync(_config);
     }
 
-    /// <summary>按当前锁定状态刷新顶栏按钮的文案 / 颜色 / 悬浮提示。</summary>
+    /// <summary>
+    /// 按当前锁定状态刷新顶栏图标 / 颜色 / 悬浮提示。按钮不显示文字，只用锁形矢量图标：
+    /// 未锁 = 打开的锁钩；已锁 = 闭合锁并随 .locked 态变红。
+    /// 路径取自 Material Design 图标（lock / lock_open，24×24 网格），用 Shapes.Path 承载并
+    /// 设 Stretch=Uniform 缩到 13px；PathIcon 不支持 Stretch，按 24 原始尺寸画会溢出小按钮。
+    /// </summary>
+    private static readonly Geometry LockedIconGeometry = Geometry.Parse(
+        "M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2z");
+
+    private static readonly Geometry UnlockedIconGeometry = Geometry.Parse(
+        "M12 17c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm6-9h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6h1.9c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm0 12H6V10h12v10z");
+
     private void UpdateLockButton()
     {
         if (LockButton is null)
@@ -1430,7 +1456,7 @@ public partial class MainWindow : Window
         }
 
         var locked = _config.LockWindow;
-        LockButton.Content = locked ? "🔒 已锁" : "🔓 锁定";
+        LockIcon.Data = locked ? LockedIconGeometry : UnlockedIconGeometry;
         LockButton.Classes.Set("locked", locked);
         ToolTip.SetTip(
             LockButton,
@@ -1548,14 +1574,43 @@ public partial class MainWindow : Window
         }
 
         _viewModel.Settings.Opacity = Math.Round(e.NewValue, 2);
-        ApplyBackground();
         _viewModel.MarkDirty();
+
+        // 拖滑块 / 滚轮每秒会触发几十次 ValueChanged。这里只走轻量的「外壳着色」，
+        // 绝不碰材质协商和整窗调色板（模式没变，重建约 30 个画刷 + 换肤会把
+        //  透明分层窗口的合成线程堵死 —— 表现就是拖动一卡一卡、松手才变色）。
+        // 再做一层 leading + trailing 节流：首帧立即跟手，之后每 30ms 最多重绘一次。
+        if (!_opacityTintPending)
+        {
+            ApplyShellTint();
+            _opacityTintPending = true;
+        }
+
+        _opacityTintTimer.Stop();
+        _opacityTintTimer.Start();
     }
 
     /// <summary>
-    /// 鼠标悬停在透明度滑块上滚动滚轮：上滚更不透明、下滚更透明，步进 0.02；
-    /// 按住 Shift 时步进放大到 0.05，快速拉满/拉低用。事件标记为已处理，
-    /// 避免滚轮同时把外层滚动条带着跑。
+    /// 透明度调节节流定时器：每次 ValueChanged 都 Stop/Start 一次（trailing edge），
+    /// 停下 30ms 后把最后一帧补齐。30ms ≈ 每帧 33ms 的显示节奏，既跟手又不会把
+    /// 分层窗口的整窗合成堆成积压。
+    /// </summary>
+    private readonly DispatcherTimer _opacityTintTimer =
+        new() { Interval = TimeSpan.FromMilliseconds(30) };
+
+    private bool _opacityTintPending;
+
+    private void OpacityTintTimer_Tick(object? sender, EventArgs e)
+    {
+        _opacityTintTimer.Stop();
+        _opacityTintPending = false;
+        ApplyShellTint();
+    }
+
+    /// <summary>
+    /// 鼠标悬停在透明度滑块上滚动滚轮：上滚更不透明、下滚更透明，每格步进 0.05
+    /// （全程约 20 格）；按住 Shift 时步进放大到 0.1（全程约 10 格），快速拉满/拉低用。
+    /// 事件标记为已处理，避免滚轮同时把外层滚动条带着跑。
     /// </summary>
     private void OpacitySlider_Wheel(object? sender, PointerWheelEventArgs e)
     {
@@ -1564,7 +1619,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        var step = e.KeyModifiers.HasFlag(KeyModifiers.Shift) ? 0.05 : 0.02;
+        var step = e.KeyModifiers.HasFlag(KeyModifiers.Shift) ? 0.1 : 0.05;
         var next = Math.Round(OpacitySlider.Value + Math.Sign(e.Delta.Y) * step, 2);
         OpacitySlider.Value = Math.Clamp(next, OpacitySlider.Minimum, OpacitySlider.Maximum);
         e.Handled = true;
@@ -1583,13 +1638,29 @@ public partial class MainWindow : Window
             return;
         }
 
-        var s = _viewModel.Settings;
-        var mode = s.BackgroundMode == CalendarBackgroundMode.ClearBorder ? CalendarBackgroundMode.None : s.BackgroundMode;
-        var alpha = (byte)Math.Clamp(s.Opacity * 255, 6, 255);
-
         // 先定窗口底层的系统材质（Win10 走亚克力，其余平台/系统走逐像素透明），
         // 再把颜色画到外壳 Shell 上。
         ApplyWindowBackdrop();
+
+        ApplyShellTint();
+
+        ApplyBackgroundResources(EffectiveBackgroundMode());
+    }
+
+    /// <summary>
+    /// 只把当前模式 + 不透明度换算成一层底色刷到外壳 Shell 上 —— 不碰系统材质、不重建调色板。
+    /// 拖透明度滑块时只调这一个：一次赋值只让 DWM 重新合成一层底色，开销远小于整窗换肤。
+    /// </summary>
+    private void ApplyShellTint()
+    {
+        if (_viewModel is null)
+        {
+            return;
+        }
+
+        var s = _viewModel.Settings;
+        var mode = EffectiveBackgroundMode();
+        var alpha = (byte)Math.Clamp(s.Opacity * 255, 6, 255);
 
         // 底色画在外壳 Border 上而不是窗口上：窗口本身不带底色，圆角外沿才能透出桌面
         // （亚克力模式下透出的是被裁掉的窗口区域，效果一样）。各模式的不透明度仍然生效 ——
@@ -1607,9 +1678,13 @@ public partial class MainWindow : Window
             CalendarBackgroundMode.Graphite => Argb(alpha, 17, 24, 39),
             _ => Argb(alpha, 255, 255, 255),
         };
-
-        ApplyBackgroundResources(mode);
     }
+
+    /// <summary>ClearBorder 只是「无背景 + 描边」的外观变体，着色 / 调色板一律按 None 处理。</summary>
+    private CalendarBackgroundMode EffectiveBackgroundMode()
+        => _viewModel?.Settings.BackgroundMode == CalendarBackgroundMode.ClearBorder
+            ? CalendarBackgroundMode.None
+            : _viewModel?.Settings.BackgroundMode ?? CalendarBackgroundMode.None;
 
     /// <summary>
     /// 决定窗口底层的系统材质，并同步窗口外形。
@@ -1895,6 +1970,12 @@ public partial class MainWindow : Window
 
         var narrow = Bounds.Width > 0 && Bounds.Width <= NarrowLayoutThreshold;
         ViewControlsPanel.IsVisible = !narrow;
+        // 今日 / 本周计数在窄屏（含任务视图的默认窄窗）下收起：任务面板本体已经展示这些信息，
+        // 顶栏只留日期，避免文字与右侧常驻按钮挤在一行互相遮挡。
+        if (TaskCountsPanel is not null)
+        {
+            TaskCountsPanel.IsVisible = !narrow;
+        }
         // 视图切换已经收纳成一个下拉按钮，窄屏也放得下，必须常驻（否则窄屏无法退出任务视图）
         ViewSwitchPanel.IsVisible = true;
         NormalViewHost.IsVisible = !narrow;
