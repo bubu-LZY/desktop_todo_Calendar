@@ -160,12 +160,46 @@ public sealed class MainViewModelTests
         viewModel.SetViewMode(CalendarViewMode.Week);
 
         Assert.Equal(CalendarViewMode.Week, data.Settings.ViewMode);
-        Assert.Equal(7, viewModel.VisibleDays.Count);
+        // 周视图左栏是可滚动长列表：首屏按 WeekScrollInitialWeeks(8) 周铺开，即 56 天，
+        // 而不是固定 7 天（7 天是"默认可见高度"，由宿主按可用高度换算格子边长来控制）。
+        Assert.Equal(MainViewModel.WeekScrollInitialWeeks * 7, viewModel.VisibleDays.Count);
 
         viewModel.SetViewMode(CalendarViewMode.Year);
 
         Assert.Equal(CalendarViewMode.Year, data.Settings.ViewMode);
         Assert.Equal(12, viewModel.YearMonths.Count);
+    }
+
+    [Fact]
+    public void WeekScroll_ExtendsDatesContinuously()
+    {
+        var data = new CalendarData();
+        var viewModel = new MainViewModel(data, () => new DateTimeOffset(2026, 5, 10, 9, 0, 0, TimeSpan.Zero));
+        viewModel.SetViewMode(CalendarViewMode.Week);
+
+        var before = viewModel.VisibleDays.Count;
+        var lastDate = viewModel.VisibleDays[^1].Date;
+
+        var added = viewModel.ExtendWeekScroll();
+
+        // 追加整周，且日期紧接在原来最后一天之后，不能跳天也不能重复。
+        Assert.Equal(MainViewModel.WeekScrollAppendWeeks * 7, added);
+        Assert.Equal(before + added, viewModel.VisibleDays.Count);
+        Assert.Equal(lastDate.AddDays(1), viewModel.VisibleDays[before].Date);
+
+        // 周视图里所有格子都标记为"本月内"：跨月的那几天不能被淡化，否则看起来像坏了。
+        Assert.All(viewModel.VisibleDays, day => Assert.True(day.IsInCurrentMonth));
+    }
+
+    [Fact]
+    public void ExtendWeekScroll_IsNoOpOutsideWeekView()
+    {
+        var data = new CalendarData();
+        var viewModel = new MainViewModel(data, () => new DateTimeOffset(2026, 5, 10, 9, 0, 0, TimeSpan.Zero));
+
+        // 默认月视图：只有周视图才需要向后追加日期。
+        Assert.Equal(CalendarViewMode.Month, data.Settings.ViewMode);
+        Assert.Equal(0, viewModel.ExtendWeekScroll());
     }
 
     [Fact]

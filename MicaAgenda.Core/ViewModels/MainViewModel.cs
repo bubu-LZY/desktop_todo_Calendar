@@ -16,6 +16,18 @@ public sealed class MainViewModel : ViewModelBase
     /// </summary>
     public const int TimelineInitialSpan = 1;
 
+    /// <summary>
+    /// 周视图首屏一次性铺多少周的日期格子。
+    ///
+    /// 周视图的左栏是可上下滚动的长列表：默认停在"最近 7 天"开头，往下滚就能看到后面的日期。
+    /// 一次铺 8 周（56 天）足够用户滚好一会儿而不用等补建；滚到接近底部时由
+    /// <see cref="ExtendWeekScroll"/> 再追加，所以这里给的是"起步量"而不是上限。
+    /// </summary>
+    public const int WeekScrollInitialWeeks = 8;
+
+    /// <summary>周视图每次向后续追加的周数（滚到接近底部时触发）。</summary>
+    public const int WeekScrollAppendWeeks = 4;
+
     private readonly CalendarData _data;
     private readonly Func<DateTimeOffset> _nowProvider;
     private readonly object _syncRoot;
@@ -920,6 +932,30 @@ public sealed class MainViewModel : ViewModelBase
     public double YearMonthHeight => Math.Clamp(Settings.CellHeight * 2.85, 150, 360);
     public double CurrentDayCellHeight => Settings.ViewMode == CalendarViewMode.Week ? WeekCellHeight : MonthCellHeight;
 
+    /// <summary>
+    /// 周视图左栏日期格子的边长（正方形），由宿主的 <c>UpdateResponsiveLayout</c> 写入。
+    ///
+    /// 用户的要求是"格子必须是正方形，且 7 个格子刚好铺满当前界面的高度"，所以这个值不是
+    /// 固定常量，而是宿主按「左栏可用高度 ÷ 7」算出来再回填的。左栏宽度也绑同一个值，
+    /// 保证格子在任何窗口尺寸下都是正方形。宿主回填 0 时 XAML 里的兜底值生效。
+    /// </summary>
+    public double WeekScrollCellSize
+    {
+        get => _weekScrollCellSize;
+        set
+        {
+            if (Math.Abs(_weekScrollCellSize - value) < 0.01)
+            {
+                return;
+            }
+
+            _weekScrollCellSize = value;
+            OnPropertyChanged();
+        }
+    }
+
+    private double _weekScrollCellSize;
+
     public void RefreshClock()
     {
         var now = DateOnly.FromDateTime(_nowProvider().LocalDateTime);
@@ -1464,7 +1500,7 @@ public sealed class MainViewModel : ViewModelBase
         else
         {
             var days = Settings.ViewMode == CalendarViewMode.Week
-                ? CalendarService.BuildWeek(SelectedDate, Today)
+                ? CalendarService.BuildWeekScroll(SelectedDate, Today, WeekScrollInitialWeeks)
                 : CalendarService.BuildMonth(SelectedDate, Today);
 
             foreach (var day in days.Select(CreateDayCell))
@@ -1482,9 +1518,49 @@ public sealed class MainViewModel : ViewModelBase
         RefreshHeightProperties();
     }
 
-    /// <summary>以锚点月份为中心，构建前后各 2 个月的时间轴（共 5 个月）。</summary>
-    private void BuildTimeline()
+    /// <summary>
+    /// 周视图向后续追加日期格子（滚到接近底部时由宿主调用）。
+    ///
+    /// 追加点紧接在最后一个已有格子的次日，按整周推进 —— 因为左栏是"竖排日期"，
+    /// 用户往下滚看到的是后面真实日期的连续序列，不能跳天。
+    /// 返回实际追加的天数（0 表示当前不是周视图，没追加）。
+    /// </summary>
+    public int ExtendWeekScroll()
     {
+        if (Settings.ViewMode != CalendarViewMode.Week || VisibleDays.Count == 0)
+        {
+            return 0;
+        }
+
+        var last = VisibleDays[^1].Date;
+        // 下一个格子从"最后一天的次日"开始，保证日期连续不重复。
+        var start = last.AddDays(1);
+        var count = WeekScrollAppendWeeks * 7;
+
+        for (var offset = 0; offset < count; offset++)
+        {
+            var date = start.AddDays(offset);
+            VisibleDays.Add(CreateDayCell(new CalendarDay(date, true, date == _today)));
+        }
+
+        return count;
+    }
+
+    /// <summary>
+    /// 周视图滚动到的第一个可见日期：滚回"本周"用的锚点。
+    /// 默认视图（未滚动）时就是当前这一周的周日。
+    /// </summary>
+    public DateOnly WeekScrollStartDate
+    {
+        get
+        {
+            var target = SelectedDate == default ? _today : SelectedDate;
+            return target.AddDays(-(int)target.DayOfWeek);
+        }
+    }
+
+    /// <summary>以锚点月份为中心，构建前后各 2 个月的时间轴（共 5 个月）。</summary>
+    private void BuildTimeline()    {
         var anchor = _timelineAnchor == default ? _today : _timelineAnchor;
         TimelineMonths.Clear();
         for (var offset = -TimelineInitialSpan; offset <= TimelineInitialSpan; offset++)

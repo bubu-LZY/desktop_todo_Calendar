@@ -232,15 +232,21 @@
       </Border>
     </DataTemplate>
 
-  <!-- ===== 周视图左栏的日期行（竖排）=====
-       周视图改成「左侧竖排近 7 天 + 右侧任务面板」后，日期格子变成一行一条：
-       每行左起是「日 + 星期」，紧跟当天的任务条。
-       不复用 DayCellTemplate：那是月视图的 96px 正方形格子，竖排 7 个会一路撑到一千多像素，
-       矮窗口里根本放不下。这里刻意做成「月视图小格子」体量 —— 148px 宽、无固定高度，
-       行高由内容自然撑开，整列外面套滚动条。尺寸改动时记得同步
-       MicaAgenda.App/MainWindow.xaml 的同名模板，两个宿主外观要对齐。 -->
+  <!-- ===== 周视图左栏的日期格子（竖排，正方形）=====
+       用户要求格子是「正方形」，且 7 个刚好铺满当前界面高度：
+       边长由 WeekScrollCellSize 统一给定（宿主按「左栏可用高度 ÷ 7」算出），
+       宽高绑同一个值，所以任何窗口尺寸下都是正方形；左列宽度也绑它，两者永远一致。
+       内容仍是「日 + 星期」+ 当天任务条，任务多时格子内部自己滚动而不是把格子撑高。
+       整列可上下滚动：默认停在开头（最近 7 天），往下滚看到后面日期的格子。
+       尺寸改动时记得同步 MicaAgenda.App/MainWindow.xaml 的同名模板。 -->
   <DataTemplate x:Key="WeekDayRowTemplate" DataType="vm:DayCellViewModel">
-    <Border CornerRadius="5" Margin="0,0,0,3" Padding="4,3"
+    <!-- 宽高绑同一个值（宿主按「可用高度 ÷ 7」算出）→ 永远正方形。
+         这里用 $parent[Window].DataContext 取回 MainViewModel：格子模板的 DataContext 是
+         DayCellViewModel，拿不到宿主的尺寸属性，必须沿视觉树往上找到 Window。
+         x:CompileBindings 在本文件已关，所以不需要写类型转换。 -->
+    <Border Width="{Binding $parent[Window].DataContext.WeekScrollCellSize}"
+            Height="{Binding $parent[Window].DataContext.WeekScrollCellSize}"
+            CornerRadius="6" Margin="0,0,0,4" Padding="5,4"
             Classes="weekDayRow"
             Classes.outmonth="{Binding IsOutMonth}"
             Classes.today="{Binding IsToday}"
@@ -274,7 +280,7 @@
               </DataTemplate>
             </ItemsControl.ItemTemplate>
           </ItemsControl>
-          <!-- 日期块本身就是一个「日期 + 星期」的短标签，横向占位很小，给右侧留出任务条宽度 -->
+          <!-- 日期块本身就是一个「日期 + 星期」的短标签 -->
           <StackPanel Orientation="Horizontal" Spacing="3" VerticalAlignment="Center">
             <TextBlock Text="{Binding DayNumber}" FontWeight="SemiBold" FontSize="11.5"
                        Foreground="{DynamicResource PrimaryTextBrush}" VerticalAlignment="Center" />
@@ -282,9 +288,11 @@
                        Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center" />
           </StackPanel>
         </DockPanel>
-        <!-- 当天任务：行数不设上限，撑多高算多高（外面整列可滚动） -->
-        <ItemsControl Grid.Row="1" Margin="0,2,0,0"
-                      ItemsSource="{Binding Tasks}" ItemTemplate="{StaticResource TaskTemplate}" />
+        <!-- 当天任务：格子高度固定，任务多时在格子内部滚动，不把格子撑高（保证正方形） -->
+        <ScrollViewer Grid.Row="1" Margin="0,2,0,0"
+                      VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+          <ItemsControl ItemsSource="{Binding Tasks}" ItemTemplate="{StaticResource TaskTemplate}" />
+        </ScrollViewer>
       </Grid>
     </Border>
   </DataTemplate>
@@ -948,10 +956,17 @@
           </Grid.Transitions>
 
           <!-- 周视图：左侧竖排近 7 天日期格子 + 右侧任务面板（左右布局）。
-               日期列固定宽，7 行竖着排；整个左栏可滚动（任务多的那天行会变高，
-               矮窗口里靠滚动看全，而不是把面板挤没）。 -->
-          <Grid IsVisible="{Binding IsWeekView}" ColumnDefinitions="148,*" Margin="8">
-            <ScrollViewer Grid.Column="0" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+               左列是正方形格子：宽度绑 WeekScrollCellSize，与格子高度同值，
+               由 UpdateResponsiveLayout 按「左栏可用高度 ÷ 7」算出（7 格刚好铺满界面高度）。
+               整列可上下滚动 —— 默认停在开头（最近 7 天），往下滚能看到后面日期的格子。 -->
+          <Grid IsVisible="{Binding IsWeekView}" Margin="8">
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="{Binding WeekScrollCellSize}" MinWidth="64" />
+              <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+            <ScrollViewer x:Name="WeekScrollViewer" Grid.Column="0"
+                          VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
+                          ScrollChanged="WeekScroll_ScrollChanged">
               <ItemsControl ItemsSource="{Binding VisibleDays}" ItemTemplate="{StaticResource WeekDayRowTemplate}" />
             </ScrollViewer>
             <!-- 右侧：任务面板占满剩余高度（内容多时内部自己滚动） -->

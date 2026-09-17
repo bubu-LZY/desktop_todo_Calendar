@@ -356,14 +356,13 @@ public partial class MainWindow : Window
         if (!_embedWatchdogHooked)
         {
             _embedWatchdogHooked = true;
-            // 嵌入桌面模式需要高频压底 + 文本输入宽限期的 200ms 自愈；非嵌入模式只需偶尔把
-            // 偶发的「× 按钮自己回来」纠正一下，并在被「显示桌面」最小化后 1s 内无声还原，
-            // 没必要 5 次/秒空转。非嵌入 tick 只有 GetWindowLong / IsIconic 这类只读检查
-            // （样式已是目标值即提前返回，也不碰 Z 序），1s 一次不会引发当年 200ms 轮询的闪烁。
-            var interval = _config.EmbedDesktop
-                ? TimeSpan.FromMilliseconds(200)
-                : TimeSpan.FromMilliseconds(1000);
-            _embedWatchdog = new DispatcherTimer { Interval = interval };
+            // 间隔固定 200ms，嵌入与非嵌入一致。
+            //
+            // 早期为了省开销，非嵌入模式用 1s 轮询 —— 但「显示桌面」正是靠这段时间差被用户
+            // 感知成"窗口被隐藏了"：窗口已经被收走，却要等最多 1 秒才被还原回来。
+            // 现在两次 tick 之间的代价只是 GetWindowLong / IsIconic / IsWindowVisible 这几个
+            // 只读调用（样式已是目标值就提前返回，不碰 Z 序），200ms 完全负担得起。
+            _embedWatchdog = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(200) };
             _embedWatchdog.Tick += (_, _) =>
             {
                 try
@@ -433,17 +432,19 @@ public partial class MainWindow : Window
             return;
         }
 
+        // 免疫「显示桌面」：Win+D / 任务栏右键菜单 / 右下角显示桌面细条会把所有普通顶层窗口
+        // 最小化或直接隐藏，本窗口没有任务栏按钮，被收走后用户无法找回。
+        //
+        // 顺序很重要：必须在摘标题栏样式之前先还原 —— 窗口还处于隐藏/最小化态时调
+        // SWP_FRAMECHANGED 是无效的（非客户区根本没在合成），先还原再改样式才落得下去。
+        // 托盘「隐藏」那一步会先打开 SuppressAutoRestore 闸门，不会被这里立刻拉回来。
+        DesktopEmbedService.RestoreIfMinimized(hwnd);
+
         // 任何模式下都彻底去掉标题栏系统按钮（最小化 / 最大化 / 关闭），并隐藏任务栏按钮。
         // 关键点：不能只在启动时做一次 —— 宿主在激活、改尺寸、DPI 变化、从托盘 Show() 等时机
         // 都会把窗口样式写回去，所以必须周期性重放。
         DesktopEmbedService.RemoveCaptionButtons(hwnd);
         DesktopEmbedService.HideFromTaskbar(hwnd);
-
-        // 免疫「显示桌面」：Win+D / 任务栏右键菜单 / 右下角显示桌面细条会把所有普通顶层窗口
-        // 最小化或直接隐藏，本窗口没有任务栏按钮，被收走后用户无法找回。看门狗发现两种形态任一
-        // 命中就无激活还原；嵌入模式下面紧接着的 EnsureEmbedded 会重新压底。
-        // 托盘「隐藏」那一步会先打开 SuppressAutoRestore 闸门，不会被这里立刻拉回来。
-        DesktopEmbedService.RestoreIfMinimized(hwnd);
 
         if (!_config.EmbedDesktop)
         {
@@ -1530,6 +1531,22 @@ public partial class MainWindow : Window
         ApplyWindowBounds(GetBoundsForView(mode));
         SaveCurrentViewBounds();
         PlayContentFadeIn();
+
+        // 切到周视图时把左栏滚回开头：默认展示的必须是「最近 7 天」，
+        // 而不是上次翻到几周之后的残留位置。
+        if (mode == CalendarViewMode.Week)
+        {
+            Dispatcher.UIThread.Post(
+                () =>
+                {
+                    UpdateWeekCellSize();
+                    if (WeekScrollViewer is not null)
+                    {
+                        WeekScrollViewer.Offset = new Avalonia.Vector(0, 0);
+                    }
+                },
+                DispatcherPriority.Loaded);
+        }
     }
 
     /// <summary>
@@ -1983,6 +2000,25 @@ public partial class MainWindow : Window
 
     private void Window_SizeChanged(object? sender, SizeChangedEventArgs e)
     {
+        // ===== 最小尺寸硬夹取 =====
+        //
+        // Avalonia 的 Window.MinWidth / MinHeight 对本窗口无效：窗口是 WindowDecorations=None
+        // 的无边框窗体，缩放走的是我们自己的 BeginResizeDrag(edge, e)，那是个原生拖拽，
+        // 只认 Win32 的 WM_GETMINMAXINFO 边界，根本不会去读 MinWidth 属性 ——
+        // 用户看到的就是"说好的最小宽度没生效，还能一直缩小"。
+        // 原生拖拽没法拦截，只能在尺寸真变了之后立刻夹回来（同步赋值，不会闪）。
+        var clampedW = Math.Max(MinWindowWidth, e.NewSize.Width);
+        var clampedH = Math.Max(MinWindowHeight, e.NewSize.Height);
+        if (clampedW > e.NewSize.Width + 0.5)
+        {
+            Width = clampedW;
+        }
+
+        if (clampedH > e.NewSize.Height + 0.5)
+        {
+            Height = clampedH;
+        }
+
         // 亚克力模式下窗口外形是"裁"出来的，尺寸一变就得重裁 —— 晚了会露一帧直角或切掉新长出来的部分。
         // 这里直接用事件里的新尺寸，不读 Bounds，免得拿到还没更新的值。
         UpdateWindowShape(e.NewSize.Width, e.NewSize.Height);
@@ -2033,23 +2069,31 @@ public partial class MainWindow : Window
         var width = Bounds.Width;
         var narrowView = width > 0 && width <= NarrowLayoutThreshold;
 
-        // ===== 第 ① / ② 档：背景 + 透明度是否还放得下 =====
-        // 宽度未知（首帧 Bounds 还是 0）时不收，免得闪一下。
-        var showViewControls = width <= 0 || width >= NarrowLayoutThreshold + ViewControlsWidthCost;
-        ViewControlsPanel.IsVisible = showViewControls;
-        // 视图切换已经收纳成一个下拉按钮，任何宽度都放得下，必须常驻
-        //（否则窄屏无法退出任务视图、开不了设置）。
-        ViewSwitchPanel.IsVisible = true;
-
-        // 今日 / 本周计数：收掉背景 / 透明度之后仍然拥挤时才收，尽量保留信息。
-        var showTaskCounts = width <= 0 || width >= NarrowLayoutThreshold;
+        // ===== 用「实际测量」而不是「拍脑袋常量」来决定档位 =====
+        //
+        // 之前用的是 width >= NarrowLayoutThreshold + ViewControlsWidthCost（460+262=722）这种
+        // 常量判据，问题是它跟真实内容宽度对不上：字体、DPI、语言一变，或者某个按钮文字长一点，
+        // 阈值就不准了 —— 用户看到的就是"该隐藏的时候不隐藏、该显示的时候已经藏了"。
+        //
+        // 这里改成真量：把「日期信息」和「常驻按钮」按最小自然宽度测一遍，两者相加就是单行
+        // 的硬需求；装不下就先让「背景 + 透明度」这组纯装饰设置让位。测量前先复原上一次的
+        // 隐藏状态，否则被隐藏的面板量出来宽度是 0，第二轮就再也放不出来了。
+        ViewControlsPanel.IsVisible = true;
         if (TaskCountsPanel is not null)
         {
-            TaskCountsPanel.IsVisible = showTaskCounts;
+            TaskCountsPanel.IsVisible = true;
         }
 
-        // ===== 第 ③ 档：单行彻底放不下 → 换行 =====
-        var wrap = width > 0 && width <= TopBarWrapThreshold;
+        var available = width > 0 ? width - TopBarHorizontalChrome : double.PositiveInfinity;
+        var needsWrap = false;
+        if (double.IsFinite(available))
+        {
+            var essential = MeasurePanelWidth(DateInfoPanel, exclude: ViewControlsPanel) + MeasurePanelWidth(TopActionPanel);
+            needsWrap = essential > available;
+        }
+
+        // ===== 第 ③ 档：连「日期信息 + 常驻按钮」都摆不下 → 换行 =====
+        var wrap = needsWrap;
         if (wrap)
         {
             // 常驻按钮搬到第二行（Grid.Row=1 跨满所有列），独占一行就不再和日期信息抢宽度
@@ -2070,8 +2114,140 @@ public partial class MainWindow : Window
         // 换行档下第二行会多出一段高度，外壳高度是外部算好的，这里只负责上下留白不贴边。
         TopActionPanel.Margin = wrap ? new Avalonia.Thickness(0, 3, 0, 0) : default;
 
+        // ===== 第 ① / ② 档：背景 + 透明度是否还放得下 =====
+        // 换行之后第一行的宽度需求降到「只有日期信息」，所以先按换行后的实际情况再量一次：
+        // 只有连「日期信息 + 背景/透明度」都摆不下，才收起这两个装饰设置。
+        if (double.IsFinite(available))
+        {
+            // 换行时按钮在第二行、不再和日期信息共处一行，第一行只需要容纳日期信息本身。
+            var firstRowNeed = wrap
+                ? MeasurePanelWidth(DateInfoPanel)
+                : MeasurePanelWidth(DateInfoPanel) + MeasurePanelWidth(TopActionPanel);
+            var withViewControls = firstRowNeed + ViewControlsWidthCost;
+
+            if (withViewControls > available)
+            {
+                ViewControlsPanel.IsVisible = false;
+            }
+            else
+            {
+                // 背景/透明度保住了，再看今日 / 本周计数是否也挤得下（它比装饰设置次要）。
+                var countsCost = MeasurePanelWidth(TaskCountsPanel);
+                if (firstRowNeed + ViewControlsWidthCost + countsCost > available
+                    && TaskCountsPanel is not null)
+                {
+                    TaskCountsPanel.IsVisible = false;
+                }
+            }
+        }
+
+        // 视图切换已经收纳成一个下拉按钮，任何宽度都放得下，必须常驻
+        //（否则窄屏无法退出任务视图、开不了设置）。
+        ViewSwitchPanel.IsVisible = true;
+
+        // ===== 周视图：正方形格子的边长 =====
+        // 用户要的是「7 个格子刚好铺满当前界面高度」，所以边长 = 左栏可用高度 ÷ 7，
+        // 再夹到合理区间。左栏宽度与格子宽高绑同一个值，三边相等 → 正方形。
+        UpdateWeekCellSize();
+
         NormalViewHost.IsVisible = !narrowView;
         NarrowTaskOnlyView.IsVisible = narrowView;
+    }
+
+    /// <summary>
+    /// 计算并回填周视图格子的正方形边长。
+    ///
+    /// 高度基准取自窗口内容区减去顶栏之后的剩余高度（格子在顶栏下面），除以 7 得到"7 个
+    /// 刚好铺满"的边长。夹取下限 64（再小日期和任务都看不清），上限 200（太大就失去
+    /// "小格子"的意义，且宽度会挤掉右侧面板）。
+    /// </summary>
+    private void UpdateWeekCellSize()
+    {
+        if (_viewModel is null)
+        {
+            return;
+        }
+
+        var topBarHeight = TopBarBorder?.Bounds.Height ?? 0;
+        var margins = WeekViewVerticalMargin;
+        var bodyHeight = Bounds.Height - topBarHeight - margins;
+        if (bodyHeight <= 0)
+        {
+            // 首帧尺寸还没准备好，先不写，等下一次 SizeChanged。
+            return;
+        }
+
+        // 每个格子自带 4dp 下外边距，7 个格子共 7 份间距也要算进去，否则会溢出一点点。
+        const double rowSpacing = 4.0;
+        const int visibleRows = 7;
+        var side = (bodyHeight - (rowSpacing * visibleRows)) / visibleRows;
+        _viewModel.WeekScrollCellSize = Math.Clamp(side, 64, 200);
+    }
+
+    /// <summary>周视图根 Grid 的上下 Margin 之和（见 MainWindow.axaml，Margin="8"）。</summary>
+    private const double WeekViewVerticalMargin = 16.0;
+
+    /// <summary>
+    /// 周视图左栏滚动：滚到接近底部时追加后续日期，让用户能一直往未来翻。
+    ///
+    /// 判据用「距底部不足一屏的 1/3」预加载，避免滚到底才追加导致的位置跳动。
+    /// </summary>
+    private void WeekScroll_ScrollChanged(object? sender, ScrollChangedEventArgs e)
+    {
+        if (_viewModel is null || sender is not ScrollViewer viewer)
+        {
+            return;
+        }
+
+        // 只在用户向下滚动接近底部时才追加；程序初次布局时 Offset=0 不会命中。
+        var remaining = viewer.Extent.Height - viewer.Offset.Y - viewer.Viewport.Height;
+        var threshold = Math.Max(120, viewer.Viewport.Height / 3);
+        if (remaining > threshold)
+        {
+            return;
+        }
+
+        // 追加成功即可（AppLog 只有 Error 级别，这里不需要额外记录）。
+        _viewModel.ExtendWeekScroll();
+    }
+
+    /// <summary>顶栏左右内边距 + 列间距的固定开销（Padding 8,4 两侧 + 三列之间的间距）。</summary>
+    private const double TopBarHorizontalChrome = 24.0;
+
+    /// <summary>
+    /// 量出一个面板在当前内容下的「自然宽度」。
+    ///
+    /// 只测自然宽度、不施加外部约束：面板被隐藏（IsVisible=false）时 Avalonia 会直接给 0，
+    /// 所以调用前必须先把要测的面板置可见。测量期间用 DesiredSize 而不是 Bounds —— 后者是
+    /// 上一轮布局的残留值，量不出"内容变了"这件事。
+    /// </summary>
+    private static double MeasurePanelWidth(Control? panel, Control? exclude = null)
+    {
+        if (panel is null)
+        {
+            return 0;
+        }
+
+        // 临时把 exclude 收起来再量，得到"不含这组装饰设置"的净宽度。
+        var excludedVisible = false;
+        if (exclude is not null)
+        {
+            excludedVisible = exclude.IsVisible;
+            exclude.IsVisible = false;
+        }
+
+        try
+        {
+            panel.Measure(new Avalonia.Size(double.PositiveInfinity, double.PositiveInfinity));
+            return panel.DesiredSize.Width;
+        }
+        finally
+        {
+            if (exclude is not null)
+            {
+                exclude.IsVisible = excludedVisible;
+            }
+        }
     }
 
     private void ApplyWindowBounds(WindowBounds b)

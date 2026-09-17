@@ -37,10 +37,16 @@ public static class DesktopEmbedService
 
     /// <summary>
     /// ShowWindow 的 SW_SHOWNOACTIVATE：按最近一次的尺寸 / 位置显示窗口但<b>不激活、不抢焦点</b>。
-    /// 对最小化中的窗口等效于「还原」，是把被「显示桌面」带走的窗口无声拉回来的正确指令；
-    /// SW_RESTORE 会顺带激活窗口，用户刚点完显示桌面就被抢前台，体验很突兀。
+    /// 注意它<b>不会</b>把窗口从最小化态恢复 —— 那件事要交给 <see cref="SwRestore"/>。
     /// </summary>
     private const int SwShowNoActivate = 4;
+
+    /// <summary>
+    /// ShowWindow 的 SW_RESTORE：真正把窗口从最小化态恢复成正常态。会顺带激活窗口，
+    /// 所以在本类里只作为「先恢复、再取消激活」两步走的第一步使用，第二步固定是
+    /// <see cref="SwShowNoActivate"/>。
+    /// </summary>
+    private const int SwRestore = 9;
 
     /// <summary>Explorer 桌面窗口的类名（Win10：Progman；Win11：WorkerW）。</summary>
     private const string ProgmanClass = "Progman";
@@ -297,11 +303,18 @@ public static class DesktopEmbedService
     /// Shell 会把所有普通顶层窗口（含本程序这种只做 Z 序置底、没挂 Progman/WorkerW 的窗口）
     /// 一并「收走」。本小部件又刻意隐藏了任务栏按钮，被收走后用户没有任何入口把它找回。
     ///
-    /// <para><b>关键：Shell 收窗口有两种形态，只判 IsIconic 会漏掉一半。</b>
+    /// <para><b>Shell 收窗口有两种形态，只判 IsIconic 会漏掉一半。</b>
     /// 一是真正的「最小化」（IsIconic 为真）；二是把窗口 WS_VISIBLE 清零的直接隐藏
     /// （IsIconic 为假、IsWindowVisible 为假）—— 后者在部分 Windows 版本 / Shell 状态下
     /// 出现，表现就是「点了显示桌面，本程序窗口直接没了，看门狗也没动作」。这里两种形态
-    /// 都认，任一命中就用 SW_SHOWNOACTIVATE 无声拉回。</para>
+    /// 都认。</para>
+    ///
+    /// <para><b>关键：还原必须分两步，SW_SHOWNOACTIVATE 单独用是修不好的。</b>
+    /// <c>SW_SHOWNOACTIVATE(4)</c> 只负责「按最近尺寸显示」，它<b>不会把窗口从最小化态恢复</b> ——
+    /// 对一个 IsIconic 为真的窗口调它，窗口仍然是最小化的（只是被"显示"成一条任务栏条目）。
+    /// 这就是上一版"看门狗明明在跑、窗口却没回来"的真正原因。正确序列是先
+    /// <c>SW_RESTORE(9)</c> 真正脱离最小化态，再 <c>SW_SHOWNOACTIVATE</c> 确保它不抢前台焦点
+    /// （SW_RESTORE 会顺带激活窗口，用户刚点完显示桌面就被抢前台，体验很突兀）。</para>
     ///
     /// <para><b>托盘「隐藏」不会误伤</b>：它走的是 Avalonia 的 Hide()，但那一步是我们自己发起的，
     /// 调用方会先置 <see cref="SuppressAutoRestore"/>（见 <c>MainWindow</c> 的托盘隐藏路径），
@@ -316,12 +329,19 @@ public static class DesktopEmbedService
             return false;
         }
 
-        if (!IsIconic(handle) && IsWindowVisible(handle))
+        var minimized = IsIconic(handle);
+        if (!minimized && IsWindowVisible(handle))
         {
             return false;
         }
 
-        // 被 Shell 藏起来的窗口 SW_SHOWNOACTIVATE 会连带「还原 + 显示」，无需先刷 WS_VISIBLE。
+        if (minimized)
+        {
+            // 必须先真正脱离最小化态；SW_SHOWNOACTIVATE 不干这件事。
+            ShowWindow(handle, SwRestore);
+        }
+
+        // 无论哪条路径，最后都用 SW_SHOWNOACTIVATE 收尾：把窗口显示出来但不抢前台。
         ShowWindow(handle, SwShowNoActivate);
         return true;
     }

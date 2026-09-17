@@ -29,9 +29,15 @@ public static class DesktopEmbedService
 
     /// <summary>
     /// ShowWindow 的 SW_SHOWNOACTIVATE：按最近尺寸 / 位置显示窗口但不激活、不抢焦点。
-    /// 对最小化中的窗口等效于「还原」，用于把被「显示桌面」带走的窗口无声拉回来。
+    /// 注意它<b>不会</b>把窗口从最小化态恢复，那件事交给 <see cref="SwRestore"/>。
     /// </summary>
     private const int SwShowNoActivate = 4;
+
+    /// <summary>
+    /// ShowWindow 的 SW_RESTORE：真正把窗口从最小化态恢复成正常态。会顺带激活窗口，
+    /// 所以只作为「先恢复、再取消激活」两步走的第一步使用。
+    /// </summary>
+    private const int SwRestore = 9;
 
     /// <summary>隐藏任务栏图标（设为 TOOLWINDOW，去 APPWINDOW）。</summary>
     public static void HideFromTaskbar(Window window)
@@ -155,7 +161,12 @@ public static class DesktopEmbedService
     /// <b>Shell 收窗口有两种形态，只判 IsIconic 会漏掉一半：</b>一是真正的最小化
     /// （IsIconic 为真）；二是把窗口 WS_VISIBLE 清零的直接隐藏（IsIconic 为假、
     /// IsWindowVisible 为假）—— 后者表现就是「点了显示桌面，程序窗口直接没了，看门狗也没动作」。
-    /// 这里两种形态都认，任一命中就用 SW_SHOWNOACTIVATE 无声拉回。
+    /// 这里两种形态都认。
+    ///
+    /// <b>还原必须分两步：</b><c>SW_SHOWNOACTIVATE(4)</c> 只负责「按最近尺寸显示」，
+    /// <b>不会把窗口从最小化态恢复</b>——对最小化窗口单独调它，窗口仍然是最小化的。
+    /// 正确序列是先 <c>SW_RESTORE(9)</c> 真正脱离最小化态，再 <c>SW_SHOWNOACTIVATE</c>
+    /// 确保不抢前台焦点。
     ///
     /// 托盘「隐藏」是我们自己发起的 <c>Hide()</c>，那一步会先打开
     /// <see cref="SuppressAutoRestore"/> 闸门，因此不会被这里的自动还原立刻拉回来。
@@ -174,9 +185,15 @@ public static class DesktopEmbedService
             return false;
         }
 
-        if (!IsIconic(handle) && IsWindowVisible(handle))
+        var minimized = IsIconic(handle);
+        if (!minimized && IsWindowVisible(handle))
         {
             return false;
+        }
+
+        if (minimized)
+        {
+            ShowWindow(handle, SwRestore);
         }
 
         ShowWindow(handle, SwShowNoActivate);

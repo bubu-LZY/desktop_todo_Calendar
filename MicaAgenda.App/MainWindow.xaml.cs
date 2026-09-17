@@ -127,8 +127,8 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
-        FileLog.Write($"[STARTUP] MainWindow ctor - v5.0.1 - exe={Environment.ProcessPath ?? "unknown"}");
-        Title = "MicaAgenda v5.0.1";
+        FileLog.Write($"[STARTUP] MainWindow ctor - v5.1.0 - exe={Environment.ProcessPath ?? "unknown"}");
+        Title = "MicaAgenda v5.1.0";
 
         // 窗口初始化前同步加载配置，确保桌面嵌入/锁定在首帧即生效
         _config = _configStore.Load();
@@ -834,6 +834,19 @@ public partial class MainWindow : Window
 
     private void Window_SizeChanged(object sender, SizeChangedEventArgs e)
     {
+        // 最小尺寸硬夹取。WPF 的 Window.MinWidth 在有原生边框时通常有效，但缩放热区
+        // （ResizeGrip）走的是我们自己算的 DragDelta，边界值可能被绕过，这里再兜一道，
+        // 保证「所有设置按钮都可见」的那条线无论如何都守得住（与 Avalonia 宿主同口径）。
+        if (e.NewSize.Width > 0 && Width < MinWindowWidth)
+        {
+            Width = MinWindowWidth;
+        }
+
+        if (e.NewSize.Height > 0 && Height < MinWindowHeight)
+        {
+            Height = MinWindowHeight;
+        }
+
         ApplyShellClip();
         UpdateYearScrollLimit();
         UpdateResponsiveLayout();
@@ -861,19 +874,27 @@ public partial class MainWindow : Window
         var width = ActualWidth;
         var narrowView = width > 0 && width <= NarrowLayoutThreshold;
 
-        // ① / ② 档：背景 + 透明度是否还放得下（宽度未知的首帧先不收，免得闪一下）
-        ViewControlsPanel.Visibility =
-            width <= 0 || width >= NarrowLayoutThreshold + ViewControlsWidthCost
-                ? Visibility.Visible
-                : Visibility.Collapsed;
+        // ===== 用「实际测量」而不是「拍脑袋常量」来决定档位 =====
+        //
+        // 旧版用 width >= NarrowLayoutThreshold + ViewControlsWidthCost（460+262=722）这种常量判据，
+        // 跟真实内容宽度对不上：字体、DPI 一变阈值就失准，表现就是"该隐藏时不隐藏、该显示时已经藏了"。
+        // 改成先按最小自然宽度实测「日期信息」和「常驻按钮」，再加装饰设置的固定开销。
+        // 测量前先把上一轮隐藏的面板复原，否则被隐藏的元素量出来是 0，就再也放不回来了。
+        ViewControlsPanel.Visibility = Visibility.Visible;
+        TodayCountText.Visibility = Visibility.Visible;
+        WeekCountText.Visibility = Visibility.Visible;
 
-        // 今日 / 本周计数：收掉背景 / 透明度后仍拥挤才收，尽量保留信息
-        var showCounts = width <= 0 || width >= NarrowLayoutThreshold;
-        TodayCountText.Visibility = showCounts ? Visibility.Visible : Visibility.Collapsed;
-        WeekCountText.Visibility = showCounts ? Visibility.Visible : Visibility.Collapsed;
+        var available = width > 0 ? width - ToolbarHorizontalChrome : double.PositiveInfinity;
+        var needsWrap = false;
+        if (double.IsFinite(available))
+        {
+            var essential = MeasurePanelWidth(DateInfoPanel, exclude: ViewControlsPanel)
+                            + MeasurePanelWidth(ToolbarActionPanel);
+            needsWrap = essential > available;
+        }
 
-        // ③ 档：单行彻底放不下 → 换行，常驻按钮搬到第二行
-        var wrap = width > 0 && width <= TopBarWrapThreshold;
+        // ③ 档：连「日期信息 + 常驻按钮」都摆不下 → 换行，常驻按钮搬到第二行
+        var wrap = needsWrap;
         Grid.SetRow(ToolbarActionPanel, wrap ? 1 : 0);
         Grid.SetColumn(ToolbarActionPanel, wrap ? 0 : 1);
         Grid.SetColumnSpan(ToolbarActionPanel, wrap ? 2 : 1);
@@ -883,8 +904,123 @@ public partial class MainWindow : Window
             ? new Thickness(0, 4, 0, 0)
             : new Thickness(0);
 
+        // ① / ② 档：背景 + 透明度是否还放得下。
+        // 换行之后第一行只需容纳日期信息本身，所以按换行后的实际情况再量一次。
+        if (double.IsFinite(available))
+        {
+            var firstRowNeed = wrap
+                ? MeasurePanelWidth(DateInfoPanel)
+                : MeasurePanelWidth(DateInfoPanel) + MeasurePanelWidth(ToolbarActionPanel);
+            var withViewControls = firstRowNeed + ViewControlsWidthCost;
+
+            if (withViewControls > available)
+            {
+                ViewControlsPanel.Visibility = Visibility.Collapsed;
+            }
+            else
+            {
+                // 背景/透明度保住了，今日 / 本周计数这组次要信息才让位。
+                var countsCost = MeasurePanelWidth(TodayCountText, exclude: null)
+                                 + MeasurePanelWidth(WeekCountText, exclude: null);
+                if (firstRowNeed + ViewControlsWidthCost + countsCost > available)
+                {
+                    TodayCountText.Visibility = Visibility.Collapsed;
+                    WeekCountText.Visibility = Visibility.Collapsed;
+                }
+            }
+        }
+
         NormalViewHost.Visibility = narrowView ? Visibility.Collapsed : Visibility.Visible;
         NarrowTaskOnlyView.Visibility = narrowView ? Visibility.Visible : Visibility.Collapsed;
+
+        // ===== 周视图：正方形格子的边长 =====
+        UpdateWeekCellSize();
+    }
+
+    /// <summary>顶栏左右内边距 + 列间距的固定开销。</summary>
+    private const double ToolbarHorizontalChrome = 24.0;
+
+    /// <summary>
+    /// 量出一个面板在当前内容下的「自然宽度」（与 Avalonia 宿主同一口径）。
+    /// 隐藏状态下 WPF 量出来是 0，所以调用前必须先把要测的面板置可见。
+    /// </summary>
+    private static double MeasurePanelWidth(FrameworkElement? panel, FrameworkElement? exclude = null)
+    {
+        if (panel is null)
+        {
+            return 0;
+        }
+
+        var excludedVisibility = Visibility.Visible;
+        if (exclude is not null)
+        {
+            excludedVisibility = exclude.Visibility;
+            exclude.Visibility = Visibility.Collapsed;
+        }
+
+        try
+        {
+            panel.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+            return panel.DesiredSize.Width;
+        }
+        finally
+        {
+            if (exclude is not null)
+            {
+                exclude.Visibility = excludedVisibility;
+            }
+        }
+    }
+
+    /// <summary>
+    /// 计算并回填周视图格子的正方形边长（与 Avalonia 宿主同一口径）。
+    ///
+    /// 高度基准取自窗口内容区减去顶栏之后的剩余高度，除以 7 得到"7 个刚好铺满"的边长。
+    /// 夹到 64~200：下限保证日期与任务看得清，上限避免格子过大挤掉右侧面板。
+    /// </summary>
+    private void UpdateWeekCellSize()
+    {
+        if (_viewModel is null)
+        {
+            return;
+        }
+
+        var topBarHeight = ToolbarPanel?.ActualHeight ?? 0;
+        var bodyHeight = ActualHeight - topBarHeight - WeekViewVerticalMargin;
+        if (bodyHeight <= 0)
+        {
+            // 首帧尺寸还没准备好，等下一次 SizeChanged 再写。
+            return;
+        }
+
+        const double rowSpacing = 4.0;
+        const int visibleRows = 7;
+        var side = (bodyHeight - (rowSpacing * visibleRows)) / visibleRows;
+        _viewModel.WeekScrollCellSize = Math.Clamp(side, 64, 200);
+    }
+
+    /// <summary>周视图区域的上下外边距之和（左栏 Margin + 根 Grid Margin）。</summary>
+    private const double WeekViewVerticalMargin = 32.0;
+
+    /// <summary>
+    /// 周视图左栏滚动：滚到接近底部时追加后续日期，让用户能一直往未来翻。
+    /// 判据用「距底部不足一屏的 1/3」预加载，避免滚到底才追加导致的位置跳动。
+    /// </summary>
+    private void WeekScroll_ScrollChanged(object sender, ScrollChangedEventArgs e)
+    {
+        if (_viewModel is null || sender is not ScrollViewer viewer)
+        {
+            return;
+        }
+
+        var remaining = viewer.ExtentHeight - viewer.VerticalOffset - viewer.ViewportHeight;
+        var threshold = Math.Max(120, viewer.ViewportHeight / 3);
+        if (remaining > threshold)
+        {
+            return;
+        }
+
+        _viewModel.ExtendWeekScroll();
     }
 
     private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
@@ -1417,13 +1553,16 @@ public partial class MainWindow : Window
         {
             try
             {
-                // 免疫「显示桌面」第一道防线：摘掉可最小化样式位，让 Explorer 的
-                // MinimizeAll 从一开始就跳过本窗口（样式会被宿主/系统改回去，所以每 tick 重放）。
-                DesktopEmbedService.StripMinimizeBox(this);
-
-                // 第二道防线：万一还是被带走了（最小化 或 直接隐藏），无激活还原（不抢前台）。
-                // 托盘「隐藏」会先打开 SuppressAutoRestore 闸门，不会被误伤。
+                // 免疫「显示桌面」第一道防线：先还原。
+                //
+                // 顺序必须在摘样式之前：窗口还处在最小化/隐藏态时调用 SWP_FRAMECHANGED
+                // 是无效的（非客户区根本没在合成），先还原再改样式才落得下去。
                 DesktopEmbedService.RestoreIfMinimized(this);
+
+                // 第二道防线：摘掉可最小化样式位，让 Explorer 的 MinimizeAll 从一开始就跳过
+                // 本窗口（样式会被宿主/系统改回去，所以每 tick 重放）。
+                // 托盘「隐藏」会先打开 SuppressAutoRestore 闸门，不会被误伤。
+                DesktopEmbedService.StripMinimizeBox(this);
 
                 // 普通嵌入桌面的目标是“始终沉在其他窗口之下”。这里不做悬停豁免，
                 // 每个 tick 都强制压底，避免点击后窗口被系统拉到最上面。
@@ -2742,6 +2881,20 @@ public partial class MainWindow : Window
         ApplyViewHeightPolicy();
         SaveCurrentViewBounds();
         await SaveAsync();
+
+        // 切到周视图时把左栏滚回开头：默认展示的必须是「最近 7 天」，
+        // 而不是上次翻到几周之后的残留位置。
+        if (viewMode == CalendarViewMode.Week)
+        {
+            // 用 InvokeAsync 而不是 BeginInvoke：后者的返回值是 awaitable，未 await 会报 CS4014。
+            _ = Dispatcher.InvokeAsync(
+                () =>
+                {
+                    UpdateWeekCellSize();
+                    WeekScrollViewer?.ScrollToTop();
+                },
+                DispatcherPriority.Loaded);
+        }
     }
 
     private void SaveCurrentViewBounds()
