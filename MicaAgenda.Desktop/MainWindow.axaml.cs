@@ -79,6 +79,21 @@ public partial class MainWindow : Window
     /// </summary>
     private const double TopBarWrapThreshold = 340.0;
 
+    /// <summary>
+    /// 窗口可被拖到的最小宽度 —— 也就是「所有设置按钮都还能看见、不被遮住」的那条线。
+    ///
+    /// 用户的要求是：缩到最小就停在这儿，不能再缩。取值 = 换行档下第二行整组按钮的自然宽度
+    /// （今天 + 视图下拉 + 设置 + 锁定，含间距与两侧内边距）再留一点余量，保证换行后
+    /// 第二行不会自己再溢出。比它更窄时按钮组会开始互相挤压 / 被裁掉，所以不能再小。
+    ///
+    /// 顶栏换行阈值 <see cref="TopBarWrapThreshold"/> 比它小，两者顺序是：
+    /// 先收起「背景 + 透明度」→ 再换行（第二行放按钮）→ 最后停在这个最小宽度上。
+    /// </summary>
+    private const double MinWindowWidth = 300.0;
+
+    /// <summary>窗口可被拖到的最小高度：顶栏两行 + 主体至少露出一行内容。</summary>
+    private const double MinWindowHeight = 240.0;
+
     /// <summary>外壳 Shell 的圆角半径（与 MainWindow.axaml 里 Shell 的 CornerRadius 一致，单位 dp）。</summary>
     private const double ShellCornerRadius = 22.0;
 
@@ -425,8 +440,9 @@ public partial class MainWindow : Window
         DesktopEmbedService.HideFromTaskbar(hwnd);
 
         // 免疫「显示桌面」：Win+D / 任务栏右键菜单 / 右下角显示桌面细条会把所有普通顶层窗口
-        // 最小化，本窗口没有任务栏按钮，被最小化后用户无法找回。看门狗发现最小化态就无激活
-        // 还原（托盘「隐藏」走 Hide()，不会误伤）；嵌入模式下面紧接着的 EnsureEmbedded 会重新压底。
+        // 最小化或直接隐藏，本窗口没有任务栏按钮，被收走后用户无法找回。看门狗发现两种形态任一
+        // 命中就无激活还原；嵌入模式下面紧接着的 EnsureEmbedded 会重新压底。
+        // 托盘「隐藏」那一步会先打开 SuppressAutoRestore 闸门，不会被这里立刻拉回来。
         DesktopEmbedService.RestoreIfMinimized(hwnd);
 
         if (!_config.EmbedDesktop)
@@ -552,6 +568,25 @@ public partial class MainWindow : Window
         }
 
         Activate();
+    }
+
+    /// <summary>
+    /// 隐藏到托盘。必须走这个代理而不是直接 <c>Hide()</c>：
+    /// 看门狗会把「非最小化但不可见」的窗口当成被「显示桌面」收走了，随即无激活还原 ——
+    /// 我们主动隐藏的窗口就会立刻自己弹回来，表现为"隐藏不掉"。
+    /// 这里在 Hide 前后临时打开自动还原闸门，操作完成再放开。
+    /// </summary>
+    private void HideToTray()
+    {
+        DesktopEmbedService.SuppressAutoRestore = true;
+        try
+        {
+            Hide();
+        }
+        finally
+        {
+            DesktopEmbedService.SuppressAutoRestore = false;
+        }
     }
 
     // ===== 设置窗口 =====
@@ -1979,6 +2014,10 @@ public partial class MainWindow : Window
     ///         用户明确要的就是「今天 + 周视图设置换到第二行」这个行为。</item>
     /// </list>
     ///
+    /// 换行档是最后一档 —— 再窄就没有可牺牲的东西了，所以窗口本身有硬下限
+    /// <see cref="MinWindowWidth"/>（= <c>Window.MinWidth</c>），拖到那儿就停住，
+    /// 保证所有设置按钮任何宽度下都可见、不被遮挡。
+    ///
     /// 另外窗口窄到 <see cref="NarrowLayoutThreshold"/> 时，主体只留「今日任务」这一块
     /// （今日任务 + 本周任务完成情况 + 未完成 / 已完成）。
     /// </summary>
@@ -2040,13 +2079,13 @@ public partial class MainWindow : Window
         _applyingBounds = true;
         try
         {
-            var w = Math.Max(320, b.Width);
-            var h = Math.Max(240, b.Height);
+            var w = Math.Max(MinWindowWidth, b.Width);
+            var h = Math.Max(MinWindowHeight, b.Height);
             var screen = Screens.ScreenFromWindow(this) ?? Screens.Primary;
             if (screen?.WorkingArea is PixelRect wa)
             {
-                w = Math.Min(w, Math.Max(320, wa.Width));
-                h = Math.Min(h, Math.Max(240, wa.Height));
+                w = Math.Min(w, Math.Max(MinWindowWidth, wa.Width));
+                h = Math.Min(h, Math.Max(MinWindowHeight, wa.Height));
                 Width = w;
                 Height = h;
                 var x = Math.Clamp((int)b.Left, wa.X, Math.Max(wa.X, wa.X + wa.Width - (int)w));

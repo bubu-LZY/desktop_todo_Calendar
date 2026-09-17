@@ -64,6 +64,18 @@ public partial class MainWindow : Window
     /// </summary>
     private const double TopBarWrapThreshold = 360.0;
 
+    /// <summary>
+    /// 窗口可被拖到的最小宽度 —— 也就是「所有设置按钮都还能看见、不被遮住」的那条线。
+    /// 用户的要求是：缩到最小就停在这儿，不能再缩。
+    ///
+    /// 取值口径与 Avalonia 宿主保持一致（300）：换行档下第二行整组按钮的自然宽度再加一点余量，
+    /// 保证换行后第二行自己不会溢出。比它更窄时按钮组会互相挤压 / 被裁掉，所以不能再小。
+    /// </summary>
+    private const double MinWindowWidth = 300.0;
+
+    /// <summary>窗口可被拖到的最小高度：顶栏两行 + 主体至少露出一行内容。</summary>
+    private const double MinWindowHeight = 240.0;
+
         // 时间轴月份块数量上限与扩展冷却。
         // 这是防御性兜底：任何未预料到的路径都不允许时间轴无限增长。
         // 上限值统一以 MainViewModel.TimelineMaxMonths 为准，避免两处定义不一致。
@@ -115,8 +127,8 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
-        FileLog.Write($"[STARTUP] MainWindow ctor - v5.0.0 - exe={Environment.ProcessPath ?? "unknown"}");
-        Title = "MicaAgenda v5.0.0";
+        FileLog.Write($"[STARTUP] MainWindow ctor - v5.0.1 - exe={Environment.ProcessPath ?? "unknown"}");
+        Title = "MicaAgenda v5.0.1";
 
         // 窗口初始化前同步加载配置，确保桌面嵌入/锁定在首帧即生效
         _config = _configStore.Load();
@@ -497,7 +509,7 @@ public partial class MainWindow : Window
         if (!_isExiting)
         {
             e.Cancel = true;
-            Hide();
+            HideToTray();
             return;
         }
 
@@ -834,6 +846,8 @@ public partial class MainWindow : Window
     ///   <item>放不下：先收起「背景 + 透明度」这组装饰设置，保证常驻按钮不压在设置项上。</item>
     ///   <item>还是放不下：换行 —— 常驻按钮整体挪到第二行，第一行只留日期信息。</item>
     /// </list>
+    /// 换行档是最后一档，再窄就没有可牺牲的东西了：窗口本身有硬下限 <see cref="MinWindowWidth"/>
+    /// （= <c>Window.MinWidth</c>），拖到那儿就停住，保证所有设置按钮任何宽度下都可见、不被遮挡。
     /// 另外窗口窄到 <see cref="NarrowLayoutThreshold"/> 时，主体只留「今日任务」这一块。
     /// </summary>
     private void UpdateResponsiveLayout()
@@ -1403,8 +1417,12 @@ public partial class MainWindow : Window
         {
             try
             {
-                // 免疫「显示桌面」：发现窗口被最小化就无激活还原（不抢前台）。
-                // 托盘「隐藏」走 Hide()，IsIconic 为假，不会被误伤。
+                // 免疫「显示桌面」第一道防线：摘掉可最小化样式位，让 Explorer 的
+                // MinimizeAll 从一开始就跳过本窗口（样式会被宿主/系统改回去，所以每 tick 重放）。
+                DesktopEmbedService.StripMinimizeBox(this);
+
+                // 第二道防线：万一还是被带走了（最小化 或 直接隐藏），无激活还原（不抢前台）。
+                // 托盘「隐藏」会先打开 SuppressAutoRestore 闸门，不会被误伤。
                 DesktopEmbedService.RestoreIfMinimized(this);
 
                 // 普通嵌入桌面的目标是“始终沉在其他窗口之下”。这里不做悬停豁免，
@@ -1888,7 +1906,26 @@ public partial class MainWindow : Window
     private void Close_Click(object sender, RoutedEventArgs e)
     {
         // 点关闭按钮 = 隐藏到托盘，不退出；托盘菜单可重新打开或退出
-        Hide();
+        HideToTray();
+    }
+
+    /// <summary>
+    /// 隐藏到托盘。必须走这个代理而不是直接 <c>Hide()</c>：
+    /// 看门狗会把「非最小化但不可见」的窗口当成被「显示桌面」收走了，随即无激活还原 ——
+    /// 我们主动隐藏的窗口就会立刻自己弹回来，表现为"隐藏不掉"。
+    /// 这里在 Hide 前后临时打开自动还原闸门，操作完成再放开。
+    /// </summary>
+    private void HideToTray()
+    {
+        DesktopEmbedService.SuppressAutoRestore = true;
+        try
+        {
+            Hide();
+        }
+        finally
+        {
+            DesktopEmbedService.SuppressAutoRestore = false;
+        }
     }
 
     private void Settings_Click(object sender, RoutedEventArgs e)

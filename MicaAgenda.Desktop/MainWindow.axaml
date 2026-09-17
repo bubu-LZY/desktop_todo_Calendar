@@ -5,6 +5,7 @@
         xmlns:vm="using:MicaAgenda.App.ViewModels"
         x:Class="MicaAgenda.Desktop.MainWindow"
         Width="980" Height="680"
+        MinWidth="300" MinHeight="240"
         Title="{Binding Title}"
         WindowDecorations="None"
         Background="Transparent"
@@ -235,9 +236,11 @@
        周视图改成「左侧竖排近 7 天 + 右侧任务面板」后，日期格子变成一行一条：
        每行左起是「日 + 星期」，紧跟当天的任务条。
        不复用 DayCellTemplate：那是月视图的 96px 正方形格子，竖排 7 个会一路撑到一千多像素，
-       矮窗口里根本放不下。这里行高不定，由任务条自然撑开，整列外面套滚动条。 -->
+       矮窗口里根本放不下。这里刻意做成「月视图小格子」体量 —— 148px 宽、无固定高度，
+       行高由内容自然撑开，整列外面套滚动条。尺寸改动时记得同步
+       MicaAgenda.App/MainWindow.xaml 的同名模板，两个宿主外观要对齐。 -->
   <DataTemplate x:Key="WeekDayRowTemplate" DataType="vm:DayCellViewModel">
-    <Border CornerRadius="6" Margin="0,0,0,3" Padding="5,4"
+    <Border CornerRadius="5" Margin="0,0,0,3" Padding="4,3"
             Classes="weekDayRow"
             Classes.outmonth="{Binding IsOutMonth}"
             Classes.today="{Binding IsToday}"
@@ -246,14 +249,14 @@
       <Grid RowDefinitions="Auto,*">
         <!-- 行首：「日 + 星期」，选中时右侧出现 + 号（与月视图格子的规则一致） -->
         <DockPanel Grid.Row="0" LastChildFill="False">
-          <Button DockPanel.Dock="Right" Content="+" FontSize="14" FontWeight="Bold"
-                  Width="20" Height="20" Padding="0" Margin="4,0,0,0"
+          <Button DockPanel.Dock="Right" Content="+" FontSize="12" FontWeight="Bold"
+                  Width="17" Height="17" MinWidth="0" Padding="0" Margin="3,0,0,0"
                   VerticalAlignment="Center"
                   Click="AddTaskOnSelectedCell_Click" IsVisible="{Binding IsSelected}"
                   ToolTip.Tip="给这一天添加任务" />
-          <TextBlock DockPanel.Dock="Right" Text="{Binding TaskCount}" FontSize="9.5"
+          <TextBlock DockPanel.Dock="Right" Text="{Binding TaskCount}" FontSize="9"
                      Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center"
-                     Margin="4,0,0,0" IsVisible="{Binding HasTasks}" />
+                     Margin="3,0,0,0" IsVisible="{Binding HasTasks}" />
           <ItemsControl DockPanel.Dock="Right" ItemsSource="{Binding Holidays}"
                         VerticalAlignment="Center" IsVisible="{Binding HasHolidays}">
             <ItemsControl.ItemsPanel>
@@ -264,23 +267,23 @@
             <ItemsControl.ItemTemplate>
               <DataTemplate>
                 <Border Classes="holidayBadge" Classes.workday="{Binding IsMakeupWorkday}"
-                        CornerRadius="4" Margin="3,0,0,0" Padding="4,0" Height="16">
-                  <TextBlock Classes="holidayText" Text="{Binding BadgeText}" FontSize="10"
+                        CornerRadius="3" Margin="2,0,0,0" Padding="3,0" Height="14">
+                  <TextBlock Classes="holidayText" Text="{Binding BadgeText}" FontSize="9"
                              VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
                 </Border>
               </DataTemplate>
             </ItemsControl.ItemTemplate>
           </ItemsControl>
           <!-- 日期块本身就是一个「日期 + 星期」的短标签，横向占位很小，给右侧留出任务条宽度 -->
-          <StackPanel Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
-            <TextBlock Text="{Binding DayNumber}" FontWeight="SemiBold" FontSize="12"
+          <StackPanel Orientation="Horizontal" Spacing="3" VerticalAlignment="Center">
+            <TextBlock Text="{Binding DayNumber}" FontWeight="SemiBold" FontSize="11.5"
                        Foreground="{DynamicResource PrimaryTextBrush}" VerticalAlignment="Center" />
-            <TextBlock Text="{Binding WeekdayLabel}" FontSize="10.5"
+            <TextBlock Text="{Binding WeekdayLabel}" FontSize="9.5"
                        Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center" />
           </StackPanel>
         </DockPanel>
         <!-- 当天任务：行数不设上限，撑多高算多高（外面整列可滚动） -->
-        <ItemsControl Grid.Row="1" Margin="0,3,0,0"
+        <ItemsControl Grid.Row="1" Margin="0,2,0,0"
                       ItemsSource="{Binding Tasks}" ItemTemplate="{StaticResource TaskTemplate}" />
       </Grid>
     </Border>
@@ -947,7 +950,7 @@
           <!-- 周视图：左侧竖排近 7 天日期格子 + 右侧任务面板（左右布局）。
                日期列固定宽，7 行竖着排；整个左栏可滚动（任务多的那天行会变高，
                矮窗口里靠滚动看全，而不是把面板挤没）。 -->
-          <Grid IsVisible="{Binding IsWeekView}" ColumnDefinitions="236,*" Margin="8">
+          <Grid IsVisible="{Binding IsWeekView}" ColumnDefinitions="148,*" Margin="8">
             <ScrollViewer Grid.Column="0" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
               <ItemsControl ItemsSource="{Binding VisibleDays}" ItemTemplate="{StaticResource WeekDayRowTemplate}" />
             </ScrollViewer>

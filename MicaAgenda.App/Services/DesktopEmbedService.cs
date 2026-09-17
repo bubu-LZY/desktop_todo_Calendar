@@ -13,13 +13,18 @@ namespace MicaAgenda.App.Services;
 public static class DesktopEmbedService
 {
     private const int GwlExstyle = -20;
+    private const int GwlStyle = -16;
     private const int WsExToolwindow = 0x00000080;
     private const int WsExAppwindow = 0x00040000;
     private const int WsExNoactivate = 0x08000000;
+    private const int WsSysmenu = 0x00080000;
+    private const int WsMinimizebox = 0x00020000;
     private const uint SwpNomove = 0x0002;
     private const uint SwpNosize = 0x0001;
     private const uint SwpNoactivate = 0x0010;
     private const uint SwpShowwindow = 0x0040;
+    private const uint SwpNozorder = 0x0004;
+    private const uint SwpFramechanged = 0x0020;
     private const int HwndBottom = 1;
 
     /// <summary>
@@ -108,17 +113,68 @@ public static class DesktopEmbedService
     }
 
     /// <summary>
-    /// 窗口一旦被系统最小化，立刻在不激活、不抢焦点的前提下还原。
+    /// 摘掉窗口的 <c>WS_MINIMIZEBOX</c> 样式位 —— 「免疫显示桌面」的第一道防线：
+    /// Explorer 的 Win+D / 显示桌面遍历窗口做 MinimizeAll 时会跳过不可最小化的窗口，
+    /// 少了这个位，本窗口就不再被它当成「可以收起来的普通窗口」，从源头减少被带走的概率
+    /// （<see cref="RestoreIfMinimized"/> 是兜底的第二道防线）。
     ///
-    /// 任务栏右键「显示桌面」、Win+D、右下角显示桌面细条会把所有普通顶层窗口最小化，
-    /// 而本窗口刻意没有任务栏按钮，被最小化后用户没有任何入口找回；托盘「隐藏」走的是
-    /// Hide()（WS_VISIBLE 翻转）而非最小化，IsIconic 为假，不会与这里打架。
+    /// 幂等：位已经清掉就直接返回，方便看门狗周期性重放（样式会被宿主/系统改回去）。
+    /// </summary>
+    public static void StripMinimizeBox(Window window)
+    {
+        var handle = new WindowInteropHelper(window).Handle;
+        if (handle == IntPtr.Zero)
+        {
+            return;
+        }
+
+        var style = GetWindowLong(handle, GwlStyle);
+        var desired = style & ~WsMinimizebox & ~WsSysmenu;
+        if (desired == style)
+        {
+            return;
+        }
+
+        SetWindowLong(handle, GwlStyle, desired);
+        SetWindowPos(
+            handle,
+            IntPtr.Zero,
+            0,
+            0,
+            0,
+            0,
+            SwpNomove | SwpNosize | SwpNozorder | SwpNoactivate | SwpFramechanged);
+    }
+
+    /// <summary>
+    /// 看门狗用：窗口一旦被「显示桌面」带走，立刻在不激活、不抢焦点的前提下还原。
+    ///
+    /// 任务栏右键「显示桌面」、Win+D、右下角显示桌面细条会把所有普通顶层窗口「收走」，
+    /// 而本窗口刻意没有任务栏按钮，被收走后用户没有入口找回。
+    ///
+    /// <b>Shell 收窗口有两种形态，只判 IsIconic 会漏掉一半：</b>一是真正的最小化
+    /// （IsIconic 为真）；二是把窗口 WS_VISIBLE 清零的直接隐藏（IsIconic 为假、
+    /// IsWindowVisible 为假）—— 后者表现就是「点了显示桌面，程序窗口直接没了，看门狗也没动作」。
+    /// 这里两种形态都认，任一命中就用 SW_SHOWNOACTIVATE 无声拉回。
+    ///
+    /// 托盘「隐藏」是我们自己发起的 <c>Hide()</c>，那一步会先打开
+    /// <see cref="SuppressAutoRestore"/> 闸门，因此不会被这里的自动还原立刻拉回来。
     /// 返回 true 表示本次确实发生了还原（调用方可紧接着重新压底）。
     /// </summary>
     public static bool RestoreIfMinimized(Window window)
     {
+        if (SuppressAutoRestore)
+        {
+            return false;
+        }
+
         var handle = new WindowInteropHelper(window).Handle;
-        if (handle == IntPtr.Zero || !IsIconic(handle))
+        if (handle == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        if (!IsIconic(handle) && IsWindowVisible(handle))
         {
             return false;
         }
@@ -126,6 +182,13 @@ public static class DesktopEmbedService
         ShowWindow(handle, SwShowNoActivate);
         return true;
     }
+
+    /// <summary>
+    /// 自动还原的临时闸门：托盘「隐藏」等我们主动收起窗口的那几步会把它置 true，
+    /// 让看门狗在这一瞬间不要跟用户的操作对着干（否则窗口会立刻被拉回来，表现为"隐藏不掉"）。
+    /// 由 <c>MainWindow</c> 在操作前后成对开关。
+    /// </summary>
+    public static bool SuppressAutoRestore { get; set; }
 
     /// <summary>锁定窗口：禁止拖动/缩放，固定当前位置。</summary>
     public static void LockWindow(Window window)
@@ -145,6 +208,10 @@ public static class DesktopEmbedService
     [DllImport("user32.dll", EntryPoint = "IsIconic", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool IsIconic(IntPtr hWnd);
+
+    [DllImport("user32.dll", EntryPoint = "IsWindowVisible", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsWindowVisible(IntPtr hWnd);
 
     [DllImport("user32.dll", EntryPoint = "ShowWindow", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]

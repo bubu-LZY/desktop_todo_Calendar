@@ -27,6 +27,7 @@ public static class DesktopEmbedService
     private const int WsExAppwindow = 0x00040000;
     private const int WsExNoactivate = 0x08000000;
     private const int WsSysmenu = 0x00080000;
+    private const int WsMinimizebox = 0x00020000;
     private const uint SwpNomove = 0x0002;
     private const uint SwpNosize = 0x0001;
     private const uint SwpNoactivate = 0x0010;
@@ -163,7 +164,11 @@ public static class DesktopEmbedService
     }
 
     /// <summary>
-    /// 彻底移除标题栏上的系统按钮（最小化 / 最大化 / 关闭「×」）。
+    /// 彻底移除标题栏上的系统按钮（最小化 / 最大化 / 关闭「×」），并额外摘掉
+    /// <c>WS_MINIMIZEBOX</c> —— 这是「免疫显示桌面」的第一道防线：Explorer 的
+    /// Win+D / 显示桌面遍历窗口做 MinimizeAll 时会跳过不可最小化的窗口，
+    /// 少了这个样式位，本窗口就不再被它当成「可以收起来的普通窗口」。
+    ///
     /// 桌面小部件不该有可点的关闭按钮，退出走托盘 / 设置，而不是点 ×。
     /// 通过清掉 WS_SYSMENU 位实现：标题栏本身保留（标题文字还在），但三个系统按钮消失。
     ///
@@ -178,13 +183,13 @@ public static class DesktopEmbedService
         }
 
         var style = GetWindowLong(handle, GwlStyle);
-        if ((style & WsSysmenu) == 0)
+        var desired = style & ~WsSysmenu & ~WsMinimizebox;
+        if (desired == style)
         {
             return;
         }
 
-        style &= ~WsSysmenu;
-        SetWindowLong(handle, GwlStyle, style);
+        SetWindowLong(handle, GwlStyle, desired);
 
         // SWP_FRAMECHANGED 触发一次非客户区重算，让按钮立即消失
         SetWindowPos(
@@ -286,25 +291,47 @@ public static class DesktopEmbedService
     }
 
     /// <summary>
-    /// 看门狗用：窗口一旦被系统最小化，立刻在<b>不激活、不抢焦点</b>的前提下还原。
+    /// 看门狗用：窗口一旦被「显示桌面」带走，立刻在<b>不激活、不抢焦点</b>的前提下还原。
     ///
     /// 触发场景：任务栏右键「显示桌面」、Win+D、点击屏幕右下角的显示桌面细条 ——
     /// Shell 会把所有普通顶层窗口（含本程序这种只做 Z 序置底、没挂 Progman/WorkerW 的窗口）
-    /// 一并最小化。本小部件又刻意隐藏了任务栏按钮，被最小化后用户没有任何入口把它找回；
-    /// 而托盘「隐藏」走的是 Hide()（WS_VISIBLE 翻转），IsIconic 为假，不会与这里打架。
+    /// 一并「收走」。本小部件又刻意隐藏了任务栏按钮，被收走后用户没有任何入口把它找回。
+    ///
+    /// <para><b>关键：Shell 收窗口有两种形态，只判 IsIconic 会漏掉一半。</b>
+    /// 一是真正的「最小化」（IsIconic 为真）；二是把窗口 WS_VISIBLE 清零的直接隐藏
+    /// （IsIconic 为假、IsWindowVisible 为假）—— 后者在部分 Windows 版本 / Shell 状态下
+    /// 出现，表现就是「点了显示桌面，本程序窗口直接没了，看门狗也没动作」。这里两种形态
+    /// 都认，任一命中就用 SW_SHOWNOACTIVATE 无声拉回。</para>
+    ///
+    /// <para><b>托盘「隐藏」不会误伤</b>：它走的是 Avalonia 的 Hide()，但那一步是我们自己发起的，
+    /// 调用方会先置 <see cref="SuppressAutoRestore"/>（见 <c>MainWindow</c> 的托盘隐藏路径），
+    /// 因此不会被这里的自动还原立刻拉回来。</para>
     ///
     /// 返回 true 表示本次 tick 确实发生了还原，调用方应紧接着重新压一次 Z 序底。
     /// </summary>
     public static bool RestoreIfMinimized(IntPtr handle)
     {
-        if (!IsWindows || handle == IntPtr.Zero || !IsIconic(handle))
+        if (!IsWindows || handle == IntPtr.Zero || SuppressAutoRestore)
         {
             return false;
         }
 
+        if (!IsIconic(handle) && IsWindowVisible(handle))
+        {
+            return false;
+        }
+
+        // 被 Shell 藏起来的窗口 SW_SHOWNOACTIVATE 会连带「还原 + 显示」，无需先刷 WS_VISIBLE。
         ShowWindow(handle, SwShowNoActivate);
         return true;
     }
+
+    /// <summary>
+    /// 自动还原的临时闸门：托盘「隐藏」/ 用户主动最小化的那几步会把它置 true，
+    /// 让看门狗在这一瞬间不要跟用户的操作对着干（否则窗口会立刻被拉回来，表现为"隐藏不掉"）。
+    /// 由 <c>MainWindow</c> 在操作前后成对开关。
+    /// </summary>
+    public static bool SuppressAutoRestore { get; set; }
 
     [DllImport("user32.dll", EntryPoint = "SetWindowPos", SetLastError = true)]
     private static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
