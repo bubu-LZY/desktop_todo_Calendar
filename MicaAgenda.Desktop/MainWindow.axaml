@@ -148,7 +148,7 @@
       </Border>
     </DataTemplate>
 
-    <!-- ===== 日期格子模板（月/周共用）===== -->
+    <!-- ===== 日期格子模板（月视图用）===== -->
     <DataTemplate x:Key="DayCellTemplate" DataType="vm:DayCellViewModel">
       <Border CornerRadius="6" Height="96" Margin="1" Padding="4"
               Classes="dayCell" Classes.outmonth="{Binding IsOutMonth}"
@@ -231,8 +231,63 @@
       </Border>
     </DataTemplate>
 
-    <!-- ===== 月份块模板（时间轴）===== -->
-    <DataTemplate x:Key="MonthBlockTemplate" DataType="vm:MonthBlockViewModel">
+  <!-- ===== 周视图左栏的日期行（竖排）=====
+       周视图改成「左侧竖排近 7 天 + 右侧任务面板」后，日期格子变成一行一条：
+       每行左起是「日 + 星期」，紧跟当天的任务条。
+       不复用 DayCellTemplate：那是月视图的 96px 正方形格子，竖排 7 个会一路撑到一千多像素，
+       矮窗口里根本放不下。这里行高不定，由任务条自然撑开，整列外面套滚动条。 -->
+  <DataTemplate x:Key="WeekDayRowTemplate" DataType="vm:DayCellViewModel">
+    <Border CornerRadius="6" Margin="0,0,0,3" Padding="5,4"
+            Classes="weekDayRow"
+            Classes.outmonth="{Binding IsOutMonth}"
+            Classes.today="{Binding IsToday}"
+            Classes.selected="{Binding IsSelected}"
+            PointerPressed="DayCell_PointerPressed">
+      <Grid RowDefinitions="Auto,*">
+        <!-- 行首：「日 + 星期」，选中时右侧出现 + 号（与月视图格子的规则一致） -->
+        <DockPanel Grid.Row="0" LastChildFill="False">
+          <Button DockPanel.Dock="Right" Content="+" FontSize="14" FontWeight="Bold"
+                  Width="20" Height="20" Padding="0" Margin="4,0,0,0"
+                  VerticalAlignment="Center"
+                  Click="AddTaskOnSelectedCell_Click" IsVisible="{Binding IsSelected}"
+                  ToolTip.Tip="给这一天添加任务" />
+          <TextBlock DockPanel.Dock="Right" Text="{Binding TaskCount}" FontSize="9.5"
+                     Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center"
+                     Margin="4,0,0,0" IsVisible="{Binding HasTasks}" />
+          <ItemsControl DockPanel.Dock="Right" ItemsSource="{Binding Holidays}"
+                        VerticalAlignment="Center" IsVisible="{Binding HasHolidays}">
+            <ItemsControl.ItemsPanel>
+              <ItemsPanelTemplate>
+                <StackPanel Orientation="Horizontal" />
+              </ItemsPanelTemplate>
+            </ItemsControl.ItemsPanel>
+            <ItemsControl.ItemTemplate>
+              <DataTemplate>
+                <Border Classes="holidayBadge" Classes.workday="{Binding IsMakeupWorkday}"
+                        CornerRadius="4" Margin="3,0,0,0" Padding="4,0" Height="16">
+                  <TextBlock Classes="holidayText" Text="{Binding BadgeText}" FontSize="10"
+                             VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                </Border>
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+          <!-- 日期块本身就是一个「日期 + 星期」的短标签，横向占位很小，给右侧留出任务条宽度 -->
+          <StackPanel Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
+            <TextBlock Text="{Binding DayNumber}" FontWeight="SemiBold" FontSize="12"
+                       Foreground="{DynamicResource PrimaryTextBrush}" VerticalAlignment="Center" />
+            <TextBlock Text="{Binding WeekdayLabel}" FontSize="10.5"
+                       Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center" />
+          </StackPanel>
+        </DockPanel>
+        <!-- 当天任务：行数不设上限，撑多高算多高（外面整列可滚动） -->
+        <ItemsControl Grid.Row="1" Margin="0,3,0,0"
+                      ItemsSource="{Binding Tasks}" ItemTemplate="{StaticResource TaskTemplate}" />
+      </Grid>
+    </Border>
+  </DataTemplate>
+
+  <!-- ===== 月份块模板（时间轴）===== -->
+  <DataTemplate x:Key="MonthBlockTemplate" DataType="vm:MonthBlockViewModel">
       <StackPanel Margin="0,0,0,12">
         <TextBlock Text="{Binding Title}" FontSize="16" FontWeight="Bold" Foreground="{DynamicResource PrimaryTextBrush}"
                    Margin="6,4,0,6" />
@@ -584,6 +639,28 @@
       <Setter Property="BorderBrush" Value="{DynamicResource SelectedCellBorderBrush}" />
       <Setter Property="BorderThickness" Value="1.6" />
     </Style>
+    <!-- 周视图左栏的日期行：与 dayCell 同一套配色语义（今天 / 选中 / 非本月），
+         只是形状从正方形格子变成一行。行高不设死，由当天任务条数自然撑开。 -->
+    <Style Selector="Border.weekDayRow">
+      <Setter Property="Background" Value="{DynamicResource DayCellBackgroundBrush}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource CellBorderBrush}" />
+      <Setter Property="BorderThickness" Value="0.5" />
+      <Setter Property="MinHeight" Value="40" />
+    </Style>
+    <Style Selector="Border.weekDayRow.outmonth">
+      <Setter Property="Background" Value="{DynamicResource DayCellOutMonthBackgroundBrush}" />
+      <Setter Property="Opacity" Value="0.46" />
+    </Style>
+    <Style Selector="Border.weekDayRow.today">
+      <Setter Property="Background" Value="{DynamicResource TodayCellBackgroundBrush}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource TodayCellBorderBrush}" />
+      <Setter Property="BorderThickness" Value="1.2" />
+    </Style>
+    <Style Selector="Border.weekDayRow.selected">
+      <Setter Property="Background" Value="{DynamicResource SelectedCellBackgroundBrush}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource SelectedCellBorderBrush}" />
+      <Setter Property="BorderThickness" Value="1.6" />
+    </Style>
     <!-- 年视图里的小格子：不画边框，只换底色 -->
     <Style Selector="Border.yearCell">
       <Setter Property="Background" Value="{DynamicResource DayCellBackgroundBrush}" />
@@ -766,16 +843,64 @@
             PointerPressed="Shell_PointerPressed"
             PointerMoved="Shell_PointerMoved">
       <Grid RowDefinitions="Auto,*">
-        <!-- ===== 顶栏（单行紧凑）：日期信息 + 背景/透明度 + 视图切换 + 锁定/设置 =====
-             窄屏下视图切换与背景控件会收起，但「锁定 / 设置」始终保留 ——
-             否则缩成今日任务单面板后，既进不了设置也解不了锁。
+        <!-- ===== 顶栏（自适应，最宽两行）：日期信息 + 背景/透明度 + 今天 / 视图 / 设置 / 锁定 =====
+             窗口变窄时的降级顺序（由 UpdateResponsiveLayout 驱动，见宿主代码）：
+               ① 宽度够  → 全部单行展示；
+               ② 放不下了 → 先收起「背景 + 透明度」这两个装饰设置（DateInfoPanel 只剩日期 + 计数）；
+               ③ 还是放不下 → 换行：第一行只留日期信息，「今天 / 视图 / 设置 / 锁定」整体挪到第二行。
+             这样顶栏永远不会让按钮压在设置项上 —— 横向 StackPanel 超宽时默认是溢出绘制（互相覆盖），
+             这里靠「先藏后换行」把重叠消灭掉，而不是靠 ClipToBounds 把内容裁掉。
              行高不锁死：Fluent 滑块拇指是 18px 圆形且模板带触摸边距，固定 26 行会把
              拇指垂直裁成「穹顶」；只给 MinHeight 保底，让滑块按自然高度把行撑开，
              其余 24px 高的控件垂直居中，中线自然对齐。 -->
-        <Border Grid.Row="0" Padding="8,4" BorderBrush="{DynamicResource CellBorderBrush}" BorderThickness="0,0,0,1">
-          <DockPanel LastChildFill="False" MinHeight="28" VerticalAlignment="Center">
-            <!-- 右侧：「今天」常驻 + 视图切换收纳进下拉（窄屏也保留）+ 锁定 / 设置（常驻） -->
-            <StackPanel x:Name="TopActionPanel" DockPanel.Dock="Right" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
+        <Border x:Name="TopBarBorder" Grid.Row="0" Padding="8,4" BorderBrush="{DynamicResource CellBorderBrush}" BorderThickness="0,0,0,1">
+          <Grid x:Name="TopBarGrid" RowDefinitions="Auto,Auto" ColumnDefinitions="Auto,Auto,*" MinHeight="28" VerticalAlignment="Center">
+            <!-- 左侧：日期 + 任务计数 + 背景/透明度（后两者按可用宽度逐级隐藏）。
+                 ClipToBounds 是防遮挡的兜底：水平 StackPanel 超宽时默认会溢出绘制到
+                 右侧按钮上（任务视图窗口很窄时日期文字就会盖住按钮），裁掉保证不越界。 -->
+            <StackPanel x:Name="DateInfoPanel" Grid.Row="0" Orientation="Horizontal" Spacing="8"
+                        VerticalAlignment="Center" ClipToBounds="True">
+              <TextBlock Text="{Binding TodayDisplay}" FontSize="12.5" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryTextBrush}" VerticalAlignment="Center" />
+              <!-- 今日 / 本周计数：窄到一定程度后隐藏，给右侧常驻按钮让位 -->
+              <StackPanel x:Name="TaskCountsPanel" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                <TextBlock Text="{Binding TodayTaskCount}" FontSize="10.5" Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center" />
+                <TextBlock Text="{Binding ThisWeekTaskCount}" FontSize="10.5" Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center" />
+              </StackPanel>
+              <!-- 背景 / 透明度：装饰性设置，空间不足时第一个被收起来 -->
+              <StackPanel x:Name="ViewControlsPanel" Orientation="Horizontal" Spacing="5" VerticalAlignment="Center">
+                <TextBlock x:Name="BackgroundLabel" Text="背景" FontSize="10.5" Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center" />
+                <!-- Height + MinHeight 同时锁死 24：Fluent 主题下 ComboBox 自然高度约 32，
+                     只给 MinHeight 限不住，会比右侧按钮高出一截。Padding 收紧避免文字/箭头被裁。 -->
+                <ComboBox x:Name="BackgroundModeBox" Width="98" Height="24" MinHeight="0" Padding="8,2"
+                          FontSize="10.5" VerticalContentAlignment="Center" VerticalAlignment="Center"
+                          SelectionChanged="BackgroundMode_Changed">
+                  <ComboBoxItem Content="无背景" Tag="None" />
+                  <ComboBoxItem Content="白雾玻璃" Tag="FrostedWhite" />
+                  <ComboBoxItem Content="灰雾玻璃" Tag="FrostedGray" />
+                  <ComboBoxItem Content="暗色磨砂" Tag="FrostedDark" />
+                  <ComboBoxItem Content="蓝色亚克力" Tag="AcrylicBlue" />
+                  <ComboBoxItem Content="薄荷玻璃" Tag="AcrylicMint" />
+                  <ComboBoxItem Content="纸感浅白" Tag="PaperLight" />
+                  <ComboBoxItem Content="石墨深色" Tag="Graphite" />
+                </ComboBox>
+                <TextBlock x:Name="OpacityLabel" Text="透明度" FontSize="10.5" Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center" Margin="4,0,0,0" />
+                <!-- 不能强压 Height：Fluent 滑块拇指是 18px 圆形且模板带触摸边距，
+                     高度锁 24 会把圆形拇指垂直裁成「半圆穹顶」。保持自然高度，
+                     由固定行高 + VerticalAlignment=Center 保证轨道与其他控件中线对齐。 -->
+                <Slider x:Name="OpacitySlider" Width="76" Minimum="0.02" Maximum="1"
+                        VerticalAlignment="Center"
+                        ValueChanged="Opacity_Changed"
+                        PointerWheelChanged="OpacitySlider_Wheel"
+                        ToolTip.Tip="鼠标悬停在此处滚动滚轮可调节透明度（按住 Shift 步进更大）" />
+              </StackPanel>
+            </StackPanel>
+            <!-- 「今天 / 视图下拉 / 设置 / 锁定」这一组常驻按钮。
+                 它们只有 Width 变成 NaN 才愿意跟 DateInfoPanel 共处一行（Auto 列会无视可用宽度直接溢出），
+                 所以这里两组内容按需在「同一行右侧」和「第二行」之间搬家 —— 见 UpdateResponsiveLayout。
+                 Grid.Row/Column 走的是附加属性，代码里用 Grid.SetRow / Grid.SetColumn 即可搬。 -->
+            <StackPanel x:Name="TopActionPanel" Grid.Row="0" Grid.Column="1"
+                        Orientation="Horizontal" Spacing="4"
+                        HorizontalAlignment="Right" VerticalAlignment="Center">
               <StackPanel x:Name="ViewSwitchPanel" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
                 <Button Classes="toolbar" Content="今天" VerticalAlignment="Center" Click="Today_Click" />
                 <!-- 视图切换下拉：月 / 周 / 年 / 任务视图都收在这里，顶栏不再一字排开 -->
@@ -806,50 +931,12 @@
                 </Button>
               </StackPanel>
             </StackPanel>
-            <!-- 左侧：日期 + 任务计数 + 背景/透明度（后两者窄屏隐藏）。
-                 ClipToBounds 是防遮挡的兜底：水平 StackPanel 超宽时默认会溢出绘制到
-                 右侧按钮上（任务视图窗口很窄时日期文字就会盖住按钮），裁掉保证不越界。 -->
-            <StackPanel x:Name="DateInfoPanel" Orientation="Horizontal" Spacing="8"
-                        VerticalAlignment="Center" ClipToBounds="True">
-              <TextBlock Text="{Binding TodayDisplay}" FontSize="12.5" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryTextBrush}" VerticalAlignment="Center" />
-              <!-- 今日 / 本周计数：窄屏（含任务视图）下隐藏，给右侧常驻按钮让位 -->
-              <StackPanel x:Name="TaskCountsPanel" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
-                <TextBlock Text="{Binding TodayTaskCount}" FontSize="10.5" Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center" />
-                <TextBlock Text="{Binding ThisWeekTaskCount}" FontSize="10.5" Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center" />
-              </StackPanel>
-              <StackPanel x:Name="ViewControlsPanel" Orientation="Horizontal" Spacing="5" VerticalAlignment="Center">
-                <TextBlock Text="背景" FontSize="10.5" Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center" />
-                <!-- Height + MinHeight 同时锁死 24：Fluent 主题下 ComboBox 自然高度约 32，
-                     只给 MinHeight 限不住，会比右侧按钮高出一截。Padding 收紧避免文字/箭头被裁。 -->
-                <ComboBox x:Name="BackgroundModeBox" Width="98" Height="24" MinHeight="0" Padding="8,2"
-                          FontSize="10.5" VerticalContentAlignment="Center" VerticalAlignment="Center"
-                          SelectionChanged="BackgroundMode_Changed">
-                  <ComboBoxItem Content="无背景" Tag="None" />
-                  <ComboBoxItem Content="白雾玻璃" Tag="FrostedWhite" />
-                  <ComboBoxItem Content="灰雾玻璃" Tag="FrostedGray" />
-                  <ComboBoxItem Content="暗色磨砂" Tag="FrostedDark" />
-                  <ComboBoxItem Content="蓝色亚克力" Tag="AcrylicBlue" />
-                  <ComboBoxItem Content="薄荷玻璃" Tag="AcrylicMint" />
-                  <ComboBoxItem Content="纸感浅白" Tag="PaperLight" />
-                  <ComboBoxItem Content="石墨深色" Tag="Graphite" />
-                </ComboBox>
-                <TextBlock Text="透明度" FontSize="10.5" Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center" Margin="4,0,0,0" />
-                <!-- 不能强压 Height：Fluent 滑块拇指是 18px 圆形且模板带触摸边距，
-                     高度锁 24 会把圆形拇指垂直裁成「半圆穹顶」。保持自然高度，
-                     由固定行高 + VerticalAlignment=Center 保证轨道与其他控件中线对齐。 -->
-                <Slider x:Name="OpacitySlider" Width="76" Minimum="0.02" Maximum="1"
-                        VerticalAlignment="Center"
-                        ValueChanged="Opacity_Changed"
-                        PointerWheelChanged="OpacitySlider_Wheel"
-                        ToolTip.Tip="鼠标悬停在此处滚动滚轮可调节透明度（按住 Shift 步进更大）" />
-              </StackPanel>
-            </StackPanel>
-          </DockPanel>
+          </Grid>
         </Border>
 
         <!-- ===== 主体：按 ViewMode 切换 =====
              月 / 年视图：左侧日历 + 右侧任务面板（两者共用同一份面板实例）；
-             周视图：顶部 7 个日期格子 + 下方任务面板（与老版本一致，面板占满剩余高度）。 -->
+             周视图：左侧竖排近 7 天日期格子 + 右侧任务面板（左右布局）。 -->
         <Grid x:Name="NormalViewHost" Grid.Row="1">
           <Grid.Transitions>
             <Transitions>
@@ -857,28 +944,15 @@
             </Transitions>
           </Grid.Transitions>
 
-          <!-- 周视图：星期标题 + 7 个日期格子 + 下方任务面板 -->
-          <Grid IsVisible="{Binding IsWeekView}" RowDefinitions="Auto,Auto,*" Margin="8">
-            <UniformGrid Grid.Row="0" Columns="7" Margin="1,0">
-              <TextBlock Text="日" HorizontalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" FontSize="11" FontWeight="SemiBold" />
-              <TextBlock Text="一" HorizontalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" FontSize="11" FontWeight="SemiBold" />
-              <TextBlock Text="二" HorizontalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" FontSize="11" FontWeight="SemiBold" />
-              <TextBlock Text="三" HorizontalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" FontSize="11" FontWeight="SemiBold" />
-              <TextBlock Text="四" HorizontalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" FontSize="11" FontWeight="SemiBold" />
-              <TextBlock Text="五" HorizontalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" FontSize="11" FontWeight="SemiBold" />
-              <TextBlock Text="六" HorizontalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" FontSize="11" FontWeight="SemiBold" />
-            </UniformGrid>
-            <ItemsControl Grid.Row="1" ItemsSource="{Binding VisibleDays}" ItemTemplate="{StaticResource DayCellTemplate}">
-              <ItemsControl.ItemsPanel>
-                <ItemsPanelTemplate>
-                  <UniformGrid Columns="7" />
-                </ItemsPanelTemplate>
-              </ItemsControl.ItemsPanel>
-            </ItemsControl>
-            <!-- 占满剩余高度：拉伸窗口时这块跟着变大。
-                 不设 MinHeight —— 窗口偏矮时让面板自己收窄（内部有滚动条），
-                 免得撑破窗口底部把「已完成」那一段切掉。 -->
-            <ContentControl Grid.Row="2" Margin="0,8,0,0"
+          <!-- 周视图：左侧竖排近 7 天日期格子 + 右侧任务面板（左右布局）。
+               日期列固定宽，7 行竖着排；整个左栏可滚动（任务多的那天行会变高，
+               矮窗口里靠滚动看全，而不是把面板挤没）。 -->
+          <Grid IsVisible="{Binding IsWeekView}" ColumnDefinitions="236,*" Margin="8">
+            <ScrollViewer Grid.Column="0" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+              <ItemsControl ItemsSource="{Binding VisibleDays}" ItemTemplate="{StaticResource WeekDayRowTemplate}" />
+            </ScrollViewer>
+            <!-- 右侧：任务面板占满剩余高度（内容多时内部自己滚动） -->
+            <ContentControl Grid.Column="1" Margin="8,0,0,0"
                             Content="{Binding}"
                             ContentTemplate="{StaticResource RightPanelTemplate}" />
           </Grid>

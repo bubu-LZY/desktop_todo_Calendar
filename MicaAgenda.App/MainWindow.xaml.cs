@@ -52,6 +52,18 @@ public partial class MainWindow : Window
     private const double TimelineLoadThreshold = 60;
     private const double NarrowLayoutThreshold = 460.0;
 
+    /// <summary>
+    /// 「背景 + 透明度」这组装饰设置所需的最小宽度。低于它就先收起这两个控件，
+    /// 而不是让顶栏按钮压在上面（与 Avalonia 宿主 ViewControlsWidthCost 同口径）。
+    /// </summary>
+    private const double ViewControlsWidthCost = 262.0;
+
+    /// <summary>
+    /// 顶栏单行能容下「日期信息 + 常驻按钮」的最小宽度。再窄就换行：
+    /// 第一行只留日期信息，第二行放「今天 / 视图 / 设置」这一组。
+    /// </summary>
+    private const double TopBarWrapThreshold = 360.0;
+
         // 时间轴月份块数量上限与扩展冷却。
         // 这是防御性兜底：任何未预料到的路径都不允许时间轴无限增长。
         // 上限值统一以 MainViewModel.TimelineMaxMonths 为准，避免两处定义不一致。
@@ -103,8 +115,8 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
-        FileLog.Write($"[STARTUP] MainWindow ctor - v4.6.1 - exe={Environment.ProcessPath ?? "unknown"}");
-        Title = "MicaAgenda v4.6.1";
+        FileLog.Write($"[STARTUP] MainWindow ctor - v5.0.0 - exe={Environment.ProcessPath ?? "unknown"}");
+        Title = "MicaAgenda v5.0.0";
 
         // 窗口初始化前同步加载配置，确保桌面嵌入/锁定在首帧即生效
         _config = _configStore.Load();
@@ -815,17 +827,50 @@ public partial class MainWindow : Window
         UpdateResponsiveLayout();
     }
 
+    /// <summary>
+    /// 顶栏 + 主体的自适应版式，按窗口宽度分三档降级（与 Avalonia 宿主 UpdateResponsiveLayout 同口径）：
+    /// <list type="number">
+    ///   <item>宽度够：单行展示，日期信息 + 背景/透明度 + 今天/视图/设置 全在。</item>
+    ///   <item>放不下：先收起「背景 + 透明度」这组装饰设置，保证常驻按钮不压在设置项上。</item>
+    ///   <item>还是放不下：换行 —— 常驻按钮整体挪到第二行，第一行只留日期信息。</item>
+    /// </list>
+    /// 另外窗口窄到 <see cref="NarrowLayoutThreshold"/> 时，主体只留「今日任务」这一块。
+    /// </summary>
     private void UpdateResponsiveLayout()
     {
-        if (NormalViewHost is null || NarrowTaskOnlyView is null || ViewControlsPanel is null)
+        if (NormalViewHost is null || NarrowTaskOnlyView is null || ViewControlsPanel is null
+            || ToolbarActionPanel is null || DateInfoPanel is null)
         {
             return;
         }
 
-        var narrow = ActualWidth > 0 && ActualWidth <= NarrowLayoutThreshold;
-        ViewControlsPanel.Visibility = narrow ? Visibility.Collapsed : Visibility.Visible;
-        NormalViewHost.Visibility = narrow ? Visibility.Collapsed : Visibility.Visible;
-        NarrowTaskOnlyView.Visibility = narrow ? Visibility.Visible : Visibility.Collapsed;
+        var width = ActualWidth;
+        var narrowView = width > 0 && width <= NarrowLayoutThreshold;
+
+        // ① / ② 档：背景 + 透明度是否还放得下（宽度未知的首帧先不收，免得闪一下）
+        ViewControlsPanel.Visibility =
+            width <= 0 || width >= NarrowLayoutThreshold + ViewControlsWidthCost
+                ? Visibility.Visible
+                : Visibility.Collapsed;
+
+        // 今日 / 本周计数：收掉背景 / 透明度后仍拥挤才收，尽量保留信息
+        var showCounts = width <= 0 || width >= NarrowLayoutThreshold;
+        TodayCountText.Visibility = showCounts ? Visibility.Visible : Visibility.Collapsed;
+        WeekCountText.Visibility = showCounts ? Visibility.Visible : Visibility.Collapsed;
+
+        // ③ 档：单行彻底放不下 → 换行，常驻按钮搬到第二行
+        var wrap = width > 0 && width <= TopBarWrapThreshold;
+        Grid.SetRow(ToolbarActionPanel, wrap ? 1 : 0);
+        Grid.SetColumn(ToolbarActionPanel, wrap ? 0 : 1);
+        Grid.SetColumnSpan(ToolbarActionPanel, wrap ? 2 : 1);
+        ToolbarActionPanel.HorizontalAlignment =
+            wrap ? HorizontalAlignment.Left : HorizontalAlignment.Right;
+        ToolbarActionPanel.Margin = wrap
+            ? new Thickness(0, 4, 0, 0)
+            : new Thickness(0);
+
+        NormalViewHost.Visibility = narrowView ? Visibility.Collapsed : Visibility.Visible;
+        NarrowTaskOnlyView.Visibility = narrowView ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private void Window_PreviewKeyDown(object sender, KeyEventArgs e)

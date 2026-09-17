@@ -757,6 +757,105 @@
             </Border>
         </DataTemplate>
 
+        <!-- ===== 周视图左栏的日期行（竖排）=====
+             周视图改成「左侧竖排近 7 天 + 右侧任务面板」后，日期格子变成一行一条：
+             每行左起是「日 + 星期」，下面是当天的任务条。
+             不复用 DayCellTemplate：那是月视图的固定高度正方形格子（高度绑 CurrentDayCellHeight），
+             竖排 7 个会一路撑到上千像素，矮窗口里根本放不下。这里行高不定，由任务条自然撑开，
+             整列外面套滚动条（与 Avalonia 宿主 WeekDayRowTemplate 同一口径）。 -->
+        <DataTemplate x:Key="WeekDayRowTemplate" DataType="{x:Type vm:DayCellViewModel}">
+            <Border CornerRadius="6" Margin="0,0,0,3" Padding="5,4"
+                    MinHeight="40"
+                    PreviewMouseLeftButtonDown="DayCell_PreviewMouseLeftButtonDown">
+                <Border.Style>
+                    <Style TargetType="Border">
+                        <Setter Property="Background" Value="{DynamicResource DayCellBackgroundBrush}" />
+                        <Setter Property="BorderBrush" Value="{DynamicResource CellBorderBrush}" />
+                        <Setter Property="BorderThickness" Value="0.5" />
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding IsInCurrentMonth}" Value="False">
+                                <Setter Property="Opacity" Value="0.46" />
+                                <Setter Property="Background" Value="{DynamicResource DayCellOutMonthBackgroundBrush}" />
+                            </DataTrigger>
+                            <DataTrigger Binding="{Binding IsToday}" Value="True">
+                                <Setter Property="Opacity" Value="1" />
+                                <Setter Property="Background" Value="{DynamicResource TodayCellBackgroundBrush}" />
+                                <Setter Property="BorderBrush" Value="{DynamicResource TodayCellBorderBrush}" />
+                                <Setter Property="BorderThickness" Value="1.2" />
+                            </DataTrigger>
+                            <!-- 选中态放最后：同优先级下后来者覆盖 -->
+                            <DataTrigger Binding="{Binding IsSelected}" Value="True">
+                                <Setter Property="Opacity" Value="1" />
+                                <Setter Property="Background" Value="{DynamicResource SelectedCellBackgroundBrush}" />
+                                <Setter Property="BorderBrush" Value="{DynamicResource SelectedCellBorderBrush}" />
+                                <Setter Property="BorderThickness" Value="1.6" />
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </Border.Style>
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+                    <DockPanel>
+                        <!-- 任务数量显示（行尾） -->
+                        <TextBlock DockPanel.Dock="Right"
+                                   Text="{Binding TaskCount}"
+                                   FontSize="9.5"
+                                   Foreground="{DynamicResource MutedTextBrush}"
+                                   VerticalAlignment="Center"
+                                   Margin="4,0,0,0"
+                                   Visibility="{Binding HasTasks, Converter={StaticResource BoolVisibility}}" />
+                        <ItemsControl DockPanel.Dock="Right"
+                                      ItemsSource="{Binding Holidays}"
+                                      ItemTemplate="{StaticResource HolidayTemplate}"
+                                      VerticalAlignment="Center"
+                                      Visibility="{Binding Holidays.Count, Converter={StaticResource BoolVisibility}}">
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <StackPanel Orientation="Horizontal" />
+                                </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                        </ItemsControl>
+                        <!-- 选中行才暴露 + 快速新增 -->
+                        <Button DockPanel.Dock="Right"
+                                Content="+"
+                                FontSize="14"
+                                FontWeight="Bold"
+                                Width="20"
+                                Height="20"
+                                Padding="0"
+                                Margin="4,0,0,0"
+                                VerticalAlignment="Center"
+                                Cursor="Hand"
+                                BorderThickness="0"
+                                Background="Transparent"
+                                Foreground="{DynamicResource PrimaryTextBrush}"
+                                Click="AddTaskOnSelectedCell_Click"
+                                Visibility="{Binding IsSelected, Converter={StaticResource BoolVisibility}}" />
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                            <TextBlock Text="{Binding DayNumber}"
+                                       FontWeight="SemiBold"
+                                       Foreground="{DynamicResource PrimaryTextBrush}"
+                                       FontSize="12"
+                                       VerticalAlignment="Center" />
+                            <TextBlock Text="{Binding WeekdayLabel}"
+                                       FontSize="10.5"
+                                       Foreground="{DynamicResource MutedTextBrush}"
+                                       Margin="4,0,0,0"
+                                       VerticalAlignment="Center" />
+                        </StackPanel>
+                    </DockPanel>
+                    <!-- 当天任务：行数不设上限，撑多高算多高（外面整列可滚动） -->
+                    <ItemsControl Grid.Row="1"
+                                  Margin="0,3,0,0"
+                                  ItemsSource="{Binding Tasks}"
+                                  ItemTemplate="{StaticResource TaskTemplate}" />
+                </Grid>
+            </Border>
+        </DataTemplate>
+
         <DataTemplate x:Key="YearMonthTemplate" DataType="{x:Type vm:MonthSummaryViewModel}">
             <Border Background="{DynamicResource YearMonthBackgroundBrush}"
                     BorderBrush="#22000000"
@@ -1438,7 +1537,21 @@
                    Margin="0,0,0,6"
                    LastChildFill="True"
                    MouseLeftButtonDown="TitleBar_MouseLeftButtonDown">
-                <StackPanel Orientation="Horizontal" DockPanel.Dock="Right" VerticalAlignment="Center">
+                <Grid x:Name="ToolbarGrid">
+                    <!-- 顶栏自适应：见 UpdateResponsiveLayout。
+                         单行放不下时先收起「背景 + 透明度」（ViewControlsPanel 尾部那两个），
+                         再放不下就换行 —— 常驻按钮整体挪到第二行（Grid.Row=1），
+                         避免「今天 / 视图 / 设置」压在设置项上面。 -->
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                <StackPanel x:Name="ToolbarActionPanel" Grid.Row="0" Grid.Column="1"
+                            Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
                     <!-- 设置按钮：矢量齿轮图标（不用 ⚙ 字符，该字符在部分字体下会退化成彩色 emoji） -->
                     <Button Style="{StaticResource SegmentButton}" Click="Settings_Click" Margin="0,0,2,0" Padding="7,3">
                         <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
@@ -1472,7 +1585,8 @@
                     <Button x:Name="CloseButton" Content="×" Style="{StaticResource CloseButton}"
                             Visibility="Collapsed" Click="Close_Click" />
                 </StackPanel>
-                <StackPanel Orientation="Vertical" DockPanel.Dock="Left" VerticalAlignment="Center" Margin="0,0,0,0">
+                <StackPanel x:Name="DateInfoPanel" Grid.Row="0" Grid.Column="0"
+                            Orientation="Vertical" VerticalAlignment="Center" Margin="0,0,0,0">
                     <!-- 第一行：时间/星期，今日任务量，本周任务量 -->
                     <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,0,4">
                         <TextBlock Text="{Binding TodayDisplay}"
@@ -1480,44 +1594,48 @@
                                    FontWeight="SemiBold"
                                    Foreground="{DynamicResource PrimaryTextBrush}"
                                    VerticalAlignment="Center" />
-                        <TextBlock Text="{Binding TodayTaskCount}"
+                        <TextBlock x:Name="TodayCountText" Text="{Binding TodayTaskCount}"
                                    FontSize="12"
                                    Foreground="{DynamicResource MutedTextBrush}"
                                    VerticalAlignment="Center"
                                    Margin="12,0,0,0" />
-                        <TextBlock Text="{Binding ThisWeekTaskCount}"
+                        <TextBlock x:Name="WeekCountText" Text="{Binding ThisWeekTaskCount}"
                                    FontSize="12"
                                    Foreground="{DynamicResource MutedTextBrush}"
                                    VerticalAlignment="Center"
                                    Margin="8,0,0,0" />
                     </StackPanel>
-                    <!-- 第二行：视图切换、背景、透明度、开机自启 -->
-                    <StackPanel x:Name="ViewControlsPanel" Orientation="Horizontal" VerticalAlignment="Center">
+                    <!-- 第二行：视图切换、背景、透明度、开机自启。
+                         背景 / 透明度是装饰性设置，宽度不够时第一个被收起来（见 ViewControlsPanel 上的
+                         BackgroundModeRow / LockScrollBox 两个 x:Name —— WideOnlyVisibility 用它们定位）。 -->
+                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
                         <Button Content="今天" Style="{StaticResource SegmentButton}" Margin="0,0,8,0" Click="Today_Click" />
                         <Button Content="月视图" Style="{StaticResource SegmentButton}" Margin="0,0,2,0" Click="MonthView_Click" />
                         <Button Content="周视图" Style="{StaticResource SegmentButton}" Margin="0,0,2,0" Click="WeekView_Click" />
                         <Button Content="年视图" Style="{StaticResource SegmentButton}" Click="YearView_Click" />
-                        <TextBlock Text="背景" Style="{StaticResource ToolbarText}" />
-                        <ComboBox x:Name="BackgroundModeBox"
-                                  Width="104"
-                                  Style="{StaticResource ToolbarComboBox}"
-                                  SelectionChanged="BackgroundModeBox_SelectionChanged">
-                            <ComboBoxItem Content="无背景" Tag="None" />
-                            <ComboBoxItem Content="白雾玻璃" Tag="FrostedWhite" />
-                            <ComboBoxItem Content="灰雾玻璃" Tag="FrostedGray" />
-                            <ComboBoxItem Content="暗色磨砂" Tag="FrostedDark" />
-                            <ComboBoxItem Content="蓝色亚克力" Tag="AcrylicBlue" />
-                            <ComboBoxItem Content="薄荷玻璃" Tag="AcrylicMint" />
-                            <ComboBoxItem Content="纸感浅白" Tag="PaperLight" />
-                            <ComboBoxItem Content="石墨深色" Tag="Graphite" />
-                        </ComboBox>
-                        <TextBlock Text="透明度" Style="{StaticResource ToolbarText}" />
-                        <Slider x:Name="OpacitySlider"
-                                Width="86"
-                                Minimum="0.02"
-                                Maximum="1"
-                                Style="{StaticResource ToolbarSlider}"
-                                ValueChanged="OpacitySlider_ValueChanged" />
+                        <StackPanel x:Name="ViewControlsPanel" Orientation="Horizontal" VerticalAlignment="Center">
+                            <TextBlock x:Name="BackgroundLabel" Text="背景" Style="{StaticResource ToolbarText}" />
+                            <ComboBox x:Name="BackgroundModeBox"
+                                      Width="104"
+                                      Style="{StaticResource ToolbarComboBox}"
+                                      SelectionChanged="BackgroundModeBox_SelectionChanged">
+                                <ComboBoxItem Content="无背景" Tag="None" />
+                                <ComboBoxItem Content="白雾玻璃" Tag="FrostedWhite" />
+                                <ComboBoxItem Content="灰雾玻璃" Tag="FrostedGray" />
+                                <ComboBoxItem Content="暗色磨砂" Tag="FrostedDark" />
+                                <ComboBoxItem Content="蓝色亚克力" Tag="AcrylicBlue" />
+                                <ComboBoxItem Content="薄荷玻璃" Tag="AcrylicMint" />
+                                <ComboBoxItem Content="纸感浅白" Tag="PaperLight" />
+                                <ComboBoxItem Content="石墨深色" Tag="Graphite" />
+                            </ComboBox>
+                            <TextBlock x:Name="OpacityLabel" Text="透明度" Style="{StaticResource ToolbarText}" />
+                            <Slider x:Name="OpacitySlider"
+                                    Width="86"
+                                    Minimum="0.02"
+                                    Maximum="1"
+                                    Style="{StaticResource ToolbarSlider}"
+                                    ValueChanged="OpacitySlider_ValueChanged" />
+                        </StackPanel>
                         <CheckBox x:Name="LockScrollBox"
                                   Content="锁定滚动"
                                   Style="{StaticResource ToolbarCheckBox}"
@@ -1525,6 +1643,7 @@
                                   Unchecked="LockScrollBox_Changed" />
                     </StackPanel>
                 </StackPanel>
+                </Grid>
             </DockPanel>
 
             <Grid Grid.Row="1">
@@ -1568,37 +1687,23 @@
                                     ContentTemplate="{StaticResource RightPanelTemplate}" />
                 </Grid>
 
-                <!-- 周视图：星期标题 + 日期格子 + 下方今日任务 -->
+                <!-- 周视图：左侧竖排近 7 天日期格子 + 右侧任务面板（左右布局）
+                     日期列固定宽，7 行竖着排；整个左栏可滚动（任务多的那天行会变高，
+                     矮窗口里靠滚动看全，而不是把面板挤没）。 -->
                 <Grid Visibility="{Binding Settings.ViewMode, Converter={StaticResource EnumVisibility}, ConverterParameter=Week}">
-                    <!-- 周视图高度由窗口尺寸控制：顶部日期格保持 Auto，底部任务面板占满剩余空间。 -->
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto" />
-                        <RowDefinition Height="Auto" />
-                        <RowDefinition Height="*" />
-                    </Grid.RowDefinitions>
-                    <!-- 星期标题 -->
-                    <UniformGrid Grid.Row="0" Columns="7" Margin="1,0">
-                        <TextBlock Text="日" HorizontalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" FontSize="11" FontWeight="SemiBold" Padding="0,0,0,2" />
-                        <TextBlock Text="一" HorizontalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" FontSize="11" FontWeight="SemiBold" Padding="0,0,0,2" />
-                        <TextBlock Text="二" HorizontalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" FontSize="11" FontWeight="SemiBold" Padding="0,0,0,2" />
-                        <TextBlock Text="三" HorizontalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" FontSize="11" FontWeight="SemiBold" Padding="0,0,0,2" />
-                        <TextBlock Text="四" HorizontalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" FontSize="11" FontWeight="SemiBold" Padding="0,0,0,2" />
-                        <TextBlock Text="五" HorizontalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" FontSize="11" FontWeight="SemiBold" Padding="0,0,0,2" />
-                        <TextBlock Text="六" HorizontalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" FontSize="11" FontWeight="SemiBold" Padding="0,0,0,2" />
-                    </UniformGrid>
-                    <!-- 日期格子 -->
-                    <ItemsControl Grid.Row="1" ItemsSource="{Binding VisibleDays}"
-                                  ItemTemplate="{StaticResource DayCellTemplate}">
-                        <ItemsControl.ItemsPanel>
-                            <ItemsPanelTemplate>
-                                <UniformGrid Columns="7" />
-                            </ItemsPanelTemplate>
-                        </ItemsControl.ItemsPanel>
-                    </ItemsControl>
-                    <!-- 今日任务 + 本周任务完成情况：直接占满剩余高度，拉伸窗口时跟随变大。 -->
-                    <ContentControl Grid.Row="2"
-                                    Margin="0,8,0,0"
-                                    MinHeight="160"
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="240" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <ScrollViewer Grid.Column="0"
+                                  Style="{StaticResource TaskListScrollViewer}"
+                                  Margin="8,8,0,8">
+                        <ItemsControl ItemsSource="{Binding VisibleDays}"
+                                      ItemTemplate="{StaticResource WeekDayRowTemplate}" />
+                    </ScrollViewer>
+                    <!-- 今日任务 + 本周任务完成情况：占满剩余高度，内容多时内部自己滚动 -->
+                    <ContentControl Grid.Column="1"
+                                    Margin="8,8,8,8"
                                     Content="{Binding}"
                                     ContentTemplate="{StaticResource RightPanelTemplate}" />
                 </Grid>

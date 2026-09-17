@@ -38,6 +38,23 @@ public sealed class DayCellViewModel : ViewModelBase
     public ObservableCollection<TaskItemViewModel> Tasks { get; }
     public ObservableCollection<ChinaHoliday> Holidays { get; }
     public string DayNumber => Date.Day.ToString();
+
+    /// <summary>
+    /// 周视图左栏竖排日期用的星期短名（周一 / 周二 …）。
+    /// 周视图改成「左侧竖排日期」后，每行靠它说明这是星期几 ——
+    /// 横向布局时代的顶部「日一二三四五六」表头已经没有位置放了。
+    /// </summary>
+    public string WeekdayLabel => Date.DayOfWeek switch
+    {
+        DayOfWeek.Monday => "周一",
+        DayOfWeek.Tuesday => "周二",
+        DayOfWeek.Wednesday => "周三",
+        DayOfWeek.Thursday => "周四",
+        DayOfWeek.Friday => "周五",
+        DayOfWeek.Saturday => "周六",
+        _ => "周日",
+    };
+
     public string Header => $"{Date:MM月dd日}";
     public int CompletedCount => Tasks.Count(task => task.IsCompleted);
     public int OpenCount => Tasks.Count(task => !task.IsCompleted);

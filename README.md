@@ -39,7 +39,7 @@ https://bubu-lzy.github.io/desktop_todo_Calendar/
 | 视图 | 说明 |
 |---|---|
 | 月视图 | 连续滚动时间轴，支持跨月扩展 |
-| 周视图 | 7 天格子，下方展示今日任务和本周任务完成情况 |
+| 周视图 | 左侧竖排近 7 天日期格子 + 右侧任务面板（今日任务与本周完成情况） |
 | 年视图 | 12 个月任务密度总览，支持今日高亮与滚动定位 |
 
 ### 任务管理
@@ -84,11 +84,11 @@ https://bubu-lzy.github.io/desktop_todo_Calendar/
 
 | 平台 | 文件 |
 |---|---|
-| Windows | `desktop_todo_Calendar-Setup-4.6.1.exe` |
-| macOS (Apple Silicon) | `desktop_todo_Calendar-4.6.1-arm64.dmg` / `.zip` |
-| macOS (Intel) | `desktop_todo_Calendar-4.6.1-x64.dmg` / `.zip` |
-| Linux | `desktop_todo_Calendar-4.6.1-x64.AppImage`、`desktop_todo_Calendar_4.6.1_amd64.deb` |
-| 源码 | `desktop_todo_Calendar-Source-4.6.1.zip` |
+| Windows | `desktop_todo_Calendar-Setup-5.0.0.exe` |
+| macOS (Apple Silicon) | `desktop_todo_Calendar-5.0.0-arm64.dmg` / `.zip` |
+| macOS (Intel) | `desktop_todo_Calendar-5.0.0-x64.dmg` / `.zip` |
+| Linux | `desktop_todo_Calendar-5.0.0-x64.AppImage`、`desktop_todo_Calendar_5.0.0_amd64.deb` |
+| 源码 | `desktop_todo_Calendar-Source-5.0.0.zip` |
 
 Windows 安装包打包的是跨平台宿主 `MicaAgenda.Desktop.exe`（Avalonia），不是仅 Windows 的 WPF 宿主。
 

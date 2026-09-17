@@ -61,10 +61,23 @@ public partial class MainWindow : Window
     private bool _programmaticScroll;
 
     /// <summary>
-    /// 窄窗阈值：窗口窄到放不下日历格子时，主体切换成「只有今日任务」的视图。
-    /// 与 WPF 宿主 MicaAgenda.App 的 NarrowLayoutThreshold 取同一个值（460dp）。
+    /// 顶栏在放不下时的兜底宽度：把窗口缩到最小也不能再小，低于它就直接进「换行」这一档。
+    /// 2026-09 之前这里还兼作「窄窗只留今日任务」的判定；现在窄窗视图单独用
+    /// <see cref="NarrowLayoutThreshold"/>，两者分开。
     /// </summary>
     private const double NarrowLayoutThreshold = 460.0;
+
+    /// <summary>
+    /// 「背景 + 透明度」这两个装饰设置所需的最小宽度。低于它就先收起这两个控件，
+    /// 而不是让「今天 / 视图 / 设置」压在上面。
+    /// </summary>
+    private const double ViewControlsWidthCost = 262.0;
+
+    /// <summary>
+    /// 顶栏单行能容下「日期信息 + 常驻按钮」的最小宽度。再窄就换行：
+    /// 第一行只留日期信息，第二行放「今天 / 视图 / 设置 / 锁定」。
+    /// </summary>
+    private const double TopBarWrapThreshold = 340.0;
 
     /// <summary>外壳 Shell 的圆角半径（与 MainWindow.axaml 里 Shell 的 CornerRadius 一致，单位 dp）。</summary>
     private const double ShellCornerRadius = 22.0;
@@ -1955,31 +1968,71 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// 窄窗版式：窗口窄到放不下日历格子时，主体只留「今日任务」这一块
+    /// 顶栏 + 主体的自适应版式，按窗口宽度分三档降级：
+    ///
+    /// <list type="number">
+    ///   <item>宽度够：单行展示，日期信息 + 背景/透明度 + 今天/视图/设置/锁定 全在。</item>
+    ///   <item>放不下：先收起「背景 + 透明度」这组装饰设置（空间不足时它最先让位），
+    ///         保证「今天 / 视图 / 设置」永远压在设置项上 —— 这是用户报的遮挡问题的正面修法。</item>
+    ///   <item>还是放不下（&lt;= <see cref="TopBarWrapThreshold"/>）：换行。
+    ///         第一行只留日期信息，第二行整组放「今天 / 视图 / 设置 / 锁定」——
+    ///         用户明确要的就是「今天 + 周视图设置换到第二行」这个行为。</item>
+    /// </list>
+    ///
+    /// 另外窗口窄到 <see cref="NarrowLayoutThreshold"/> 时，主体只留「今日任务」这一块
     /// （今日任务 + 本周任务完成情况 + 未完成 / 已完成）。
-    /// 只收起背景 / 透明度这组装饰控件；「今天 + 视图下拉 + 设置 + 锁定」全部常驻，
-    /// 窄屏下依然能切视图、开设置、快速锁定。
     /// </summary>
     private void UpdateResponsiveLayout()
     {
         if (NormalViewHost is null || NarrowTaskOnlyView is null
-            || ViewControlsPanel is null || ViewSwitchPanel is null)
+            || ViewControlsPanel is null || ViewSwitchPanel is null
+            || TopActionPanel is null || DateInfoPanel is null || TopBarGrid is null)
         {
             return;
         }
 
-        var narrow = Bounds.Width > 0 && Bounds.Width <= NarrowLayoutThreshold;
-        ViewControlsPanel.IsVisible = !narrow;
-        // 今日 / 本周计数在窄屏（含任务视图的默认窄窗）下收起：任务面板本体已经展示这些信息，
-        // 顶栏只留日期，避免文字与右侧常驻按钮挤在一行互相遮挡。
+        var width = Bounds.Width;
+        var narrowView = width > 0 && width <= NarrowLayoutThreshold;
+
+        // ===== 第 ① / ② 档：背景 + 透明度是否还放得下 =====
+        // 宽度未知（首帧 Bounds 还是 0）时不收，免得闪一下。
+        var showViewControls = width <= 0 || width >= NarrowLayoutThreshold + ViewControlsWidthCost;
+        ViewControlsPanel.IsVisible = showViewControls;
+        // 视图切换已经收纳成一个下拉按钮，任何宽度都放得下，必须常驻
+        //（否则窄屏无法退出任务视图、开不了设置）。
+        ViewSwitchPanel.IsVisible = true;
+
+        // 今日 / 本周计数：收掉背景 / 透明度之后仍然拥挤时才收，尽量保留信息。
+        var showTaskCounts = width <= 0 || width >= NarrowLayoutThreshold;
         if (TaskCountsPanel is not null)
         {
-            TaskCountsPanel.IsVisible = !narrow;
+            TaskCountsPanel.IsVisible = showTaskCounts;
         }
-        // 视图切换已经收纳成一个下拉按钮，窄屏也放得下，必须常驻（否则窄屏无法退出任务视图）
-        ViewSwitchPanel.IsVisible = true;
-        NormalViewHost.IsVisible = !narrow;
-        NarrowTaskOnlyView.IsVisible = narrow;
+
+        // ===== 第 ③ 档：单行彻底放不下 → 换行 =====
+        var wrap = width > 0 && width <= TopBarWrapThreshold;
+        if (wrap)
+        {
+            // 常驻按钮搬到第二行（Grid.Row=1 跨满所有列），独占一行就不再和日期信息抢宽度
+            Grid.SetRow(TopActionPanel, 1);
+            Grid.SetColumn(TopActionPanel, 0);
+            Grid.SetColumnSpan(TopActionPanel, 3);
+            TopActionPanel.HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Stretch;
+        }
+        else
+        {
+            // 回到第一行右侧
+            Grid.SetRow(TopActionPanel, 0);
+            Grid.SetColumn(TopActionPanel, 1);
+            Grid.SetColumnSpan(TopActionPanel, 1);
+            TopActionPanel.HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right;
+        }
+
+        // 换行档下第二行会多出一段高度，外壳高度是外部算好的，这里只负责上下留白不贴边。
+        TopActionPanel.Margin = wrap ? new Avalonia.Thickness(0, 3, 0, 0) : default;
+
+        NormalViewHost.IsVisible = !narrowView;
+        NarrowTaskOnlyView.IsVisible = narrowView;
     }
 
     private void ApplyWindowBounds(WindowBounds b)
