@@ -59,15 +59,26 @@ public sealed class McpServerTests
     }
 
     [Fact]
-    public void AddTask_DefaultsToNoTimeAndNoReminder_OmitsAreBackwardCompatible()
+    public void AddTask_DefaultsToNoTimeAndFifteenMinuteReminder()
     {
         var task = Call("add_task", """{ "title": "普通任务", "date": "2026-09-20" }""");
 
         Assert.Null(task.GetProperty("time").GetString());
         // 没设时间仍有基准时刻（当天 9:00）
         Assert.Equal("2026-09-20T09:00:00", task.GetProperty("scheduledAt").GetString());
+        // 新口径：不指定提醒 = 默认「提前 15 分钟」
+        Assert.Equal([15], task.GetProperty("reminderLeadMinutes").EnumerateArray().Select(e => e.GetInt32()).ToArray());
+        Assert.Equal(["提前15分钟"], task.GetProperty("reminders").EnumerateArray().Select(e => e.GetString()!).ToArray());
+        Assert.True(_data.Tasks.Single().HasReminders);
+    }
+
+    [Fact]
+    public void AddTask_EmptyReminders_IsExplicitNoReminder()
+    {
+        var task = Call("add_task", """{ "title": "不提醒", "date": "2026-09-20", "reminders": [] }""");
+
+        // 空数组 = 明确「不提醒」，与「省略」严格区分
         Assert.Empty(task.GetProperty("reminderLeadMinutes").EnumerateArray());
-        Assert.Empty(task.GetProperty("reminders").EnumerateArray());
         Assert.False(_data.Tasks.Single().HasReminders);
     }
 
@@ -177,8 +188,10 @@ public sealed class McpServerTests
         var today = DateOnly.FromDateTime(now);
         // 昨天的未完成任务：逾期
         Call("add_task", $$"""{"title":"欠账","date":"{{today.AddDays(-1):yyyy-MM-dd}}"}""");
-        // 今天深夜的未完成任务：还没到点，不算逾期
-        Call("add_task", $$"""{"title":"今晚","date":"{{today:yyyy-MM-dd}}","time":"23:30"}""");
+        // 未来的未完成任务（用「现在 + 2 小时」的日期/时刻，任何时刻运行都不会逾期；
+        // 旧版硬编码 "23:30"，一旦测试跑在 23:30 之后，"今晚"也逾期，Assert.Single 必挂）。
+        var later = now.AddHours(2);
+        Call("add_task", $$"""{"title":"稍后","date":"{{DateOnly.FromDateTime(later):yyyy-MM-dd}}","time":"{{TimeOnly.FromDateTime(later):HH:mm}}"}""");
         // 今天已完成
         var done = Call("add_task", $$"""{"title":"搞定","date":"{{today:yyyy-MM-dd}}"}""");
         Call("complete_task", $$"""{"id":"{{done.GetProperty("id").GetString()}}"}""");

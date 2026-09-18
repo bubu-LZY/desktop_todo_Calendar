@@ -1,0 +1,49 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="MicaAgenda.Desktop.Controls.AiChatPanel"
+             Width="300"
+             x:CompileBindings="False">
+  <!-- 迷你 AI 对话卡片：输入框在底部（回车发送），反馈内容在上方滚动区。
+       配色与设置页卡片一致（白底 + 浅边框 + 蓝色强调），贴合应用浅色主题。
+
+       整卡片固定白底，所以内部控件必须钉死浅色主题：主窗口在「磨砂深色 / 石墨」两种背景模式下
+       会把 RequestedThemeVariant 切成 Dark，子控件会跟着用深色画刷 —— 白卡片上就会出现
+       深色输入框，以及"等待回复时输入框和发送按钮彻底看不见"的故障（Dark 的 disabled 画刷
+       ButtonBackgroundDisabled=#33ffffff / ButtonForegroundDisabled=#66ffffff 是半透明白，
+       画在白底上等于透明）。这里用 ThemeVariantScope 把卡片内部重新钉回 Light。 -->
+  <ThemeVariantScope RequestedThemeVariant="Light">
+  <Border Background="#FFFFFF" BorderBrush="#EDF0F3" BorderThickness="1"
+          CornerRadius="12" Padding="10"
+          BoxShadow="0 6 20 0 #20000000">
+    <DockPanel>
+      <!-- 顶行：标题 + 日志入口（点击弹出日志查看窗） -->
+      <Grid DockPanel.Dock="Top" ColumnDefinitions="*,Auto" Margin="0,0,0,8">
+        <TextBlock Text="AI 助手" FontSize="12" FontWeight="SemiBold" Foreground="#111827" VerticalAlignment="Center" />
+        <Button Grid.Column="1" Content="日志" Click="OpenLog_Click" FontSize="10.5" Padding="8,2"
+                CornerRadius="6" Background="#F5F7FA" BorderBrush="#E2E6EB" BorderThickness="1"
+                Foreground="#374151" Cursor="Hand"
+                ToolTip.Tip="查看最近 7 天的 AI 对话日志（自动清理更早的）" />
+      </Grid>
+
+      <!-- 底部输入区 -->
+      <Grid DockPanel.Dock="Bottom" ColumnDefinitions="*,Auto" Margin="0,8,0,0">
+        <TextBox x:Name="InputBox" Grid.Column="0"
+                 PlaceholderText="问 AI，回车发送…"
+                 Padding="8,6" CornerRadius="8" FontSize="12"
+                 Background="#F5F7FA" BorderBrush="#E2E6EB" BorderThickness="1"
+                 VerticalContentAlignment="Center"
+                 KeyDown="InputBox_KeyDown" />
+        <Button x:Name="SendButton" Grid.Column="1" Content="发送" Margin="8,0,0,0"
+                Padding="12,6" CornerRadius="8" FontSize="12"
+                Background="#2563EB" Foreground="#FFFFFF" BorderThickness="0" FontWeight="SemiBold"
+                Click="Send_Click" />
+      </Grid>
+
+      <!-- 反馈内容（滚动，最多 200 高） -->
+      <ScrollViewer x:Name="ChatScroll" MaxHeight="200" VerticalScrollBarVisibility="Auto">
+        <StackPanel x:Name="ChatHost" />
+      </ScrollViewer>
+    </DockPanel>
+  </Border>
+  </ThemeVariantScope>
+</UserControl>

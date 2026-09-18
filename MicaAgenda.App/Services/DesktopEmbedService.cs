@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Windows;
 using System.Windows.Interop;
 
@@ -206,6 +207,307 @@ public static class DesktopEmbedService
     /// 由 <c>MainWindow</c> 在操作前后成对开关。
     /// </summary>
     public static bool SuppressAutoRestore { get; set; }
+
+    // ===== 事件驱动：前台窗口变化时立刻纠一次 Z 序（替代高频轮询）=====
+
+    private const uint EventSystemForeground = 0x0003;
+    private const uint WineventOutofcontext = 0x0000;
+
+    private static IntPtr _foregroundHook;
+    private static Action? _foregroundChanged;
+    private static IntPtr _lastForeground;
+
+    private static readonly WinEventProc ForegroundHookProc = OnForegroundChanged;
+
+    private delegate void WinEventProc(
+        IntPtr hWinEventHook, uint eventType, IntPtr hwnd, int idObject, int idChild,
+        uint dwEventThread, uint dwmsEventTime);
+
+    [DllImport("user32.dll", EntryPoint = "SetWinEventHook", SetLastError = true)]
+    private static extern IntPtr SetWinEventHook(
+        uint eventMin, uint eventMax, IntPtr hmodWinEventProc, WinEventProc pfnWinEventProc,
+        uint idProcess, uint idThread, uint dwFlags);
+
+    /// <summary>
+    /// 装一个「前台窗口变化」事件钩子：一旦发生（含「显示桌面」把桌面提为前台），
+    /// 立刻回调 <paramref name="onForegroundChanged"/> 纠一次 Z 序。
+    ///
+    /// 这是把看门狗从 200ms 轮询降到 2s 低频巡检的前提：事件钩子在前台切换瞬间就触发，体感无延迟。
+    /// 回调投递到安装线程（UI 线程）的消息循环里，和看门狗 tick 同线程，安全。
+    /// </summary>
+    public static void InstallForegroundWatch(Action onForegroundChanged)
+    {
+        _foregroundChanged = onForegroundChanged;
+        if (_foregroundHook != IntPtr.Zero)
+        {
+            return;
+        }
+
+        try
+        {
+            _foregroundHook = SetWinEventHook(
+                EventSystemForeground, EventSystemForeground,
+                IntPtr.Zero, ForegroundHookProc, 0, 0, WineventOutofcontext);
+        }
+        catch
+        {
+            // 装不上就退回纯轮询（看门狗仍在），不影响主流程。
+            _foregroundHook = IntPtr.Zero;
+        }
+    }
+
+    private static void OnForegroundChanged(
+        IntPtr hook, uint eventType, IntPtr hwnd, int idObject, int idChild,
+        uint thread, uint time)
+    {
+        try
+        {
+            if (hwnd == _lastForeground)
+            {
+                return;
+            }
+
+            _lastForeground = hwnd;
+            _foregroundChanged?.Invoke();
+        }
+        catch
+        {
+            // 回调跑在 UI 线程消息循环里，绝不能抛异常穿过 native 边界。
+        }
+    }
+
+    // ===== 拦在源头：子类化窗口过程，直接吃掉「最小化」消息 =====
+
+    private static IntPtr _guardedHandle;
+    private static IntPtr _originalWndProc;
+    private static WndProcDelegate? _wndProcKeepAlive;
+
+    private delegate IntPtr WndProcDelegate(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW", SetLastError = true)]
+    private static extern IntPtr SetWindowLongPtr(IntPtr hWnd, int nIndex, IntPtr dwNewLong);
+
+    [DllImport("user32.dll", EntryPoint = "SetWindowLongW", SetLastError = true)]
+    private static extern int SetWindowLong32(IntPtr hWnd, int nIndex, int dwNewLong);
+
+    [DllImport("user32.dll", EntryPoint = "CallWindowProcW")]
+    private static extern IntPtr CallWindowProc(IntPtr lpPrevWndFunc, IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
+
+    private const int GwlWndproc = -4;
+    private const uint WmSyscommand = 0x0112;
+    private const uint WmSize = 0x0005;
+    private const int ScMinimize = 0xF020;
+    private const int SizeMinimized = 1;
+
+    /// <summary>
+    /// 给窗口装一个「最小化免疫」钩子：把 <c>SC_MINIMIZE</c> 和 <c>SIZE_MINIMIZED</c> 直接吃掉，
+    /// 让窗口<b>根本不会进入</b>最小化态（与 Avalonia 宿主同一策略）。
+    ///
+    /// <para><b>为什么光摘 WS_MINIMIZEBOX 不够。</b>那个样式位只影响两件事：标题栏有没有最小化
+    /// 按钮、以及 Explorer 做 MinimizeAll 时要不要跳过本窗口。它对<b>直接发过来的</b>
+    /// <c>WM_SYSCOMMAND/SC_MINIMIZE</c> 毫无约束 —— 实测连发几次，窗口照样被逐个压成最小化，
+    /// 看门狗 200ms 后才拉回来，用户看到的就是「闪一下没了」。</para>
+    ///
+    /// <para><b>为什么不能靠"还原得再快一点"。</b>轮询始终存在最坏 200ms 的窗口期，
+    /// 而施压是连续的，压回去的速度可以一直快过我们拉回来。唯一稳的办法是在消息抵达窗口过程时
+    /// 就不让它生效 —— 这时窗口从未最小化，也就不存在"恢复不及时"。</para>
+    ///
+    /// 幂等：已经守卫过同一句柄就直接返回。句柄变化时会重新装。
+    /// </summary>
+    public static void GuardAgainstMinimize(Window window)
+    {
+        var handle = new WindowInteropHelper(window).Handle;
+        if (handle == IntPtr.Zero)
+        {
+            return;
+        }
+
+        if (_guardedHandle == handle && _originalWndProc != IntPtr.Zero)
+        {
+            return;
+        }
+
+        _wndProcKeepAlive = WndProc;
+        var newProc = Marshal.GetFunctionPointerForDelegate(_wndProcKeepAlive);
+        var previous = IntPtr.Size == 8
+            ? SetWindowLongPtr(handle, GwlWndproc, newProc)
+            : new IntPtr(SetWindowLong32(handle, GwlWndproc, newProc.ToInt32()));
+
+        if (previous == IntPtr.Zero)
+        {
+            // 装不上就放弃（看门狗那两层防线仍在）。这只是加固，不是必需路径。
+            _wndProcKeepAlive = null;
+            return;
+        }
+
+        _originalWndProc = previous;
+        _guardedHandle = handle;
+    }
+
+    /// <summary>
+    /// 替换后的窗口过程：吞掉最小化相关消息，其余原样转发。
+    ///
+    /// 这里运行在窗口的消息线程上，<b>绝不能抛异常</b> —— 异常穿过 native 边界会直接终止进程。
+    /// 所以整段兜住，出错时退化为"什么都不拦"。
+    /// </summary>
+    private static IntPtr WndProc(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam)
+    {
+        try
+        {
+            if (ShouldSwallowMessage(msg, wParam))
+            {
+                // 返回 0 = "处理完了"，窗口不会真的最小化。
+                return IntPtr.Zero;
+            }
+        }
+        catch
+        {
+            // 判定过程本身出错时不要拦，让消息正常走完。
+        }
+
+        return CallWindowProc(_originalWndProc, hWnd, msg, wParam, lParam);
+    }
+
+    /// <summary>
+    /// 这条消息是不是"想让窗口最小化"。命中就吞掉。
+    ///
+    /// 覆盖两条真实路径：Shell 批量最小化发 <c>SC_MINIMIZE</c>（WM_SYSCOMMAND 0xF020），
+    /// 部分路径直接送 <c>WM_SIZE / SIZE_MINIMIZED</c>。恢复类消息不拦 —— 我们自己还原时要走。
+    /// 我们主动调用（托盘「最小化」按钮）时由 <see cref="SuppressAutoRestore"/> 放行。
+    /// </summary>
+    private static bool ShouldSwallowMessage(uint msg, IntPtr wParam)
+    {
+        if (SuppressAutoRestore)
+        {
+            return false;
+        }
+
+        if (msg == WmSyscommand)
+        {
+            return (wParam.ToInt64() & 0xFFF0) == ScMinimize;
+        }
+
+        if (msg == WmSize)
+        {
+            return (wParam.ToInt64() & 0xFFFF) == SizeMinimized;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// 防止窗口被「显示桌面」浮上来的桌面层<b>盖住</b>（与 Avalonia 宿主同一策略）。
+    ///
+    /// <b>这是"显示桌面后窗口看起来消失了"的真因。</b>实测 Z 序：正常时本窗口在
+    /// WorkerW(桌面) 之上所以看得见；一点「显示桌面」，Windows 把 WorkerW 整体提到
+    /// Z 序顶端，于是本窗口虽然 <c>IsWindowVisible</c> 仍为 true、也没被最小化，
+    /// 却<b>被桌面挡住了</b>。只查 vis / ico 永远查不出来，必须看 Z 序。
+    /// </summary>
+    public static void KeepAboveDesktopLayer(Window window)
+    {
+        var handle = new WindowInteropHelper(window).Handle;
+        if (handle == IntPtr.Zero)
+        {
+            return;
+        }
+
+        // 缓存"桌面层窗口"的句柄：显示桌面把 WorkerW 提上来后它会一直待在 Z 序顶部，
+        // 频繁全量遍历 Z 序（每次 50~150 个窗口 × GetClassName）是纯浪费。
+        // 缓存的句柄失效（桌面窗口被重建）时回退到全量遍历重新定位一次。
+        if (_cachedDesktopLayer != IntPtr.Zero)
+        {
+            if (!IsWindow(_cachedDesktopLayer))
+            {
+                _cachedDesktopLayer = IntPtr.Zero;
+            }
+            else if (IsAboveUs(handle, _cachedDesktopLayer))
+            {
+                SetWindowPos(handle, GetWindow(_cachedDesktopLayer, GwHwndprev), 0, 0, 0, 0,
+                    SwpNomove | SwpNosize | SwpNoactivate);
+                return;
+            }
+        }
+
+        for (var w = GetTopWindow(IntPtr.Zero); w != IntPtr.Zero; w = GetWindow(w, GwHwndnext))
+        {
+            if (w == handle)
+            {
+                return;   // 先遇到自己 → 桌面层都在我们下面，正常
+            }
+
+            if (!IsWindowVisible(w) || !IsDesktopWindow(w))
+            {
+                continue;
+            }
+
+            _cachedDesktopLayer = w;
+            SetWindowPos(handle, GetWindow(w, GwHwndprev), 0, 0, 0, 0,
+                SwpNomove | SwpNosize | SwpNoactivate);
+            return;
+        }
+    }
+
+    private static IntPtr _cachedDesktopLayer;
+
+    /// <summary>target 是否排在 self 的 Z 序之上（即 target 会盖住 self）。</summary>
+    private static bool IsAboveUs(IntPtr self, IntPtr target)
+    {
+        // 从 self 往上（GW_HWNDPREV 方向）走，遇到 target 说明它在 self 之上。
+        for (var w = GetWindow(self, GwHwndprev); w != IntPtr.Zero; w = GetWindow(w, GwHwndprev))
+        {
+            if (w == target)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    [DllImport("user32.dll", EntryPoint = "IsWindow", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsWindow(IntPtr hWnd);
+
+    [DllImport("user32.dll", EntryPoint = "GetTopWindow", SetLastError = true)]
+    private static extern IntPtr GetTopWindow(IntPtr hWnd);
+
+    [DllImport("user32.dll", EntryPoint = "GetWindow", SetLastError = true)]
+    private static extern IntPtr GetWindow(IntPtr hWnd, int uCmd);
+
+    private const int GwHwndprev = 0x00000003;
+    private const int GwHwndnext = 0x00000002;
+
+    private const string ProgmanClass = "Progman";
+    private const string WorkerWClass = "WorkerW";
+    private const int ClassNameCapacity = 64;
+
+    [DllImport("user32.dll", EntryPoint = "GetClassNameW", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern int GetClassName(IntPtr hWnd, StringBuilder lpClassName, int nMaxCount);
+
+    private static bool IsDesktopWindow(IntPtr handle)
+    {
+        var buffer = new StringBuilder(ClassNameCapacity);
+        if (GetClassName(handle, buffer, buffer.Capacity) <= 0)
+        {
+            return false;
+        }
+
+        var name = buffer.ToString();
+        return name.Equals(ProgmanClass, StringComparison.OrdinalIgnoreCase)
+            || name.Equals(WorkerWClass, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>窗口当前是不是处于「被收走」的两种形态之一（最小化 或 WS_VISIBLE 被清零）。</summary>
+    public static bool IsHiddenOrMinimized(Window window)
+    {
+        var handle = new WindowInteropHelper(window).Handle;
+        if (handle == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        return IsIconic(handle) || !IsWindowVisible(handle);
+    }
 
     /// <summary>锁定窗口：禁止拖动/缩放，固定当前位置。</summary>
     public static void LockWindow(Window window)

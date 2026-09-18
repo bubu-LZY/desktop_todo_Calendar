@@ -4,6 +4,7 @@
         xmlns:conv="clr-namespace:MicaAgenda.App.Converters"
         xmlns:vm="clr-namespace:MicaAgenda.App.ViewModels;assembly=MicaAgenda.Core"
         xmlns:scm="clr-namespace:System.ComponentModel;assembly=WindowsBase"
+        xmlns:local="clr-namespace:MicaAgenda.App"
         Title=""
         Width="980"
         Height="680"
@@ -228,6 +229,45 @@
 
         <Style x:Key="SegmentButton" TargetType="Button" BasedOn="{StaticResource IconButton}">
             <Setter Property="FontWeight" Value="SemiBold" />
+        </Style>
+
+        <!-- AI 按钮：ToggleButton 版段按钮，勾选（弹层打开）时蓝底白字高亮 -->
+        <Style x:Key="AiToggleButton" TargetType="ToggleButton">
+            <Setter Property="Height" Value="26" />
+            <Setter Property="Padding" Value="8,2" />
+            <Setter Property="Margin" Value="2,0" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="BorderBrush" Value="{DynamicResource ToolbarControlBorderBrush}" />
+            <Setter Property="Background" Value="{DynamicResource ToolbarControlBackgroundBrush}" />
+            <Setter Property="Foreground" Value="{DynamicResource PrimaryTextBrush}" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type ToggleButton}">
+                        <Border x:Name="Chrome"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="2">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"
+                                              Margin="{TemplateBinding Padding}"
+                                              RecognizesAccessKey="True" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Chrome" Property="Background" Value="{DynamicResource ToolbarControlHoverBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="Chrome" Property="Background" Value="#2563EB" />
+                                <Setter Property="Foreground" Value="#FFFFFF" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
         </Style>
 
         <Style x:Key="CloseButton" TargetType="Button" BasedOn="{StaticResource IconButton}">
@@ -528,7 +568,9 @@
         <DataTemplate x:Key="TaskTemplate" DataType="{x:Type vm:TaskItemViewModel}">
             <Border Style="{StaticResource TaskPillStyle}"
                     ToolTipService.ShowDuration="20000"
-                    MouseLeftButtonDown="Task_MouseLeftButtonDown">
+                    MouseLeftButtonDown="Task_MouseLeftButtonDown"
+                    MouseMove="Task_MouseMove"
+                    MouseLeftButtonUp="Task_MouseLeftButtonUp">
                 <Border.ToolTip>
                     <ToolTip Style="{StaticResource TaskToolTipStyle}" Content="{Binding TooltipText}" />
                 </Border.ToolTip>
@@ -757,16 +799,20 @@
             </Border>
         </DataTemplate>
 
-        <!-- ===== 周视图左栏的日期格子（竖排，正方形）=====
-             用户要求格子是「正方形」，且 7 个刚好铺满当前界面高度：
-             边长由 WeekScrollCellSize 统一给定（宿主按「左栏可用高度 ÷ 7」算出），
-             宽高绑同一个值，所以任何窗口尺寸下都是正方形；左列宽度也绑它，两者永远一致。
+        <!-- ===== 周视图左栏的日期格子（竖排）=====
+             布局约定（用户明确要求）：
+             - **宽度固定**为 WeekScrollColumnWidth(132)，不随窗口缩放变化；
+               调窗口大小时变的是右侧「今日任务」面板宽度，左栏纹丝不动。
+             - **高度自适应**：由宿主按「左栏可用高度 ÷ 7」算出 WeekScrollCellHeight 回填，
+               让 7 个格子刚好铺满界面高度，纵向不留空。
+             → 所以格子是「定宽 + 变高」的矩形，不再强行做成正方形
+               （正方形会让格子左右两侧留出大片空白，而右面板反被挤窄）。
              内容仍是「日 + 星期」+ 当天任务条，任务多时格子内部自己滚动而不是把格子撑高。
              整列可上下滚动：默认停在开头（最近 7 天），往下滚看到后面日期的格子。
              尺寸改动时记得同步 MicaAgenda.Desktop/MainWindow.axaml 的同名模板。 -->
         <DataTemplate x:Key="WeekDayRowTemplate" DataType="{x:Type vm:DayCellViewModel}">
-            <Border Width="{Binding DataContext.WeekScrollCellSize, RelativeSource={RelativeSource AncestorType=Window}}"
-                    Height="{Binding DataContext.WeekScrollCellSize, RelativeSource={RelativeSource AncestorType=Window}}"
+            <Border Width="132"
+                    Height="{Binding DataContext.WeekScrollCellHeight, RelativeSource={RelativeSource AncestorType=Window}}"
                     CornerRadius="6" Margin="0,0,0,4" Padding="5,4"
                     PreviewMouseLeftButtonDown="DayCell_PreviewMouseLeftButtonDown">
                 <Border.Style>
@@ -912,12 +958,17 @@
                                         </Style>
                                     </Border.Style>
                                     <Grid>
-                                        <TextBlock Text="{Binding DayNumber}" FontSize="11" Foreground="{DynamicResource PrimaryTextBrush}" />
+                                        <!-- 字号绑定 VM 回填值：窗口缩小时月卡列宽变小，
+                                             字号不同步缩小的话两位日期数字会被节日徽标盖住/裁掉
+                                             （宿主 UpdateResponsiveLayout 按实际列宽回填，见 SetYearFontScale）。 -->
+                                        <TextBlock Text="{Binding DayNumber}"
+                                                   FontSize="{Binding DataContext.YearDayFontSize, RelativeSource={RelativeSource AncestorType=Window}, FallbackValue=11}"
+                                                   Foreground="{DynamicResource PrimaryTextBrush}" />
                                         <StackPanel Orientation="Horizontal"
                                                     HorizontalAlignment="Right"
                                                     VerticalAlignment="Bottom">
                                             <TextBlock Text="{Binding FirstHolidayBadge}"
-                                                       FontSize="9"
+                                                       FontSize="{Binding DataContext.YearBadgeFontSize, RelativeSource={RelativeSource AncestorType=Window}, FallbackValue=9}"
                                                        FontWeight="Bold"
                                                        Foreground="{DynamicResource HolidayTextBrush}"
                                                        Margin="0,0,3,0"
@@ -1540,7 +1591,7 @@
 
         <DockPanel x:Name="ToolbarPanel"
                    Grid.Row="0"
-                   Margin="0,0,0,6"
+                   Margin="0,0,0,3"
                    LastChildFill="True"
                    MouseLeftButtonDown="TitleBar_MouseLeftButtonDown">
                 <Grid x:Name="ToolbarGrid">
@@ -1558,6 +1609,21 @@
                     </Grid.ColumnDefinitions>
                 <StackPanel x:Name="ToolbarActionPanel" Grid.Row="0" Grid.Column="1"
                             Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+                    <!-- 添加周期任务：顶栏常驻入口（所有视图都看得到） -->
+                    <Button Style="{StaticResource SegmentButton}" Click="RecurringTask_Click" Margin="0,0,2,0" Padding="7,3"
+                            Content="周期" ToolTip="管理周期任务（每天 / 每周 / 每月 / 每年自动重复）" />
+                    <!-- 数据统计 -->
+                    <Button Style="{StaticResource SegmentButton}" Click="Statistics_Click" Margin="0,0,2,0" Padding="7,3"
+                            Content="统计" ToolTip="查看本周 / 本月的任务完成情况统计" />
+                    <!-- AI 对话：ToggleButton 弹出迷你悬浮层，点其他位置自动收起（StaysOpen=False） -->
+                    <ToggleButton x:Name="AiButton" Style="{StaticResource AiToggleButton}" Content="AI"
+                                  Margin="0,0,2,0" ToolTip="AI 对话（自然语言增删改查任务）" />
+                    <Popup IsOpen="{Binding IsChecked, ElementName=AiButton, Mode=TwoWay}"
+                           PlacementTarget="{Binding ElementName=AiButton}"
+                           Placement="Bottom" StaysOpen="False" AllowsTransparency="True"
+                           Opened="AiPopup_Opened">
+                        <local:AiChatPanel x:Name="AiPanel" />
+                    </Popup>
                     <!-- 设置按钮：矢量齿轮图标（不用 ⚙ 字符，该字符在部分字体下会退化成彩色 emoji） -->
                     <Button Style="{StaticResource SegmentButton}" Click="Settings_Click" Margin="0,0,2,0" Padding="7,3">
                         <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
@@ -1694,12 +1760,13 @@
                 </Grid>
 
                 <!-- 周视图：左侧竖排近 7 天日期格子 + 右侧任务面板（左右布局）
-                     左列是正方形格子：宽度绑 WeekScrollCellSize，与格子高度同值，
-                     由 UpdateResponsiveLayout 按「左栏可用高度 ÷ 7」算出（7 格刚好铺满界面高度）。
+                     左列宽度**固定 132**（WeekScrollColumnWidth），不随窗口缩放变化：
+                     调窗口大小时只有右侧「今日任务」面板跟着变宽变窄。
+                     格子高度由宿主按「可用高度 ÷ 7」回填，7 格刚好铺满界面高度。
                      整列可上下滚动：默认停在开头（最近 7 天），往下滚能看到后面日期的格子。 -->
                 <Grid Visibility="{Binding Settings.ViewMode, Converter={StaticResource EnumVisibility}, ConverterParameter=Week}">
                     <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="{Binding WeekScrollCellSize}" MinWidth="64" />
+                        <ColumnDefinition Width="132" />
                         <ColumnDefinition Width="*" />
                     </Grid.ColumnDefinitions>
                     <ScrollViewer x:Name="WeekScrollViewer"
@@ -1785,6 +1852,16 @@
                     </ControlTemplate>
                 </Thumb.Template>
             </Thumb>
+
+            <!-- 拖拽任务时的幽灵预览：跟随鼠标，显示正在拖拽的任务标题 -->
+            <Canvas x:Name="DragGhostLayer" Grid.RowSpan="2" IsHitTestVisible="False" Panel.ZIndex="2000">
+                <Border x:Name="DragGhost" Visibility="Collapsed" Background="#2563EB" CornerRadius="8" Padding="10,6">
+                    <Border.Effect>
+                        <DropShadowEffect BlurRadius="14" ShadowDepth="3" Opacity="0.3" />
+                    </Border.Effect>
+                    <TextBlock x:Name="DragGhostText" Foreground="White" FontSize="12" />
+                </Border>
+            </Canvas>
         </Grid>
     </Border>
 </Window>

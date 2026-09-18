@@ -243,6 +243,13 @@ public sealed class DayCellViewModel : ViewModelBase
             IsAddingTask = true;
         }
 
+        // 集合结构（成员/顺序）变了：任务数量 / 完成数可能跟着变，重推这 4 个派生属性。
+        // 非变更路径（TaskListsDiffer == false）里这些值都已被 diff 校验过没变，无需通知。
+        OnPropertyChanged(nameof(TaskCount));
+        OnPropertyChanged(nameof(HasTasks));
+        OnPropertyChanged(nameof(CompletedCount));
+        OnPropertyChanged(nameof(OpenCount));
+
         RefreshHolidays(incomingHolidays);
         RenumberTasks();
     }
@@ -325,13 +332,13 @@ public sealed class DayCellViewModel : ViewModelBase
             {
                 Holidays.Add(holiday);
             }
-        }
 
-        OnPropertyChanged(nameof(TaskCount));
-        OnPropertyChanged(nameof(HasTasks));
-        OnPropertyChanged(nameof(CompletedCount));
-        OnPropertyChanged(nameof(OpenCount));
-        OnPropertyChanged(nameof(HasHolidays));
-        OnPropertyChanged(nameof(FirstHolidayBadge));
+            // 节假日相关的派生属性只在节假日真的变了时才通知。
+            // 任务相关（TaskCount/HasTasks/CompletedCount/OpenCount）由调用方 Refresh() 负责：
+            // 它们跟着「任务是否变化」走，而不是跟着节假日走 —— 原来这里无条件广播 6 个属性，
+            // 一次日历重建 56 格 × 6 次 = 数百次无效通知，每次都触发一轮布局。
+            OnPropertyChanged(nameof(HasHolidays));
+            OnPropertyChanged(nameof(FirstHolidayBadge));
+        }
     }
 }

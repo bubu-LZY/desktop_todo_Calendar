@@ -10,7 +10,10 @@ namespace MicaAgenda.App;
 
 public partial class App : Application
 {
-    private static readonly Mutex _mutex = new(true, "Global\\MicaAgenda_SingleInstance_Mutex");
+    // 与 Avalonia 宿主共用同一个（会话级）命名 Mutex：两个宿主默认写同一份数据文件，
+    // 同时运行会互相覆盖，这里让它们互斥。会话级（不带 Global\ 前缀）无需管理员权限即可创建，
+    // 且正好对应"一个登录会话一个实例"的语义。
+    private static readonly Mutex _mutex = new(true, "MicaAgenda_SingleInstance_Mutex");
 
     [DllImport("user32.dll")]
     private static extern IntPtr FindWindow(string lpClassName, string lpWindowName);
@@ -34,7 +37,7 @@ public partial class App : Application
     protected override void OnStartup(StartupEventArgs e)
     {
         // 检查是否已有实例
-        if (!_mutex.WaitOne(TimeSpan.Zero, true))
+        if (!TryTakeSingleInstanceLock())
         {
             ActivateExistingWindow();
             Shutdown(0);
@@ -42,6 +45,24 @@ public partial class App : Application
         }
 
         base.OnStartup(e);
+    }
+
+    private bool TryTakeSingleInstanceLock()
+    {
+        try
+        {
+            return _mutex.WaitOne(TimeSpan.Zero, true);
+        }
+        catch (AbandonedMutexException)
+        {
+            // 上一份进程没释放就退了（崩溃/被结束）：锁归我们，这不是错误。
+            return true;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            // 打不开就当成"已有实例在跑"（与 Avalonia 侧同一策略），宁可本次退出也不要双开。
+            return false;
+        }
     }
 
     private void ActivateExistingWindow()

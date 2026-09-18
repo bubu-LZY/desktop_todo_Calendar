@@ -107,6 +107,23 @@ public sealed class AppConfig
     /// </summary>
     public string UpdateSkipDate { get; set; } = string.Empty;
 
+    // ===== AI 助手（OpenAI 兼容）配置 =====
+
+    /// <summary>是否启用 AI 助手（顶栏 AI 对话窗 + 自然语言增删改查任务）。</summary>
+    public bool AiEnabled { get; set; }
+
+    /// <summary>OpenAI 兼容 API 的基础 URL（如 https://api.openai.com 或 https://xxx/v1，可为完整端点）。</summary>
+    public string AiBaseUrl { get; set; } = string.Empty;
+
+    /// <summary>API Key。</summary>
+    public string AiApiKey { get; set; } = string.Empty;
+
+    /// <summary>使用的模型名（可点输入框自动检索，也支持手动输入）。</summary>
+    public string AiModel { get; set; } = string.Empty;
+
+    /// <summary>是否自动补全链接：开启后若 URL 不完整，自动补全到 /v1/chat/completions。</summary>
+    public bool AiAutoCompleteUrl { get; set; } = true;
+
     /// <summary>
     /// 复制一份配置快照。设置窗口与主窗体共用同一个 AppConfig 实例，保存时是「就地改写」，
     /// 所以主窗体要判断"哪些设置项变了"必须先拿到改写前的快照——否则新旧值永远相同，

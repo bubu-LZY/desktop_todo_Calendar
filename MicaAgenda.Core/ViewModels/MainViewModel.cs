@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Globalization;
 using MicaAgenda.App.Models;
 using MicaAgenda.App.Services;
 
@@ -27,6 +28,20 @@ public sealed class MainViewModel : ViewModelBase
 
     /// <summary>周视图每次向后续追加的周数（滚到接近底部时触发）。</summary>
     public const int WeekScrollAppendWeeks = 4;
+
+    /// <summary>
+    /// 周视图左栏滚动列表的天数上限。向下滚动会不断向后追加日期，
+    /// 每个格子都带着 3 个 ObservableCollection 与事件订阅 —— 不设上限内存会单调增长，
+    /// 挂机越久越卡。超出后从头部裁剪（头部的日期都是用户已经滚过去的，安全丢弃）。
+    /// 裁剪后宿主需要按去掉的行数补偿滚动偏移，见 <see cref="WeekScrollHeadTrimmed"/>。
+    /// </summary>
+    public const int WeekScrollMaxDays = 112;
+
+    /// <summary>
+    /// 周视图左栏从头部裁剪掉若干天后触发（参数为裁剪的天数）。
+    /// 宿主据此把滚动偏移下调 <c>裁剪天数 × 单行高度</c>，避免视口内容跳变。
+    /// </summary>
+    public event Action<int>? WeekScrollHeadTrimmed;
 
     private readonly CalendarData _data;
     private readonly Func<DateTimeOffset> _nowProvider;
@@ -109,15 +124,58 @@ public sealed class MainViewModel : ViewModelBase
     public bool IsMonthOrYearView =>
         Settings.ViewMode is CalendarViewMode.Month or CalendarViewMode.Year;
 
-    /// <summary>顶栏视图下拉按钮上显示的当前视图名（与下拉项文本保持一致）。</summary>
-    public string CurrentViewLabel => Settings.ViewMode switch
+    /// <summary>
+    /// 窗口是否已窄到只显示「今日任务」这一块（宿主在 <c>UpdateResponsiveLayout</c> 里回填）。
+    ///
+    /// 窄屏下主体被强制换成任务面板，跟 <see cref="Settings"/>.ViewMode 已经没关系了，
+    /// 但下拉按钮上的文字如果还照着 ViewMode 显示，就会出现「画面是任务列表、按钮却写着周视图」
+    /// 这种自相矛盾的状态。所以宿主缩放时要把这件事同步进来，让 <see cref="CurrentViewLabel"/>
+    /// 与<b>实际画出来的东西</b>一致。
+    /// </summary>
+    public bool IsNarrowTaskOnly
     {
-        CalendarViewMode.Month => "月视图",
-        CalendarViewMode.Week => "周视图",
-        CalendarViewMode.Year => "年视图",
-        CalendarViewMode.Tasks => "任务视图",
-        _ => "月视图"
-    };
+        get => _isNarrowTaskOnly;
+        set
+        {
+            if (_isNarrowTaskOnly == value)
+            {
+                return;
+            }
+
+            _isNarrowTaskOnly = value;
+            OnPropertyChanged();
+            // 标签是窄屏状态的派生值，必须跟着一起通知。
+            OnPropertyChanged(nameof(CurrentViewLabel));
+        }
+    }
+
+    private bool _isNarrowTaskOnly;
+
+    /// <summary>
+    /// 顶栏视图下拉按钮上显示的当前视图名（与下拉项文本保持一致）。
+    ///
+    /// 窄屏下主体只剩任务面板，无论之前选的是月/周/年，用户看到的都是任务列表 ——
+    /// 这时标签一律报「任务视图」，否则按钮文字和画面会对不上。
+    /// </summary>
+    public string CurrentViewLabel
+    {
+        get
+        {
+            if (IsNarrowTaskOnly)
+            {
+                return "任务视图";
+            }
+
+            return Settings.ViewMode switch
+            {
+                CalendarViewMode.Month => "月视图",
+                CalendarViewMode.Week => "周视图",
+                CalendarViewMode.Year => "年视图",
+                CalendarViewMode.Tasks => "任务视图",
+                _ => "月视图"
+            };
+        }
+    }
 
     /// <summary>今日任务面板数据源（独立于日历格子中的 ViewModel 实例，互不干扰）。</summary>
     public ObservableCollection<TaskItemViewModel> TodayTasks { get; }
@@ -146,9 +204,32 @@ public sealed class MainViewModel : ViewModelBase
     public event Action? TimelineRebuilt;
 
     /// <summary>数据自上次保存以来是否有变更，用于按需落盘（避免周期性无谓写入）。</summary>
-    public bool IsDirty { get; private set; }
+    private bool _isDirty;
 
+    /// <summary>
+    /// 数据变更标记。setter 会触发 PropertyChanged —— 宿主订阅它来启动「脏了才落盘」的防抖。
+    /// 这里做成"赋值即通知"，而不是只靠 <see cref="MarkDirty"/>：
+    /// VM 内部有大量直接 <c>IsDirty = true</c> 的路径（加/改/删任务、勾选完成等），
+    /// 若只让 MarkDirty 通知，这些路径改完数据后防抖根本不会启动、自动保存就断了。
+    /// </summary>
+    public bool IsDirty
+    {
+        get => _isDirty;
+        private set
+        {
+            if (_isDirty == value)
+            {
+                return;
+            }
+
+            _isDirty = value;
+            OnPropertyChanged(nameof(IsDirty));
+        }
+    }
+
+    /// <summary>标记数据已变（对外入口，供宿主在无法经过 VM 内部赋值路径时调用）。</summary>
     public void MarkDirty() => IsDirty = true;
+
     public void MarkSaved() => IsDirty = false;
     public RelayCommand SetYearCommand { get; }
     public RelayCommand SetMonthCommand { get; }
@@ -363,12 +444,19 @@ public sealed class MainViewModel : ViewModelBase
             if (SetProperty(ref _todayTaskTime, value ?? CalendarTask.DefaultTime.ToTimeSpan()))
             {
                 OnPropertyChanged(nameof(TodayTaskTimeOnly));
+                OnPropertyChanged(nameof(TodayTaskTimeText));
             }
         }
     }
 
     /// <summary>草稿任务时刻对应的 <see cref="TimeOnly"/>（落盘时用它）。</summary>
     public TimeOnly TodayTaskTimeOnly => TimeOnly.FromTimeSpan(_todayTaskTime ?? CalendarTask.DefaultTime.ToTimeSpan());
+
+    /// <summary>
+    /// 草稿任务时刻的展示文本（HH:mm）。紧凑添加表单的时间小按钮直接拿它当标签，
+    /// 一眼能看到当前选的是几点，不用点开才知道。
+    /// </summary>
+    public string TodayTaskTimeText => TodayTaskTimeOnly.ToString("HH:mm", CultureInfo.InvariantCulture);
 
     /// <summary>展开今日任务的快速输入框。</summary>
     public void BeginAddTodayTask()
@@ -393,7 +481,8 @@ public sealed class MainViewModel : ViewModelBase
     public CalendarTask? CommitTodayTask()
     {
         var title = TodayTaskDraft.Trim();
-        var leads = TodayTaskReminderLeads;
+        // 含「不提醒」→ 空列表；空（未指定）→ null（默认提前15分钟）；否则档位列表。
+        var leads = Helpers.ReminderLeadCatalog.ToCommitLeads(TodayTaskLeadLabels);
         var time = TodayTaskTimeOnly;
 
         TodayTaskDraft = string.Empty;
@@ -932,29 +1021,84 @@ public sealed class MainViewModel : ViewModelBase
     public double YearMonthHeight => Math.Clamp(Settings.CellHeight * 2.85, 150, 360);
     public double CurrentDayCellHeight => Settings.ViewMode == CalendarViewMode.Week ? WeekCellHeight : MonthCellHeight;
 
+    /// <summary>年视图日期数字字号（默认 11，宿主按月卡实际列宽回填）。</summary>
+    public double YearDayFontSize { get; private set; } = 11;
+
+    /// <summary>年视图节日徽标字号，随日期字号一起缩（默认 9）。</summary>
+    public double YearBadgeFontSize { get; private set; } = 9;
+
+    private double _yearFontScale = 1.0;
+
     /// <summary>
-    /// 周视图左栏日期格子的边长（正方形），由宿主的 <c>UpdateResponsiveLayout</c> 写入。
+    /// 按缩放系数同步回填年视图的两组字号。
     ///
-    /// 用户的要求是"格子必须是正方形，且 7 个格子刚好铺满当前界面的高度"，所以这个值不是
-    /// 固定常量，而是宿主按「左栏可用高度 ÷ 7」算出来再回填的。左栏宽度也绑同一个值，
-    /// 保证格子在任何窗口尺寸下都是正方形。宿主回填 0 时 XAML 里的兜底值生效。
+    /// 窗口缩小时年视图月卡的列宽跟着变小 —— 字号不同步缩小的话，两位日期数字会被右侧的
+    /// 节日徽标盖住或直接裁掉（用户实测"缩小之后每天的数字都看不清楚了"）。
+    /// 缩放系数由宿主按「列宽 ÷ 基准列宽 40px」算出，这里只负责夹取与量化：
+    /// 量化到 0.02 步进，拖窗口时不会产生连续的属性通知与无谓重排；上限 1.0 保持
+    /// 原版观感（不在大窗口下放大），下限 0.62（数字 ≈7px，再小就真的不可辨了）。
     /// </summary>
-    public double WeekScrollCellSize
+    public void SetYearFontScale(double scale)
     {
-        get => _weekScrollCellSize;
+        // 防御 NaN / Infinity：这个系数由宿主按「列宽 ÷ 基准列宽」算出，
+        // 而列宽在首帧、视图刚切换、或极端布局下可能是 0 —— 除出来就是 NaN。
+        // NaN 会一路穿过 Clamp/Round 变成**字号的 NaN**，而字号为 NaN 时
+        // 整片日期数字会直接不渲染（用户实测："年视图里日期数字全不见了，只剩节日徽标"）。
+        if (double.IsNaN(scale) || double.IsInfinity(scale))
+        {
+            scale = 1.0;
+        }
+
+        var quantized = Math.Round(Math.Clamp(scale, 0.62, 1.0) / 0.02) * 0.02;
+        if (Math.Abs(quantized - _yearFontScale) < 0.001)
+        {
+            return;
+        }
+
+        _yearFontScale = quantized;
+        YearDayFontSize = Math.Round(11 * quantized, 1);
+        YearBadgeFontSize = Math.Round(9 * quantized, 1);
+        OnPropertyChanged(nameof(YearDayFontSize));
+        OnPropertyChanged(nameof(YearBadgeFontSize));
+    }
+
+    /// <summary>
+    /// 周视图左栏的固定宽度。
+    ///
+    /// 左栏日期格子<b>只吃这个宽度，不随窗口缩放变化</b> —— 用户的要求是"调窗口大小时调的是
+    /// 右侧今日任务面板的宽度，左侧日期格子宽度保持默认、不跟着变"。
+    /// 所以这是个常量，不再由宿主按高度回填（早期版本让它跟高度联动做成正方形，
+    /// 结果格子内部留出大片空白、右面板反而被挤窄，已废弃）。
+    ///
+    /// 132 是用户实测"152 太宽"后收窄的值。注意 XAML 里还有同值的硬编码
+    ///（周视图左列的 Border / ColumnDefinition 的 Width），改这里时要一并改掉。
+    /// </summary>
+    public const double WeekScrollColumnWidth = 132;
+
+    /// <summary>
+    /// 周视图左栏日期格子的高度，由宿主的 <c>UpdateResponsiveLayout</c> 写入。
+    ///
+    /// 高度是唯一跟随窗口变化的量：宿主按「左栏可用高度 ÷ 7」算出，让 7 个格子刚好铺满
+    /// 当前界面高度（纵向不浪费）。宽度固定为 <see cref="WeekScrollColumnWidth"/>，
+    /// 所以格子是"宽固定、高自适应"的矩形，不再强行正方形。
+    /// 宿主回填 0 时 XAML 里的兜底值生效。
+    /// </summary>
+    public double WeekScrollCellHeight
+    {
+        get => _weekScrollCellHeight;
         set
         {
-            if (Math.Abs(_weekScrollCellSize - value) < 0.01)
+            if (Math.Abs(_weekScrollCellHeight - value) < 0.01)
             {
                 return;
             }
 
-            _weekScrollCellSize = value;
+            _weekScrollCellHeight = value;
             OnPropertyChanged();
         }
     }
 
-    private double _weekScrollCellSize;
+    private double _weekScrollCellHeight;
 
     public void RefreshClock()
     {
@@ -1088,8 +1232,9 @@ public sealed class MainViewModel : ViewModelBase
         => AddTask(date, title, reminderLeadMinutes is null ? null : [reminderLeadMinutes.Value], time);
 
     /// <summary>
-    /// 多选提醒版添加任务：<paramref name="reminderLeads"/> 为勾选的全部提前量（分钟），
-    /// 空集合 / null = 不提醒；0 = 「到时提醒」。第一个成为主提醒，其余进额外档位。
+    /// 多选提醒版添加任务：<paramref name="reminderLeads"/> 为勾选的全部提前量（分钟）。
+    /// null = 未指定，默认带「提前 15 分钟」；空集合 = 明确「不提醒」；0 = 「到时提醒」。
+    /// 第一个成为主提醒，其余进额外档位。
     /// </summary>
     public CalendarTask AddTask(DateOnly date, string title, IReadOnlyList<int>? reminderLeads, TimeOnly? time)
     {
@@ -1103,7 +1248,7 @@ public sealed class MainViewModel : ViewModelBase
                 CreatedAt = _nowProvider(),
                 Time = NormalizeTaskTime(time)
             };
-            task.SetReminderLeads(reminderLeads);
+            task.SetReminderLeads(reminderLeads ?? [Helpers.ReminderLeadCatalog.DefaultLeadMinutes]);
             // 新建时触发时刻已经过去（且超出该档位补发宽限）的档位直接记为已推：
             // 例如给今天的任务勾「提前一天」，保存瞬间不该蹦出一条陈旧提醒。
             task.SuppressMissedLeadReminders(_nowProvider());
@@ -1115,6 +1260,131 @@ public sealed class MainViewModel : ViewModelBase
         // 避免后台轮询 / API 线程在整轮界面重建期间被堵住。
         RebuildCalendar();
         return task;
+    }
+
+    /// <summary>
+    /// 添加一条周期任务：创建源任务（第一次发生）+ 物化后续重复实例。
+    /// 返回源任务；后续实例由 <see cref="RecurrenceService.Expand"/> 生成，SeriesId 指向源任务。
+    /// </summary>
+    public CalendarTask AddRecurringTask(
+        DateOnly start,
+        string title,
+        RecurrenceFrequency frequency,
+        int interval,
+        DateOnly? end,
+        TimeOnly? time,
+        IReadOnlyList<int>? reminderLeads)
+    {
+        if (frequency == RecurrenceFrequency.None)
+        {
+            // 频率无效时退化为普通一次性任务。
+            return AddTask(start, title, reminderLeads, time);
+        }
+
+        CalendarTask master;
+        lock (_syncRoot)
+        {
+            master = new CalendarTask
+            {
+                Date = start,
+                Title = title.Trim(),
+                CreatedAt = _nowProvider(),
+                Time = NormalizeTaskTime(time),
+                Recurrence = frequency,
+                RecurrenceInterval = Math.Max(1, interval),
+                RecurrenceEnd = end,
+            };
+            master.SetReminderLeads(reminderLeads ?? [Helpers.ReminderLeadCatalog.DefaultLeadMinutes]);
+            master.SuppressMissedLeadReminders(_nowProvider());
+            _data.Tasks.Add(master);
+
+            foreach (var instance in RecurrenceService.Expand(master))
+            {
+                // 过去日期的实例（用户给过去的起始日期时）同样压掉已错过的陈旧提醒。
+                instance.SuppressMissedLeadReminders(_nowProvider());
+                _data.Tasks.Add(instance);
+            }
+
+            IsDirty = true;
+        }
+
+        RebuildCalendar();
+        return master;
+    }
+
+    /// <summary>删除整个周期任务系列（源任务 + 全部物化实例）。返回删除条数（0 = 系列不存在）。</summary>
+    public int DeleteRecurringSeries(Guid seriesId)
+    {
+        int removed;
+        lock (_syncRoot)
+        {
+            removed = _data.Tasks.RemoveAll(task => task.Id == seriesId || task.SeriesId == seriesId);
+            if (removed > 0)
+            {
+                IsDirty = true;
+            }
+        }
+
+        if (removed > 0)
+        {
+            RebuildCalendar();
+        }
+
+        return removed;
+    }
+
+    /// <summary>返回指定系列（含源任务与其全部实例）的任务列表；系列不存在返回空列表。</summary>
+    public List<CalendarTask> GetRecurringSeries(Guid seriesId)
+    {
+        lock (_syncRoot)
+        {
+            return _data.Tasks
+                .Where(task => task.Id == seriesId || task.SeriesId == seriesId)
+                .ToList();
+        }
+    }
+
+    /// <summary>返回所有周期任务系列的源任务（Recurrence != None），供管理面板列出。</summary>
+    public List<CalendarTask> GetAllRecurringMasters()
+    {
+        lock (_syncRoot)
+        {
+            return _data.Tasks
+                .Where(task => task.Recurrence != RecurrenceFrequency.None)
+                .OrderBy(task => task.Date)
+                .ThenBy(task => task.Title, StringComparer.Ordinal)
+                .ToList();
+        }
+    }
+
+    /// <summary>删除所有周期任务系列（源任务 + 全部物化实例）。返回删除的系列数。</summary>
+    public int DeleteAllRecurringSeries()
+    {
+        int seriesCount;
+        lock (_syncRoot)
+        {
+            var masterIds = _data.Tasks
+                .Where(task => task.Recurrence != RecurrenceFrequency.None)
+                .Select(task => task.Id)
+                .ToHashSet();
+            seriesCount = masterIds.Count;
+
+            _data.Tasks.RemoveAll(task =>
+                task.Recurrence != RecurrenceFrequency.None
+                || (task.SeriesId is { } sid && masterIds.Contains(sid)));
+
+            if (seriesCount > 0)
+            {
+                IsDirty = true;
+            }
+        }
+
+        if (seriesCount > 0)
+        {
+            RebuildCalendar();
+        }
+
+        return seriesCount;
     }
 
     /// <summary>
@@ -1145,6 +1415,35 @@ public sealed class MainViewModel : ViewModelBase
         {
             RebuildCalendar();
         }
+    }
+
+    /// <summary>
+    /// 拖拽改期：把任务挪到另一个日期格子。改期后作废旧的「已推」提醒标记（新日期按新时刻重新提醒）。
+    /// 返回是否真的改动了（任务不存在或日期未变返回 false）。
+    /// </summary>
+    public bool ChangeTaskDate(Guid taskId, DateOnly newDate)
+    {
+        bool changed;
+        lock (_syncRoot)
+        {
+            var task = FindTask(taskId);
+            if (task is null || task.Date == newDate)
+            {
+                return false;
+            }
+
+            task.Date = newDate;
+            task.ResetReminder();
+            IsDirty = true;
+            changed = true;
+        }
+
+        if (changed)
+        {
+            RebuildCalendar();
+        }
+
+        return changed;
     }
 
     /// <summary>
@@ -1219,7 +1518,6 @@ public sealed class MainViewModel : ViewModelBase
                 return;
             }
 
-            var wasCompleted = task.IsCompleted;
             if (task.IsCompleted)
             {
                 task.MarkIncomplete();
@@ -1229,7 +1527,6 @@ public sealed class MainViewModel : ViewModelBase
                 task.MarkCompleted(_nowProvider());
             }
 
-            System.Diagnostics.Debug.WriteLine($"[TASK_TOGGLE] id={taskId} title='{task.Title}' {wasCompleted}->{task.IsCompleted}");
             IsDirty = true;
             RebuildCalendar();
         }
@@ -1394,6 +1691,19 @@ public sealed class MainViewModel : ViewModelBase
             // 锚点此时已等于今天所在月，所以这里只会走增量刷新与派生属性通知。
             RebuildCalendar();
         }
+        else if (Settings.ViewMode == CalendarViewMode.Week
+                 && !dateChanged
+                 && IndexOfTodayInWeekScroll >= 0)
+        {
+            // 周视图 + 选中的本来就是今天 + 今天仍在已铺开的列表里 → **数据一个字节都没变**，
+            // 用户只是把左栏滚到几周之后去了，现在想滚回来。
+            //
+            // 这时若照常 RebuildCalendar()，就是 VisibleDays.Clear() 再新建 56 个
+            // DayCellViewModel，每个都要重新挂任务、算徽标 —— 在 UI 线程上是实打实的
+            // 整轮重排，用户感知就是「点了今天要卡 1~2 秒」。
+            // 既然数据没变，重建毫无意义，只发滚动信号让宿主滚回今天那一行即可。
+            TimelineRebuilt?.Invoke();
+        }
         else
         {
             RebuildCalendar();
@@ -1543,6 +1853,20 @@ public sealed class MainViewModel : ViewModelBase
             VisibleDays.Add(CreateDayCell(new CalendarDay(date, true, date == _today)));
         }
 
+        // 超出上限就从头部裁剪：裁掉的是用户早已滚过去的日期，不影响正在看的位置。
+        // 但「今天」可能恰好在被裁掉的头部里 —— 那是用户往前滚了一百多天导致的，
+        // IndexOfTodayInWeekScroll 会变成 -1，点「今天」自然退化走整段重建，行为依然正确。
+        var overflow = VisibleDays.Count - WeekScrollMaxDays;
+        if (overflow > 0)
+        {
+            for (var i = 0; i < overflow; i++)
+            {
+                VisibleDays.RemoveAt(0);
+            }
+
+            WeekScrollHeadTrimmed?.Invoke(overflow);
+        }
+
         return count;
     }
 
@@ -1556,6 +1880,30 @@ public sealed class MainViewModel : ViewModelBase
         {
             var target = SelectedDate == default ? _today : SelectedDate;
             return target.AddDays(-(int)target.DayOfWeek);
+        }
+    }
+
+    /// <summary>
+    /// "今天"在周视图左栏滚动列表里的行号；不在当前已铺开的范围内时返回 <c>-1</c>。
+    ///
+    /// 点「今天」要跳回今天所在这周 —— 周视图左栏是可无限上下滚的长列表，用户可能已经
+    /// 翻到几周之后，此时"今天"未必在可见范围内。宿主拿这个索引决定滚到哪里。
+    /// 返回 -1 表示还没铺到（理论上不会：列表从"本周周日"起铺，今天恒为第 0 行，
+    /// 且只会往后追加），宿主可据此退化为"滚回顶部"。
+    /// </summary>
+    public int IndexOfTodayInWeekScroll
+    {
+        get
+        {
+            for (var i = 0; i < VisibleDays.Count; i++)
+            {
+                if (VisibleDays[i].Date == _today)
+                {
+                    return i;
+                }
+            }
+
+            return -1;
         }
     }
 

@@ -8,6 +8,7 @@
         CanResize="True"
         Background="#F7F8FA"
         FontSize="13"
+        RequestedThemeVariant="Light"
         x:CompileBindings="False">
 
   <Window.Styles>
@@ -155,6 +156,7 @@
               <Button Classes="navItem" Content="定时报告" Tag="report" Click="Nav_Click" />
               <Button Classes="navItem" Content="自动备份" Tag="backup" Click="Nav_Click" />
               <Button Classes="navItem" Content="MCP 接口" Tag="mcp" Click="Nav_Click" />
+              <Button Classes="navItem" Content="AI 助手" Tag="ai" Click="Nav_Click" />
               <Button Classes="navItem" Content="桌面行为" Tag="desktop" Click="Nav_Click" />
               <Button Classes="navItem" Content="版本更新" Tag="update" Click="Nav_Click" />
               <Button Classes="navItem" Content="节假日数据" Tag="holiday" Click="Nav_Click" />
@@ -321,6 +323,33 @@
             </StackPanel>
             <TextBlock Text="Claude Desktop / Cursor 等客户端添加 MCP Server 后，即可直接调用本程序的查询/增删改查任务等工具。"
                        Classes="hint" Margin="0,8,0,0" />
+          </StackPanel>
+        </Border>
+
+        <!-- ===== AI 助手（OpenAI 兼容）===== -->
+        <Border x:Name="CardAi" Classes="card">
+          <StackPanel>
+            <DockPanel Classes="cardHead">
+              <Border DockPanel.Dock="Left" Classes="titleBar" />
+              <TextBlock Text="AI 助手（OpenAI 兼容）" Classes="groupTitle" />
+            </DockPanel>
+            <CheckBox x:Name="AiEnabledBox" Margin="0,0,0,10"
+                      Content="启用 AI 助手（顶栏对话窗 + 自然语言增删改查任务）" />
+            <TextBlock Text="API URL（兼容 OpenAI 的接口地址，如 https://api.openai.com 或国内代理 /v1）" Classes="fieldLabel" Margin="0,0,0,4" />
+            <TextBox x:Name="AiBaseUrlBox" Classes="inputBox" Margin="0,0,0,10" />
+            <TextBlock Text="API Key" Classes="fieldLabel" Margin="0,0,0,4" />
+            <TextBox x:Name="AiApiKeyBox" Classes="inputBox" Margin="0,0,0,10" />
+            <TextBlock Text="模型（点击「检索模型」自动列出，也支持手动输入）" Classes="fieldLabel" Margin="0,0,0,4" />
+            <Grid ColumnDefinitions="*,Auto">
+              <ComboBox x:Name="AiModelBox" Grid.Column="0" IsEditable="True" VerticalAlignment="Center" />
+              <Button x:Name="RetrieveAiModelsButton" Grid.Column="1" Content="检索模型" Classes="actionButton" Margin="8,0,0,0" Click="RetrieveAiModels_Click" />
+            </Grid>
+            <CheckBox x:Name="AiAutoCompleteUrlBox" Margin="0,10,0,0"
+                      Content="自动补全链接（开启后自动检测 URL 是否完整，不完整时补全到 /v1/chat/completions）" />
+            <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+              <Button x:Name="TestAiButton" Content="测试连接" Classes="actionButton" Click="TestAiConnection_Click" />
+              <TextBlock x:Name="AiStatus" Foreground="#157347" FontSize="11" Margin="10,0,0,0" VerticalAlignment="Center" TextWrapping="Wrap" />
+            </StackPanel>
           </StackPanel>
         </Border>
 

@@ -1,7 +1,5 @@
 using System.ComponentModel;
-using System.IO;
 using System.Linq;
-using System.Net.Http;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
@@ -15,21 +13,20 @@ using MicaAgenda.App.ViewModels;
 
 namespace MicaAgenda.App;
 
-internal static class FileLog
-{
-    [System.Diagnostics.Conditional("DEBUG")]
-    public static void Write(string message)
-    {
-    }
-}
-
 public partial class MainWindow : Window
 {
     private readonly CalendarDataStore _store = new();
     private readonly ChinaHolidayService _holidayService = new();
     private readonly AppConfigStore _configStore = new();
     private readonly object _syncRoot = new();
+
+    /// <summary>
+    /// 数据文件加载失败时置 true，全程关闭自动保存（数据安全闸门）：
+    /// 加载失败意味着原文件已损坏并被隔离改名，若照常自动保存，空数据会立刻在原路径新建空文件。
+    /// </summary>
+    private bool _suppressAutoSave;
     private readonly DispatcherTimer _clockTimer;
+    private System.Threading.Timer? _gcTrimTimer;
     private MainViewModel? _viewModel;
     private AppConfig _config = new();
     private TaskApiServer? _apiServer;
@@ -43,20 +40,13 @@ public partial class MainWindow : Window
     private bool _isUiReady;
     private bool _isApplyingSettings;
     private bool _fitWindowToContentQueued;
-    private bool _settingsAppliedToWindow;
     private bool _closeAfterSaveRequested;
         private bool _isExiting;
         private bool _userSizing;
         // 月视图是像素滚动，VerticalOffset / ExtentHeight / ViewportHeight 单位均为像素。
         // 距边缘不足 60px 时预加载下一批月份。
     private const double TimelineLoadThreshold = 60;
-    private const double NarrowLayoutThreshold = 460.0;
-
-    /// <summary>
-    /// 「背景 + 透明度」这组装饰设置所需的最小宽度。低于它就先收起这两个控件，
-    /// 而不是让顶栏按钮压在上面（与 Avalonia 宿主 ViewControlsWidthCost 同口径）。
-    /// </summary>
-    private const double ViewControlsWidthCost = 262.0;
+    private const double NarrowLayoutThreshold = 380.0;
 
     /// <summary>
     /// 顶栏单行能容下「日期信息 + 常驻按钮」的最小宽度。再窄就换行：
@@ -101,9 +91,9 @@ public partial class MainWindow : Window
     // 判断"用户是否正在操作本窗口"一律以光标命中的窗口为准（见 IsCursorOverWindow），
     // 不用 MouseEnter/MouseLeave 标记——后者在被遮挡/失焦时可能不触发，会让窗口永远浮在顶层。
     //
-    // 间隔 200ms：用户从本程序移到其他窗口后，下一个 tick 就把自己压回底部，体感"基本无缝"。
-    // 早期版本压到 33ms（30 次/秒），每个 tick 都要走两次窗口样式/Z 序系统调用，属于纯浪费；
-    // 5 次/秒已经足够跟手，系统调用量降到 1/6。
+    // 间隔 200ms：用户实测点「显示桌面」后窗口要等 1~2 秒才回来，说明「显示桌面」这条路径
+    // 上后台事件钩子并不可靠（Win+D / 右下角细条把 WorkerW 提上来的同时前台窗口未必变化），
+    // 只能靠轮询兜底。200ms = 一秒 5 次，每次几个只读调用、样式已是目标值就提前返回，开销远小于 UI 刷新本身。
     private readonly DispatcherTimer _embedWatchdog = new() { Interval = TimeSpan.FromMilliseconds(200) };
 
     // SetWindowPos 常用 flag 组合
@@ -127,8 +117,7 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
-        FileLog.Write($"[STARTUP] MainWindow ctor - v5.1.0 - exe={Environment.ProcessPath ?? "unknown"}");
-        Title = "MicaAgenda v5.1.0";
+        Title = "MicaAgenda v5.2.0";
 
         // 窗口初始化前同步加载配置，确保桌面嵌入/锁定在首帧即生效
         _config = _configStore.Load();
@@ -192,6 +181,8 @@ public partial class MainWindow : Window
             {
                 ClampToWorkingArea();
                 UpdateResponsiveLayout();
+                // 默认视图就是年视图时，月卡要等这次布局后才量得出实际列宽，补一次字号回填
+                UpdateYearFontScale();
             }), DispatcherPriority.Background);
         }
     }
@@ -257,7 +248,21 @@ public partial class MainWindow : Window
 
     private async Task InitializeAsync()
     {
-        var data = await _store.LoadAsync();
+        CalendarData data;
+        try
+        {
+            data = await _store.LoadAsync();
+        }
+        catch (CalendarDataLoadException ex)
+        {
+            // 数据文件损坏，已隔离改名留存。以空数据继续运行（挂件不能因为读不出文件就起不来），
+            // 但全程关闭自动保存 —— 否则空数据会立刻在原路径新建一个空文件，用户会误以为数据没了。
+            App.LogError(ex, "Initialize.Load");
+            _suppressAutoSave = true;
+            data = new CalendarData();
+            ShowToast("数据文件读取失败，已隔离备份；自动保存已关闭，请从备份恢复。");
+        }
+
         var autoStartEnabled = _config.AutoStart;
         data.Settings.AlwaysOnTop = false;
         var holidayYear = DateOnly.FromDateTime(DateTime.Now).Year;
@@ -267,6 +272,10 @@ public partial class MainWindow : Window
         _viewModel = new MainViewModel(data, holidays: holidays, syncRoot: _syncRoot);
         _viewModel.ReviewTaskDeleted += NotifyReviewDeletion;
         _viewModel.ReviewTaskStatusChanged += OnReviewTaskStatusChanged;
+        _viewModel.WeekScrollHeadTrimmed += OnWeekScrollHeadTrimmed;
+
+        // 右上角迷你 AI 对话卡片：注入数据与配置，与 MCP 的 AI 工具共用同一套任务执行逻辑。
+        AiPanel.Initialize(_viewModel.Data, _syncRoot, () => _config, OnDataChangedFromApi, CreateHostActions());
 
         // 先把内容挂上并渲染出来，首屏优先；
         // 下面那些与首屏无关的工作统一推迟到 Background 优先级，避免"启动卡两秒才显示全"。
@@ -274,6 +283,13 @@ public partial class MainWindow : Window
         ApplySettingsToWindow();
         _clockTimer.Start();
         ApplyViewHeightPolicy();
+
+        // 长驻挂件空闲时定期做一次「优化式」非阻塞 GC，把工作集还给系统（避免常驻内存越堆越高）。
+        _gcTrimTimer = new System.Threading.Timer(
+            _ => GC.Collect(GC.MaxGeneration, GCCollectionMode.Optimized, blocking: false),
+            null,
+            TimeSpan.FromMinutes(3),
+            TimeSpan.FromMinutes(3));
 
         _viewModel.TimelineRebuilt += OnTimelineRebuilt;
         _ = Dispatcher.BeginInvoke(new Action(ScrollTimelineToAnchor), DispatcherPriority.Loaded);
@@ -289,16 +305,17 @@ public partial class MainWindow : Window
 
                 if (_config.HighPriorityStartup)
                 {
-                    // 自身进程优先级立刻提上去：不需要管理员权限，必定生效，
-                    // 这也是「高优先级」真正能被感知到的部分。
-                    HighPriorityStartupService.ApplyProcessPriority(true);
+                    // 自身进程优先级立刻提上去：不需要管理员权限，必定生效。
+                    // 启动瞬间用 High 抢首屏，15 秒后自动回落到 AboveNormal 常驻，
+                    // 避免桌面挂件长期跟前台应用抢时间片。
+                    HighPriorityStartupService.ApplyProcessPriorityWithFallback(true);
 
                     // 计划任务缺失时补登记一次，但开机过程中不弹 UAC（太打扰），
                     // 失败只记一条日志，用户可以自己在设置里授权。
                     var highPriority = HighPriorityStartupService.Enable(allowElevation: false);
                     if (!highPriority.TaskRegistered)
                     {
-                        FileLog.Write($"[STARTUP] 高优先级开机任务未登记：{highPriority.Message}");
+                        App.LogError(null, "[STARTUP] 高优先级开机任务未登记：" + highPriority.Message);
                     }
                 }
             }, "Startup.AutoStart");
@@ -335,9 +352,23 @@ public partial class MainWindow : Window
             _syncRoot,
             OnDataChangedFromApi,
             _config.ApiToken,
-            NotifyReviewDeletion);
+            NotifyReviewDeletion,
+            configProvider: () => _config,
+            hostActions: CreateHostActions());
         _mcpServer.Start(_config.McpPort);
     }
+
+    /// <summary>
+    /// 宿主能力桥：把「发送 / 预览报告」「立即备份」包成工具能力，供 MCP 与 AI 面板共用
+    /// （AI 面板内部另建了一个不监听端口的工具服务，同样需要这份能力）。
+    /// 委托是调用时才求值的，所以可以先建桥、后创建服务实例。
+    /// </summary>
+    private McpHostActions CreateHostActions() => new()
+    {
+        SendReportAsync = () => _reportService!.RunOnceAsync(),
+        PreviewReport = () => _reportService!.Preview(),
+        RunBackupAsync = async () => McpHostActions.DescribeBackup(await _backupService!.RunBackupAsync())
+    };
 
     private void StartBackupService()
     {
@@ -465,23 +496,26 @@ public partial class MainWindow : Window
             try
             {
                 await Task.Delay(250);
-                lock (_apiRefreshLock)
-                {
-                    _apiRefreshPending = false;
-                }
 
-                if (_viewModel is null)
+                if (_viewModel is not null)
                 {
-                    return;
+                    _viewModel.RebuildCalendar();
+                    _viewModel.MarkDirty();
+                    await SaveAsync();
                 }
-
-                _viewModel.RebuildCalendar();
-                _viewModel.MarkDirty();
-                await SaveAsync();
             }
             catch (Exception ex)
             {
                 App.LogError(ex, "OnDataChangedFromApi");
+            }
+            finally
+            {
+                // 复位必须放 finally：RebuildCalendar 一旦抛异常，标志位会永久卡 true，
+                // 之后所有 API 刷新都被静默跳过。
+                lock (_apiRefreshLock)
+                {
+                    _apiRefreshPending = false;
+                }
             }
         });
     }
@@ -550,6 +584,9 @@ public partial class MainWindow : Window
         {
             // 清理Toast窗口
             Helpers.ToastHelper.Cleanup();
+
+            _gcTrimTimer?.Dispose();
+            _gcTrimTimer = null;
 
             // 逐个兜底释放：任一服务 Dispose 抛异常都不能影响剩余资源的清理
             RunGuarded(() => _apiServer?.Dispose(), "OnClosed.ApiServer");
@@ -685,6 +722,7 @@ public partial class MainWindow : Window
         _config = config;
 
         RunGuarded(UpdateCloseButtonVisibility, "OnSettingsApplied.UpdateCloseButton");
+        UpdateAiButton();
 
         // 重启 API（端口/开关/Token 可能变化）
         RunGuarded(() =>
@@ -832,6 +870,21 @@ public partial class MainWindow : Window
         CloseButton.Visibility = Visibility.Collapsed;
     }
 
+    /// <summary>AI 顶栏按钮只在「启用 AI 助手」时显示；关闭时同时收起可能还开着的悬浮层。</summary>
+    private void UpdateAiButton()
+    {
+        if (AiButton is null)
+        {
+            return;
+        }
+
+        AiButton.Visibility = _config.AiEnabled ? Visibility.Visible : Visibility.Collapsed;
+        if (!_config.AiEnabled)
+        {
+            AiButton.IsChecked = false;
+        }
+    }
+
     private void Window_SizeChanged(object sender, SizeChangedEventArgs e)
     {
         // 最小尺寸硬夹取。WPF 的 Window.MinWidth 在有原生边框时通常有效，但缩放热区
@@ -863,6 +916,70 @@ public partial class MainWindow : Window
     /// （= <c>Window.MinWidth</c>），拖到那儿就停住，保证所有设置按钮任何宽度下都可见、不被遮挡。
     /// 另外窗口窄到 <see cref="NarrowLayoutThreshold"/> 时，主体只留「今日任务」这一块。
     /// </summary>
+    /// <summary>
+    /// 清掉上一轮给顶栏按钮加的宽度补偿（见 UpdateResponsiveLayout 末尾的均摊）。
+    /// 补偿值会直接改变按钮组总宽，不清掉的话下一轮的密度测量与换行判断都会带上它而失真。
+    /// </summary>
+    private void ResetToolbarWidthPadding()
+    {
+        if (ToolbarActionPanel is null)
+        {
+            return;
+        }
+
+        foreach (var button in EnumerateVisual<Button>(ToolbarActionPanel))
+        {
+            button.MinWidth = 0;
+        }
+    }
+
+    /// <summary>
+    /// 顶栏按钮的三档密度：0 = 默认，1 = 紧凑，2 = 超紧凑（与 Avalonia 宿主同思路）。
+    ///
+    /// 这些入口在窄窗下不隐藏 —— 窄屏恰恰就是任务视图：藏掉「设置」用户就没法改配置、
+    /// 藏掉「AI」就调不出对话。所以按可用宽度逐级缩字号与内边距，实在放不下才换行。
+    /// 直接写局部值（而非切 Style）：按钮上的 Padding 本来就是局部值，层级一致才盖得住。
+    /// </summary>
+    private void SetToolbarDensity(int level)
+    {
+        if (ToolbarGrid is null)
+        {
+            return;
+        }
+
+        var (fontSize, padH, padV) = level switch
+        {
+            2 => (9.0, 3.5, 1.0),
+            1 => (10.0, 5.0, 2.0),
+            _ => (11.5, 7.0, 3.0)
+        };
+
+        foreach (var button in EnumerateVisual<Button>(ToolbarGrid))
+        {
+            button.FontSize = fontSize;
+            button.Padding = new Thickness(padH, padV, padH, padV);
+        }
+    }
+
+    /// <summary>深度优先枚举视觉树里指定类型的元素（WPF 没有 Avalonia 的 GetVisualDescendants）。</summary>
+    private static IEnumerable<T> EnumerateVisual<T>(DependencyObject root) where T : DependencyObject
+    {
+        var count = VisualTreeHelper.GetChildrenCount(root);
+        for (var i = 0; i < count; i++)
+        {
+            var child = VisualTreeHelper.GetChild(root, i);
+            if (child is T typed)
+            {
+                yield return typed;
+            }
+
+            foreach (var nested in EnumerateVisual<T>(child))
+            {
+                yield return nested;
+            }
+        }
+    }
+
     private void UpdateResponsiveLayout()
     {
         if (NormalViewHost is null || NarrowTaskOnlyView is null || ViewControlsPanel is null
@@ -872,7 +989,12 @@ public partial class MainWindow : Window
         }
 
         var width = ActualWidth;
-        var narrowView = width > 0 && width <= NarrowLayoutThreshold;
+        // 窄窗退化为「只留任务面板」—— 但周视图除外：
+        // 周视图本身就是「左列日期格子 + 右侧任务面板」的窄布局，窄窗下依然可用。
+        // 若把它也强制成任务面板，用户在窄窗里点「周视图」就会像"没反应"
+        //（切换其实生效了，只是立刻被这条规则盖回任务面板）。
+        var narrowView = width > 0 && width <= NarrowLayoutThreshold
+                         && _viewModel?.Settings.ViewMode != CalendarViewMode.Week;
 
         // ===== 用「实际测量」而不是「拍脑袋常量」来决定档位 =====
         //
@@ -884,13 +1006,29 @@ public partial class MainWindow : Window
         TodayCountText.Visibility = Visibility.Visible;
         WeekCountText.Visibility = Visibility.Visible;
 
+        // 复位上一轮给按钮加的宽度补偿：它会直接改变按钮组总宽，
+        // 不清掉的话下面的密度测量与档位判断都会带上它而失真。
+        ResetToolbarWidthPadding();
+
         var available = width > 0 ? width - ToolbarHorizontalChrome : double.PositiveInfinity;
         var needsWrap = false;
         if (double.IsFinite(available))
         {
-            var essential = MeasurePanelWidth(DateInfoPanel, exclude: ViewControlsPanel)
-                            + MeasurePanelWidth(ToolbarActionPanel);
-            needsWrap = essential > available;
+            // 顶栏按钮先逐级降密度（收缩字号与内边距），三档都不够才换行。
+            // 这些入口在窄屏下都是必需的 —— 窄屏正是任务视图：藏掉「设置」就改不了配置、
+            // 藏掉「AI」就调不出对话、藏掉「周期」就加不了周期任务。所以只能缩，不能藏。
+            needsWrap = true;
+            for (var density = 0; density <= 2; density++)
+            {
+                SetToolbarDensity(density);
+                var essential = MeasurePanelWidth(DateInfoPanel, exclude: ViewControlsPanel)
+                                + MeasurePanelWidth(ToolbarActionPanel);
+                if (essential <= available)
+                {
+                    needsWrap = false;
+                    break;
+                }
+            }
         }
 
         // ③ 档：连「日期信息 + 常驻按钮」都摆不下 → 换行，常驻按钮搬到第二行
@@ -904,16 +1042,38 @@ public partial class MainWindow : Window
             ? new Thickness(0, 4, 0, 0)
             : new Thickness(0);
 
+        // 换行后按钮行独占整行，但水平 StackPanel 是从左往右排的、末尾会剩一段空白，
+        // 最右的「设置」就比下方内容区的右边框短一截。这里把余量**均摊到每个按钮**上
+        //（而不是只撑某一个 —— 那会变成一个突兀的长条），让整行宽度正好等于内容区宽度。
+        // 只在换行档做：不换行时按钮跟在日期右侧，右边缘本来就贴着内容区。
+        if (wrap && ToolbarActionPanel is not null && ToolbarGrid is not null && ToolbarGrid.ActualWidth > 0)
+        {
+            var buttons = EnumerateVisual<Button>(ToolbarActionPanel).ToList();
+            var extraPerButton = (ToolbarGrid.ActualWidth - MeasurePanelWidth(ToolbarActionPanel)) / Math.Max(1, buttons.Count);
+            if (extraPerButton > 0.5)
+            {
+                foreach (var button in buttons)
+                {
+                    button.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+                    button.MinWidth = button.DesiredSize.Width + extraPerButton;
+                }
+            }
+        }
+
         // ① / ② 档：背景 + 透明度是否还放得下。
         // 换行之后第一行只需容纳日期信息本身，所以按换行后的实际情况再量一次。
         if (double.IsFinite(available))
         {
+            // 第一行净需求 = 日期信息（不含「背景+透明度」）+ 常驻按钮（换行时按钮在第二行）。
+            // 再单独量这组装饰设置的真实宽度，二者相加与可用宽度比较 —— 全程真量。
+            // （旧版把 ViewControlsWidthCost 常量加在已经含了 ViewControlsPanel 的测量值上，
+            //   等于多算了 262px，用户得把窗口拉得特别开才看得到亮度条。）
             var firstRowNeed = wrap
-                ? MeasurePanelWidth(DateInfoPanel)
-                : MeasurePanelWidth(DateInfoPanel) + MeasurePanelWidth(ToolbarActionPanel);
-            var withViewControls = firstRowNeed + ViewControlsWidthCost;
+                ? MeasurePanelWidth(DateInfoPanel, exclude: ViewControlsPanel)
+                : MeasurePanelWidth(DateInfoPanel, exclude: ViewControlsPanel) + MeasurePanelWidth(ToolbarActionPanel);
+            var viewControlsWidth = MeasurePanelWidth(ViewControlsPanel);
 
-            if (withViewControls > available)
+            if (firstRowNeed + viewControlsWidth > available)
             {
                 ViewControlsPanel.Visibility = Visibility.Collapsed;
             }
@@ -922,7 +1082,7 @@ public partial class MainWindow : Window
                 // 背景/透明度保住了，今日 / 本周计数这组次要信息才让位。
                 var countsCost = MeasurePanelWidth(TodayCountText, exclude: null)
                                  + MeasurePanelWidth(WeekCountText, exclude: null);
-                if (firstRowNeed + ViewControlsWidthCost + countsCost > available)
+                if (firstRowNeed + viewControlsWidth + countsCost > available)
                 {
                     TodayCountText.Visibility = Visibility.Collapsed;
                     WeekCountText.Visibility = Visibility.Collapsed;
@@ -933,8 +1093,54 @@ public partial class MainWindow : Window
         NormalViewHost.Visibility = narrowView ? Visibility.Collapsed : Visibility.Visible;
         NarrowTaskOnlyView.Visibility = narrowView ? Visibility.Visible : Visibility.Collapsed;
 
+        // 窄屏下主体被换成任务面板（与 ViewMode 无关了），顶栏下拉的标签也要跟着改口，
+        // 否则会出现「画面是任务列表、按钮却写着周视图」这种自相矛盾的状态。
+        if (_viewModel is not null)
+        {
+            _viewModel.IsNarrowTaskOnly = narrowView;
+        }
+
         // ===== 周视图：正方形格子的边长 =====
         UpdateWeekCellSize();
+
+        // ===== 年视图：日期数字字号随月卡实际列宽缩放 =====
+        UpdateYearFontScale();
+    }
+
+    /// <summary>
+    /// 按年视图月卡的<b>实际列宽</b>回填日期数字字号（与 Avalonia 宿主同一口径）。
+    ///
+    /// 年视图一行 3 张月卡、每卡 7 列：窗口缩小时列宽跟着缩小，字号若不同步缩小，
+    /// 两位日期数字会被右侧的节日徽标盖住或直接裁掉（用户实测"缩小之后数字看不清了"）。
+    /// 从 YearScrollViewer 的实际宽度反推列宽，除以「基准列宽 40px」得到缩放系数交给
+    /// <see cref="MicaAgenda.App.ViewModels.MainViewModel.SetYearFontScale"/>
+    /// （内部夹取 0.62~1.0、量化 0.02 步进，避免拖窗口时连续通知与重排）。
+    /// </summary>
+    private void UpdateYearFontScale()
+    {
+        if (_viewModel is null || YearScrollViewer is null)
+        {
+            return;
+        }
+
+        // YearScrollViewer → 三列 UniformGrid；卡片 Margin 4×2 ×3 列；
+        // 卡片 Padding 6×2 + 边框 1×2；剩下的就是一列的可用宽度。
+        var gridWidth = YearScrollViewer.ActualWidth - 12; // 滚动条预留 ~12
+        // 必须写 !(x > 0)：切视图首帧 ActualWidth 可能是 NaN，而 NaN <= 0 恒为 false，
+        // 用 <= 判会漏过它，一路算成 NaN 的缩放系数，最终让年视图整片日期数字不渲染。
+        if (!(gridWidth > 0))
+        {
+            return;
+        }
+
+        var cardOuter = (gridWidth - 8 * 3) / 3;
+        var columnWidth = (cardOuter - 14) / 7;
+        if (!(columnWidth > 0))
+        {
+            return;
+        }
+
+        _viewModel.SetYearFontScale(columnWidth / 40.0);
     }
 
     /// <summary>顶栏左右内边距 + 列间距的固定开销。</summary>
@@ -973,10 +1179,13 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// 计算并回填周视图格子的正方形边长（与 Avalonia 宿主同一口径）。
+    /// 计算并回填周视图格子的高度（与 Avalonia 宿主同一口径）。
     ///
-    /// 高度基准取自窗口内容区减去顶栏之后的剩余高度，除以 7 得到"7 个刚好铺满"的边长。
-    /// 夹到 64~200：下限保证日期与任务看得清，上限避免格子过大挤掉右侧面板。
+    /// 只算高度：按「左栏可用高度 ÷ 7」求出让 7 个格子刚好铺满界面高度的值。
+    /// 宽度固定为 <see cref="MainViewModel.WeekScrollColumnWidth"/>，窗口缩放时左栏不变，
+    /// 多出来的空间全部给右侧今日任务面板。
+    ///
+    /// 夹到 44~96：下限保证日期与任务看得清，上限避免格子高高拉起后内部空荡。
     /// </summary>
     private void UpdateWeekCellSize()
     {
@@ -995,8 +1204,8 @@ public partial class MainWindow : Window
 
         const double rowSpacing = 4.0;
         const int visibleRows = 7;
-        var side = (bodyHeight - (rowSpacing * visibleRows)) / visibleRows;
-        _viewModel.WeekScrollCellSize = Math.Clamp(side, 64, 200);
+        var rowHeight = (bodyHeight - (rowSpacing * visibleRows)) / visibleRows;
+        _viewModel.WeekScrollCellHeight = Math.Clamp(rowHeight, 44, 96);
     }
 
     /// <summary>周视图区域的上下外边距之和（左栏 Margin + 根 Grid Margin）。</summary>
@@ -1013,6 +1222,14 @@ public partial class MainWindow : Window
             return;
         }
 
+        // 程序自身的定位（点「今天」/ 切视图归位）也会触发 ScrollChanged。
+        // 那种情况下不能再追加日期：追加会往列表尾部塞 28 个新容器，布局在滚动还没稳定时
+        // 整批重算，用户感觉到的是「点了今天要卡 1~2 秒」。
+        if (_suppressWeekAutoExtend)
+        {
+            return;
+        }
+
         var remaining = viewer.ExtentHeight - viewer.VerticalOffset - viewer.ViewportHeight;
         var threshold = Math.Max(120, viewer.ViewportHeight / 3);
         if (remaining > threshold)
@@ -1022,6 +1239,12 @@ public partial class MainWindow : Window
 
         _viewModel.ExtendWeekScroll();
     }
+
+    /// <summary>
+    /// 抑制「滚到接近底部就追加日期」的闸门。<see cref="ScrollWeekToToday"/> 在赋值偏移
+    /// 前后把它置位，避免程序化滚动被误判成用户滚到底。
+    /// </summary>
+    private bool _suppressWeekAutoExtend;
 
     private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
     {
@@ -1038,12 +1261,21 @@ public partial class MainWindow : Window
 
     private void ScrollTimelineToAnchor()
     {
-        if (_viewModel is null || MonthScrollViewer is null)
+        if (_viewModel is null)
         {
             return;
         }
 
-        if (_viewModel.Settings.ViewMode != CalendarViewMode.Month)
+        // 周视图左栏是可无限上下的滚动长列表，"现在看的是哪一段"同样由滚动位置表达。
+        // 用户翻到几周之后时点「今天」，必须把列表滚回今天所在那一周，
+        // 否则日期数据虽然回到了今天、画面却还停在原处，看起来就是"点了没反应"。
+        if (_viewModel.Settings.ViewMode == CalendarViewMode.Week)
+        {
+            ScrollWeekToToday();
+            return;
+        }
+
+        if (MonthScrollViewer is null || _viewModel.Settings.ViewMode != CalendarViewMode.Month)
         {
             return;
         }
@@ -1057,6 +1289,68 @@ public partial class MainWindow : Window
 
         ScrollBlockIntoView(block, 0);
     }
+
+    /// <summary>
+    /// 把周视图左栏滚回"今天所在那一周"（与 Avalonia 宿主同一口径）。
+    ///
+    /// 左栏是一维日期长列表，定位就是「目标行索引 × 行高」。用行高算偏移而不是
+    /// ScrollIntoView：后者要先把容器虚拟化出来才拿得到，首帧/刚切视图时会静默失败。
+    /// 目标是今天所在周的**第一行**（周日），让整周完整进视口。
+    /// </summary>
+    private void ScrollWeekToToday()
+    {
+        if (WeekScrollViewer is null || _viewModel is null)
+        {
+            return;
+        }
+
+        var todayIndex = _viewModel.IndexOfTodayInWeekScroll;
+        if (todayIndex < 0)
+        {
+            // 兜底：列表起点就是本周周日，滚回顶部等同于"回到最近 7 天"。
+            ApplyWeekOffset(0);
+            return;
+        }
+
+        var weekStartIndex = todayIndex - (todayIndex % 7);
+        var rowSpan = _viewModel.WeekScrollCellHeight + WeekDayRowBottomMargin;
+        var target = weekStartIndex * rowSpan;
+
+        var maxOffset = Math.Max(0, WeekScrollViewer.ExtentHeight - WeekScrollViewer.ViewportHeight);
+        ApplyWeekOffset(Math.Clamp(target, 0, maxOffset));
+    }
+
+    /// <summary>
+    /// 带闸门地设置周视图左栏的滚动偏移。
+    ///
+    /// 闸门关掉的这段时间里 <see cref="WeekScroll_ScrollChanged"/> 不会追加日期 —— 否则
+    /// 程序化滚动会被当成"用户滚到底"，在滚动还没稳定时往尾部塞 28 个容器，
+    /// 布局整批重算，表现为点「今天」后卡顿 1~2 秒。
+    ///
+    /// 用 <c>DispatcherPriority.Background</c> 复位而不是立即复位：
+    /// ScrollToVerticalOffset 引发的 ScrollChanged 是异步派发的，立刻放开等于没拦。
+    /// </summary>
+    private void ApplyWeekOffset(double offset)
+    {
+        if (WeekScrollViewer is null)
+        {
+            return;
+        }
+
+        _suppressWeekAutoExtend = true;
+        try
+        {
+            WeekScrollViewer.ScrollToVerticalOffset(offset);
+        }
+        finally
+        {
+            Dispatcher.BeginInvoke(new Action(() => _suppressWeekAutoExtend = false),
+                DispatcherPriority.Background);
+        }
+    }
+
+    /// <summary>周视图日期行自带的下外边距（见 WeekDayRowTemplate 的 Margin="0,0,0,4"）。</summary>
+    private const double WeekDayRowBottomMargin = 4.0;
 
     // 点击"今天"后滚动回今日所在月份块
     private void ScrollToToday()
@@ -1160,7 +1454,6 @@ public partial class MainWindow : Window
 
     private void MonthScrollViewer_ScrollChanged(object sender, ScrollChangedEventArgs e)
     {
-        FileLog.Write($"[SCROLL] ENTER: vp={e.ViewportHeight:F0}, ext={e.ExtentHeight:F0}, change={e.VerticalChange:F0}, extChange={e.ExtentHeightChange:F0}, progScroll={_programmaticScroll}");
 
         // 程序内部滚动定位（按月吸附 / 跳今天 / 锚定）不触发自动扩展
         if (_programmaticScroll)
@@ -1171,19 +1464,16 @@ public partial class MainWindow : Window
         // 锁定滚动模式：时间轴完全冻结，既不自动扩展也不重建（避免"一直刷新"）
         if (_lockScroll)
         {
-            FileLog.Write("[SCROLL] Skip: scroll locked by user");
             return;
         }
 
         if (_viewModel is null || MonthScrollViewer is null || MonthItemsControl is null)
         {
-            FileLog.Write($"[SCROLL] Skip: null guard - vm={_viewModel is not null}, viewer={MonthScrollViewer is not null}, items={MonthItemsControl is not null}");
             return;
         }
 
         if (_viewModel.Settings.ViewMode != CalendarViewMode.Month)
         {
-            FileLog.Write($"[SCROLL] Skip: not month view, mode={_viewModel.Settings.ViewMode}");
             return;
         }
 
@@ -1191,11 +1481,9 @@ public partial class MainWindow : Window
         // 会一直满足"到达顶部"的条件而反复扩展。
         if (e.ExtentHeight <= e.ViewportHeight + 1)
         {
-            FileLog.Write($"[SCROLL] Skip: content fits viewport (ext={e.ExtentHeight:F0} <= vp={e.ViewportHeight:F0}+1), months={_viewModel.TimelineMonths.Count}");
             return;
         }
 
-        FileLog.Write($"[SCROLL] ScrollChanged: offset={e.VerticalOffset:F0}, change={e.VerticalChange:F0}, extH={e.ExtentHeight:F0}, extChange={e.ExtentHeightChange:F0}, vp={e.ViewportHeight:F0}, months={_viewModel.TimelineMonths.Count}");
 
         // 内容高度变化且没有实际滚动偏移变化（数据刷新引起的通知）时不扩展。
         // 注意：不能只看 ExtentHeightChange——扩展后内容高度必然变化，
@@ -1216,11 +1504,9 @@ public partial class MainWindow : Window
         // 冷却：扩展会改变内容高度并再次引发 ScrollChanged，冷却防止布局变化引发连锁扩展。
         if (DateTime.Now - _lastTimelineExtendAt < TimelineExtendCooldown)
         {
-            FileLog.Write($"[SCROLL] Skip: cooldown active ({(DateTime.Now - _lastTimelineExtendAt).TotalMilliseconds:F0}ms < {TimelineExtendCooldown.TotalMilliseconds}ms)");
             return;
         }
 
-        FileLog.Write($"[SCROLL] Check edges: offset={e.VerticalOffset:F0}, vp={e.ViewportHeight:F0}, ext={e.ExtentHeight:F0}, diff={e.ExtentHeight - e.VerticalOffset - e.ViewportHeight:F0}, months={_viewModel.TimelineMonths.Count}");
 
         if (e.VerticalOffset <= TimelineLoadThreshold)
         {
@@ -1253,7 +1539,6 @@ public partial class MainWindow : Window
     {
         if (_viewModel is null || _viewModel.TimelineMonths.Count == 0 || MonthScrollViewer is null)
         {
-            FileLog.Write($"[SCROLL] ExtendTimeline: Early return - vm={_viewModel is not null}, months={_viewModel?.TimelineMonths.Count}, viewer={MonthScrollViewer is not null}");
             return;
         }
 
@@ -1269,11 +1554,9 @@ public partial class MainWindow : Window
         {
             _pendingExtendDir = direction;
             ScheduleExtendRetry();
-            FileLog.Write($"[SCROLL] ExtendTimeline: Cooldown active, pending={direction}");
             return;
         }
 
-        FileLog.Write($"[SCROLL] ExtendTimeline: Executing dir={direction}, months={_viewModel.TimelineMonths.Count}, userInit={userInitiated}");
         PerformTimelineExtend(direction);
     }
 
@@ -1302,7 +1585,6 @@ public partial class MainWindow : Window
         }
 
         var monthsAfter = _viewModel.TimelineMonths.Count;
-        FileLog.Write($"[SCROLL] PerformTimelineExtend: dir={direction}, months {monthsBefore}->{monthsAfter}, anchor={anchor.Year}/{anchor.Month}, prevOffset={previousOffset:F0}");
 
         Dispatcher.BeginInvoke(new Action(() =>
         {
@@ -1317,13 +1599,11 @@ public partial class MainWindow : Window
                 var container = MonthItemsControl.ItemContainerGenerator.ContainerFromItem(anchor) as FrameworkElement;
                 if (container is null)
                 {
-                    FileLog.Write($"[SCROLL] PerformTimelineExtend: container is null for anchor {anchor.Year}/{anchor.Month}");
                     return;
                 }
 
                 var point = container.TransformToVisual(MonthItemsControl).Transform(new System.Windows.Point(0, 0));
                 var target = direction < 0 ? point.Y + previousOffset : previousOffset;
-                FileLog.Write($"[SCROLL] PerformTimelineExtend: anchorY={point.Y:F0}, target={target:F0}");
                 ScrollToOffsetProgrammatically(target);
             }
             catch (Exception ex)
@@ -1455,7 +1735,6 @@ public partial class MainWindow : Window
         var index = _viewModel.TimelineMonths.IndexOf(current);
         var targetIndex = index + dir;
 
-        FileLog.Write($"[SCROLL_ADJ] current={current.Year}/{current.Month}, index={index}, targetIndex={targetIndex}, count={_viewModel.TimelineMonths.Count}, offset={MonthScrollViewer.VerticalOffset:F0}");
 
         if (targetIndex < 0 || targetIndex >= _viewModel.TimelineMonths.Count)
         {
@@ -1465,7 +1744,6 @@ public partial class MainWindow : Window
             // 注意：不再做 TimelineMaxMonths 硬拦截，允许窗口"滑动"到任意月份
             // （上限由 ViewModel.TrimTimeline 在追加后裁掉来保证）。
 
-            FileLog.Write($"[SCROLL_ADJ] At boundary, calling ExtendTimeline(dir={dir})");
             ExtendTimeline(dir, userInitiated: true);
             // 扩展完成后再由下一帧定位到新月份：让 ExtendTimeline 先把偏移校正完
             Dispatcher.BeginInvoke(new Action(() =>
@@ -1476,7 +1754,6 @@ public partial class MainWindow : Window
                 }
 
                 var next = _viewModel.TimelineMonths.IndexOf(current) + dir;
-                FileLog.Write($"[SCROLL_ADJ] Deferred scroll: next={next}, count={_viewModel.TimelineMonths.Count}");
                 if (next < 0 || next >= _viewModel.TimelineMonths.Count)
                 {
                     return;
@@ -1549,38 +1826,91 @@ public partial class MainWindow : Window
         if (!_embedWatchdogHooked)
         {
             _embedWatchdogHooked = true;
-            _embedWatchdog.Tick += (_, _) =>
-        {
-            try
-            {
-                // 免疫「显示桌面」第一道防线：先还原。
-                //
-                // 顺序必须在摘样式之前：窗口还处在最小化/隐藏态时调用 SWP_FRAMECHANGED
-                // 是无效的（非客户区根本没在合成），先还原再改样式才落得下去。
-                DesktopEmbedService.RestoreIfMinimized(this);
+            _embedWatchdog.Tick += (_, _) => ReinforceWindowChrome();
 
-                // 第二道防线：摘掉可最小化样式位，让 Explorer 的 MinimizeAll 从一开始就跳过
-                // 本窗口（样式会被宿主/系统改回去，所以每 tick 重放）。
-                // 托盘「隐藏」会先打开 SuppressAutoRestore 闸门，不会被误伤。
-                DesktopEmbedService.StripMinimizeBox(this);
-
-                // 普通嵌入桌面的目标是“始终沉在其他窗口之下”。这里不做悬停豁免，
-                // 每个 tick 都强制压底，避免点击后窗口被系统拉到最上面。
-                if (_config.EmbedDesktop)
-                {
-                    DesktopEmbedService.EnsureEmbedded(this);
-                }
-            }
-            catch (Exception ex)
-            {
-                // 定时器回调里的异常会直接终止程序，必须兜底
-                App.LogError(ex, "EmbedWatchdog");
-            }
-        };
+            // 前台窗口一变（含「显示桌面」把桌面提为前台）就立刻纠一次 Z 序，
+            // 这样窗口被桌面层盖住的瞬间就能回来，不用等 2s 的下一轮 tick。
+            DesktopEmbedService.InstallForegroundWatch(() => ReinforceWindowChrome());
         }
 
         _embedWatchdog.Start();
     }
+
+    /// <summary>
+    /// 把窗口外观重新拉回「桌面小部件」该有的样子（幂等，随时可重复调用）。
+    /// 由看门狗低频 tick 与前台事件钩子共同驱动。
+    /// </summary>
+    private void ReinforceWindowChrome()
+    {
+        try
+        {
+            // ===== 免疫「显示桌面」：摘样式 + 还原，且必须"摘 → 还原 → 再摘" =====
+            //
+            //  ① 摘掉 WS_MINIMIZEBOX，让批量最小化从源头跳过本窗口；
+            //  ② 万一还是被带走（最小化 或 WS_VISIBLE 被清零），无激活还原。
+            //
+            // 关键在 ① 要做两次：实测发现还原用的 SW_RESTORE 会连带重建非客户区，
+            // 把刚摘掉的 WS_MINIMIZEBOX 又写回来 —— 于是下一轮 tick 窗口又是"可最小化"的，
+            // 系统随时能在还原的缝里再收一次（表现为反复消失）。所以还原后必须再摘一遍。
+            // 样式会被宿主/系统改回去，所以每个 tick 都要重放。
+            // 托盘「隐藏」会先打开 SuppressAutoRestore 闸门，不会被误伤。
+            DesktopEmbedService.StripMinimizeBox(this);
+
+            // ③ 第三道（也是唯一真正闭环的）防线：把最小化消息在窗口过程里直接吃掉。
+            //
+            // 前两道 —— 摘 WS_MINIMIZEBOX + 事后还原 —— 都只能"减少被收走的概率"
+            // 或"事后补救"，而施压是连续的，补救永远慢半拍（实测最坏 200ms 窗口期，
+            // 用户看到的就是闪一下没了）。装钩子之后窗口从未进入最小化态，问题从根上消失。
+            //
+            // 句柄会变，所以每 tick 调一次；方法内部幂等，句柄没变时只做一次句柄比较。
+            DesktopEmbedService.GuardAgainstMinimize(this);
+
+            if (DesktopEmbedService.RestoreIfMinimized(this))
+            {
+                DesktopEmbedService.StripMinimizeBox(this);
+
+                // 还原指令发出去了，但施压可能还在继续，窗口此刻未必真可见。
+                // 复查一次，没落地就立刻原 tick 重试，不必等 2s 后的下一轮。
+                for (var retry = 0; retry < RestoreRetryPerTick; retry++)
+                {
+                    if (!DesktopEmbedService.IsHiddenOrMinimized(this))
+                    {
+                        break;
+                    }
+
+                    DesktopEmbedService.RestoreIfMinimized(this);
+                    DesktopEmbedService.StripMinimizeBox(this);
+                }
+            }
+
+            // 普通嵌入桌面的目标是“始终沉在其他窗口之下”。这里不做悬停豁免，
+            // 每个 tick 都强制压底，避免点击后窗口被系统拉到最上面。
+            if (_config.EmbedDesktop)
+            {
+                DesktopEmbedService.EnsureEmbedded(this);
+            }
+            else
+            {
+                // 没开嵌入也要防被桌面层盖住：「显示桌面」浮起 WorkerW 时不挑模式，
+                // 本窗口一样会被压到桌面下面去。
+                DesktopEmbedService.KeepAboveDesktopLayer(this);
+            }
+        }
+        catch (Exception ex)
+        {
+            // 定时器 / 事件回调里的异常会直接终止程序，必须兜底
+            App.LogError(ex, "EmbedWatchdog");
+        }
+    }
+
+    /// <summary>
+    /// 同一个看门狗 tick 内允许的还原重试次数。
+    ///
+    /// 施压是持续性的，一次 ShowWindow 可能刚好落在两次施压的缝里被立刻压回。
+    /// 等下一个 200ms tick 太慢（用户能明显看到窗口消失一段时间），所以在 tick 内小步重试。
+    /// 次数不能大：这里是 UI 线程，重试多了会反过来卡住界面。
+    /// </summary>
+    private const int RestoreRetryPerTick = 3;
 
     /// <summary>
     /// 按当前配置执行一次桌面嵌入。看门狗本身不依赖嵌入开关（非嵌入模式也要还原最小化），
@@ -1625,6 +1955,7 @@ public partial class MainWindow : Window
 
         // 更新 CloseButton 可见性
         UpdateCloseButtonVisibility();
+        UpdateAiButton();
     }
 
     private void Window_DpiChanged(object sender, DpiChangedEventArgs e)
@@ -1999,47 +2330,96 @@ public partial class MainWindow : Window
 
     private async void YearView_Click(object sender, RoutedEventArgs e)
     {
-        await SwitchViewModeAsync(CalendarViewMode.Year);
+        try
+        {
+            await SwitchViewModeAsync(CalendarViewMode.Year);
+        }
+        catch (Exception ex)
+        {
+            App.LogError(ex, "YearView_Click");
+        }
     }
 
     private async void MonthView_Click(object sender, RoutedEventArgs e)
     {
-        await SwitchViewModeAsync(CalendarViewMode.Month);
+        try
+        {
+            await SwitchViewModeAsync(CalendarViewMode.Month);
+        }
+        catch (Exception ex)
+        {
+            App.LogError(ex, "MonthView_Click");
+        }
     }
 
     private async void TitleText_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
-        await SwitchViewModeAsync(CalendarViewMode.Month);
+        try
+        {
+            await SwitchViewModeAsync(CalendarViewMode.Month);
+        }
+        catch (Exception ex)
+        {
+            App.LogError(ex, "TitleText_Click");
+        }
     }
 
     private async void WeekView_Click(object sender, RoutedEventArgs e)
     {
-        await SwitchViewModeAsync(CalendarViewMode.Week);
+        try
+        {
+            await SwitchViewModeAsync(CalendarViewMode.Week);
+        }
+        catch (Exception ex)
+        {
+            App.LogError(ex, "WeekView_Click");
+        }
     }
 
     private async void Previous_Click(object sender, RoutedEventArgs e)
     {
-        _viewModel?.MovePrevious();
-        await RefreshHolidaysForVisibleYearAsync();
-        ApplyViewHeightPolicy();
-        await SaveAsync();
+        try
+        {
+            _viewModel?.MovePrevious();
+            await RefreshHolidaysForVisibleYearAsync();
+            ApplyViewHeightPolicy();
+            await SaveAsync();
+        }
+        catch (Exception ex)
+        {
+            App.LogError(ex, "Previous_Click");
+        }
     }
 
     private async void Next_Click(object sender, RoutedEventArgs e)
     {
-        _viewModel?.MoveNext();
-        await RefreshHolidaysForVisibleYearAsync();
-        ApplyViewHeightPolicy();
-        await SaveAsync();
+        try
+        {
+            _viewModel?.MoveNext();
+            await RefreshHolidaysForVisibleYearAsync();
+            ApplyViewHeightPolicy();
+            await SaveAsync();
+        }
+        catch (Exception ex)
+        {
+            App.LogError(ex, "Next_Click");
+        }
     }
 
     private async void Today_Click(object sender, RoutedEventArgs e)
     {
-        _viewModel?.GoToday();
-        ScrollToToday();
-        await RefreshHolidaysForVisibleYearAsync();
-        ApplyViewHeightPolicy();
-        await SaveAsync();
+        try
+        {
+            _viewModel?.GoToday();
+            ScrollToToday();
+            await RefreshHolidaysForVisibleYearAsync();
+            ApplyViewHeightPolicy();
+            await SaveAsync();
+        }
+        catch (Exception ex)
+        {
+            App.LogError(ex, "Today_Click");
+        }
     }
 
     private void Close_Click(object sender, RoutedEventArgs e)
@@ -2070,6 +2450,54 @@ public partial class MainWindow : Window
     private void Settings_Click(object sender, RoutedEventArgs e)
     {
         OpenSettings();
+    }
+
+    /// <summary>
+    /// AI 悬浮层打开后把键盘焦点落进输入框：Popup 是独立顶层窗口，不会自动承接焦点，
+    /// 不聚焦的话用户点开就能看到输入框、却怎么也打不进字。延后一帧确保 PopupRoot 已挂载。
+    /// </summary>
+    private void AiPopup_Opened(object sender, EventArgs e)
+    {
+        Dispatcher.BeginInvoke(new Action(() => AiPanel.FocusInput()), DispatcherPriority.Loaded);
+    }
+
+    /// <summary>打开数据统计小面板（本周 / 本月完成情况）。</summary>
+    private void Statistics_Click(object sender, RoutedEventArgs e)
+    {
+        if (_viewModel is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var dialog = new StatisticsWindow(_viewModel.Data, _syncRoot) { Owner = this };
+            dialog.ShowDialog();
+        }
+        catch (Exception ex)
+        {
+            App.LogError(ex, "Statistics_Click");
+        }
+    }
+
+    /// <summary>打开「添加周期任务」小面板，确定后创建源任务 + 物化未来实例并落盘。</summary>
+    private void RecurringTask_Click(object sender, RoutedEventArgs e)
+    {
+        if (_viewModel is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var manager = new RecurringManagerWindow(_viewModel) { Owner = this };
+            manager.ShowDialog();
+            _ = SaveAsync();
+        }
+        catch (Exception ex)
+        {
+            App.LogError(ex, "RecurringTask_Click");
+        }
     }
 
     private async void AddTask_Click(object sender, RoutedEventArgs e)
@@ -2119,9 +2547,129 @@ public partial class MainWindow : Window
     private void Task_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
         e.Handled = true;
-        if (e.ClickCount >= 2 && (sender as FrameworkElement)?.DataContext is TaskItemViewModel task)
+        var element = sender as FrameworkElement;
+        if (element?.DataContext is not TaskItemViewModel task)
+        {
+            return;
+        }
+
+        if (e.ClickCount >= 2)
         {
             BeginTaskEdit(task);
+            return;
+        }
+
+        // 单击：记录起始任务与位置，捕获鼠标 —— 拖到别的日期格子松开即改期（见 Task_MouseLeftButtonUp）。
+        _dragTaskId = task.Id;
+        _dragOrigin = e.GetPosition(this);
+        _dragging = false;
+        DragGhostText.Text = task.Title;
+        element.CaptureMouse();
+    }
+
+    /// <summary>拖拽中：位移超过阈值后显示跟随鼠标的幽灵预览。</summary>
+    private void Task_MouseMove(object sender, MouseEventArgs e)
+    {
+        if (_dragTaskId is null || _dragOrigin is null || e.LeftButton != MouseButtonState.Pressed)
+        {
+            return;
+        }
+
+        var pos = e.GetPosition(this);
+        var origin = _dragOrigin.Value;
+        if (Math.Abs(pos.X - origin.X) < 6 && Math.Abs(pos.Y - origin.Y) < 6)
+        {
+            return;
+        }
+
+        _dragging = true;
+        DragGhost.Visibility = Visibility.Visible;
+        Canvas.SetLeft(DragGhost, Math.Min(pos.X + 14, Math.Max(0, ActualWidth - 160)));
+        Canvas.SetTop(DragGhost, Math.Min(pos.Y + 12, Math.Max(0, ActualHeight - 40)));
+    }
+
+    private void Task_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        if (_dragTaskId is null || _dragOrigin is null)
+        {
+            return;
+        }
+
+        var taskId = _dragTaskId.Value;
+        var origin = _dragOrigin.Value;
+        var wasDragging = _dragging;
+        _dragTaskId = null;
+        _dragOrigin = null;
+        _dragging = false;
+        DragGhost.Visibility = Visibility.Collapsed;
+
+        if (sender is FrameworkElement element)
+        {
+            element.ReleaseMouseCapture();
+        }
+
+        var end = e.GetPosition(this);
+        // 位移小于 6px 视为点击，不是拖拽
+        if (!wasDragging && Math.Abs(end.X - origin.X) < 6 && Math.Abs(end.Y - origin.Y) < 6)
+        {
+            return;
+        }
+
+        if (FindDayCellAt(end)?.DataContext is DayCellViewModel day && _viewModel is not null)
+        {
+            if (_viewModel.ChangeTaskDate(taskId, day.Date))
+            {
+                _ = SaveAsync();
+            }
+        }
+    }
+
+    private Guid? _dragTaskId;
+    private Point? _dragOrigin;
+    private bool _dragging;
+
+    /// <summary>按窗口坐标找到其下的日期格子（DataContext 是 DayCellViewModel 的容器）。</summary>
+    private FrameworkElement? FindDayCellAt(Point windowPos)
+    {
+        foreach (var element in FindVisualChildren<FrameworkElement>(this))
+        {
+            if (element.DataContext is not DayCellViewModel || element.ActualWidth <= 0 || element.ActualHeight <= 0)
+            {
+                continue;
+            }
+
+            try
+            {
+                var topLeft = element.TranslatePoint(new Point(0, 0), this);
+                if (new Rect(topLeft, new Size(element.ActualWidth, element.ActualHeight)).Contains(windowPos))
+                {
+                    return element;
+                }
+            }
+            catch
+            {
+                // 隐藏/脱离布局的元素 TranslatePoint 可能抛异常，跳过即可
+            }
+        }
+
+        return null;
+    }
+
+    private static IEnumerable<FrameworkElement> FindVisualChildren(DependencyObject parent)
+    {
+        var count = VisualTreeHelper.GetChildrenCount(parent);
+        for (var i = 0; i < count; i++)
+        {
+            var child = VisualTreeHelper.GetChild(parent, i);
+            if (child is FrameworkElement fe)
+            {
+                yield return fe;
+            }
+
+            foreach (var descendant in FindVisualChildren(child))
+            {
+                yield return descendant;
+            }
         }
     }
 
@@ -2839,7 +3387,6 @@ public partial class MainWindow : Window
         }
         finally
         {
-            _settingsAppliedToWindow = true;
             _isApplyingSettings = false;
         }
     }
@@ -2895,6 +3442,12 @@ public partial class MainWindow : Window
                 },
                 DispatcherPriority.Loaded);
         }
+        else if (viewMode == CalendarViewMode.Year)
+        {
+            // 切到年视图时月卡才第一次真正布局；Loaded 优先级等布局完成后
+            // 再按实际列宽回填日期字号（初始是默认值 11，小窗口下会偏大裁字）。
+            _ = Dispatcher.InvokeAsync(UpdateYearFontScale, DispatcherPriority.Loaded);
+        }
     }
 
     private void SaveCurrentViewBounds()
@@ -2936,29 +3489,19 @@ public partial class MainWindow : Window
             return new WindowBounds(Left, Top, Width, Height);
         }
 
-        var settings = _viewModel.Settings;
-        // 旧版本数据 / 反序列化失败时 WindowBounds 可能为 null，必须兜底，
-        // 否则下面和 ApplyWindowBounds 里解引用会抛 NullReferenceException。
-        var fallback = settings.WindowBounds ?? new WindowBounds(120, 90, 980, 680);
-        var positionSource = _settingsAppliedToWindow && IsLoaded
-            ? new WindowBounds(Left, Top, Math.Max(MinWidth, Width), Math.Max(MinHeight, Height))
-            : fallback;
-        var sizeFallback = _settingsAppliedToWindow && IsLoaded
-            ? positionSource
-            : fallback;
-        var sizeSource = viewMode switch
+        // 切视图时统一回到「该视图的默认尺寸」，不再沿用上次自己拖出来的尺寸：
+        // 记忆的尺寸可能已经小到放不下这个视图（周视图本身就能拖得很窄，最容易中招），
+        // 切过去会显示不全、甚至被窄窗规则强制成任务面板，表现就是"点了没反应"。
+        // 位置保持不动、只换尺寸，免得窗口在屏幕上乱跳。
+        var height = viewMode switch
         {
-            CalendarViewMode.Month => settings.MonthWindowBounds ?? fallback,
-            CalendarViewMode.Week => settings.WeekWindowBounds ?? sizeFallback,
-            CalendarViewMode.Year => settings.YearWindowBounds ?? new WindowBounds(
-                0,
-                0,
-                sizeFallback.Width,
-                GetYearMaximumWindowHeight()),
-            _ => fallback
+            // 周视图一行 7 个格子，太矮会把格子压扁到看不清
+            CalendarViewMode.Week => 500.0,
+            CalendarViewMode.Year => GetYearMaximumWindowHeight(),
+            _ => 620.0
         };
 
-        return new WindowBounds(positionSource.Left, positionSource.Top, sizeSource.Width, sizeSource.Height);
+        return new WindowBounds(Left, Top, 900.0, height);
     }
 
     private void ApplyWindowBounds(WindowBounds bounds)
@@ -3060,8 +3603,10 @@ public partial class MainWindow : Window
         Resources["HolidayWorkTextBrush"] = dark ? BrushFromArgb(255, 191, 219, 254) : BrushFromArgb(255, 29, 78, 216);
         Resources["WindowEdgeBrush"] = mode switch
         {
-            CalendarBackgroundMode.None => BrushFromArgb(34, 255, 255, 255),
-            CalendarBackgroundMode.ClearBorder => BrushFromArgb(38, 255, 255, 255),
+            // 无背景模式下窗口整体全透明，必须给一圈看得见的描边，
+            // 否则挂件和壁纸糊成一片、看不出边界在哪。
+            // 取中性灰（明暗壁纸上都看得见），而不是之前那种 13% 白（等于没有）。
+            CalendarBackgroundMode.None or CalendarBackgroundMode.ClearBorder => BrushFromArgb(130, 100, 116, 139),
             CalendarBackgroundMode.FrostedDark or CalendarBackgroundMode.Graphite => BrushFromArgb(42, 255, 255, 255),
             _ => BrushFromArgb(30, 17, 24, 39)
         };
@@ -3097,7 +3642,9 @@ public partial class MainWindow : Window
             Resources["YearMonthBackgroundBrush"] = Brushes.Transparent;
             Resources["YearCellBackgroundBrush"] = Brushes.Transparent;
             Resources["TaskBackgroundBrush"] = dark ? BrushFromArgb(120, 31, 41, 55) : BrushFromArgb(130, 236, 253, 245);
-            Resources["TodayPanelBackgroundBrush"] = dark ? BrushFromArgb(215, 36, 42, 52) : BrushFromArgb(225, 255, 255, 255);
+            // 右侧任务面板也跟着透明：原先近乎不透明的白，在「无背景」下会留下一块突兀的白方块。
+            // 改成薄磨砂，靠这层薄底 + 边框兜住任务文字的对比度。
+            Resources["TodayPanelBackgroundBrush"] = dark ? BrushFromArgb(110, 17, 24, 39) : BrushFromArgb(90, 255, 255, 255);
             Resources["TodayPanelBorderBrush"] = dark ? BrushFromArgb(150, 255, 255, 255) : BrushFromArgb(100, 17, 24, 39);
             Resources["SelectedCellBackgroundBrush"] = dark ? BrushFromArgb(120, 59, 130, 246) : BrushFromArgb(102, 37, 99, 235);
             return;
@@ -3398,7 +3945,6 @@ public partial class MainWindow : Window
         // 仅在 UI 已就绪后才弹提示（避免启动阶段的初次联网失败刷屏）
         if (_isUiReady && !onlineSuccess)
         {
-            FileLog.Write("[HOLIDAY] online refresh failed, using local fallback");
             ShowToast("节假日数据获取失败，已用本地缓存/兜底数据");
         }
     }
@@ -3479,7 +4025,7 @@ public partial class MainWindow : Window
 
     private async Task SaveAsync()
     {
-        if (_viewModel is null)
+        if (_viewModel is null || _suppressAutoSave)
         {
             return;
         }
@@ -3494,5 +4040,21 @@ public partial class MainWindow : Window
             // 落盘失败（文件被占用/权限不足等）不致命：保留 IsDirty 以便下次重试，并记录日志
             App.LogError(ex, "SaveAsync");
         }
+    }
+
+    /// <summary>
+    /// 周视图左栏超出上限、头部被裁掉 N 天时回调：内容整体上移了 N 行，
+    /// 滚动偏移必须下调 N × 行高，否则用户当前看到的位置会瞬间跳变。
+    /// </summary>
+    private void OnWeekScrollHeadTrimmed(int trimmedDays)
+    {
+        if (WeekScrollViewer is null || _viewModel is null)
+        {
+            return;
+        }
+
+        var delta = trimmedDays * _viewModel.WeekScrollCellHeight;
+        var current = WeekScrollViewer.VerticalOffset;
+        ApplyWeekOffset(Math.Max(0, current - delta));
     }
 }

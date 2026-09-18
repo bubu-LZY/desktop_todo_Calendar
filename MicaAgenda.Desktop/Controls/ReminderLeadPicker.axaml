@@ -1,11 +1,13 @@
 <UserControl xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              x:Class="MicaAgenda.Desktop.Controls.ReminderLeadPicker"
-             Focusable="False">
+             Focusable="False"
+             Classes.compact="{Binding Compact, RelativeSource={RelativeSource Self}}">
   <!--
     「提醒时间」多选下拉：按钮上显示当前勾选项摘要（空 = 不提醒），
     点开是一组可勾选的固定档位（到时提醒 / 提前 3 分钟 …… / 提前一天），
     勾多个就到点各推一次。勾选项直接在绑定进来的字符串集合上增删，VM 与本控件共享同一份。
+    Compact=True 时按钮收窄成小徽标（紧凑添加表单用），弹出的档位列表不变。
   -->
   <UserControl.Styles>
     <Style Selector="Button.picker">
@@ -19,6 +21,16 @@
       <Setter Property="HorizontalContentAlignment" Value="Left" />
       <Setter Property="VerticalContentAlignment" Value="Center" />
       <Setter Property="Cursor" Value="Hand" />
+    </Style>
+    <!-- 紧凑模式：收窄成小徽标，挤进「输入框 + 时间 + 提醒」同一行 -->
+    <Style Selector="UserControl.compact Button.picker">
+      <Setter Property="MinWidth" Value="0" />
+      <Setter Property="Height" Value="22" />
+      <Setter Property="Padding" Value="6,0" />
+    </Style>
+    <Style Selector="UserControl.compact Button.picker TextBlock">
+      <Setter Property="FontSize" Value="10" />
+      <Setter Property="MaxWidth" Value="64" />
     </Style>
     <Style Selector="Button.picker:pointerover /template/ ContentPresenter">
       <Setter Property="Background" Value="#F1F5F9" />
@@ -40,10 +52,13 @@
   <Grid>
     <Button x:Name="RootButton" Classes="picker" Click="TogglePopup">
       <Grid ColumnDefinitions="*,Auto" VerticalAlignment="Center">
+        <!-- 紧凑模式专用图标：按钮窄成一个小方块，摘要文字与箭头都让位 -->
+        <TextBlock x:Name="IconText" Grid.Column="0" Text="🔔" FontSize="12"
+                   VerticalAlignment="Center" HorizontalAlignment="Center" IsVisible="False" />
         <TextBlock x:Name="SummaryText" Grid.Column="0" FontSize="11"
                    Foreground="#334155" TextTrimming="CharacterEllipsis"
                    VerticalAlignment="Center" Text="不提醒" />
-        <Path Grid.Column="1" Margin="6,0,0,0" VerticalAlignment="Center"
+        <Path x:Name="Arrow" Grid.Column="1" Margin="6,0,0,0" VerticalAlignment="Center"
               Fill="#64748B" Data="M 0,0 L 5,5 L 10,0 Z" />
       </Grid>
     </Button>
@@ -53,7 +68,14 @@
            VerticalOffset="3"
            IsLightDismissEnabled="True">
       <Border Classes="popupCard" MinWidth="150">
-        <StackPanel x:Name="OptionsHost" Spacing="0" />
+        <StackPanel>
+          <StackPanel x:Name="OptionsHost" Spacing="0" />
+          <!-- 档位说明：原来独占添加表单的一行，现在跟着弹层走（只在需要省空间的 Compact 模式显示） -->
+          <TextBlock x:Name="OptionsHint"
+                     Text="提醒按「任务时间」往前推，可多选；「到时提醒」＝到点那一刻推；一个都不勾＝不提醒。"
+                     FontSize="9.5" TextWrapping="Wrap" Margin="4,3,4,2"
+                     Foreground="#94A3B8" IsVisible="False" />
+        </StackPanel>
       </Border>
     </Popup>
   </Grid>

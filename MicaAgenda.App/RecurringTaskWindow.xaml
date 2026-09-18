@@ -1,0 +1,83 @@
+<Window x:Class="MicaAgenda.App.RecurringTaskWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="添加周期任务"
+        Width="380"
+        SizeToContent="Height"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize"
+        WindowStyle="SingleBorderWindow"
+        Background="#F4F5F7"
+        Foreground="#1F2937"
+        FontSize="13"
+        UseLayoutRounding="True"
+        SnapsToDevicePixels="True">
+    <Window.Resources>
+        <SolidColorBrush x:Key="CardBrush" Color="#FFFFFF" />
+        <SolidColorBrush x:Key="CardBorderBrush" Color="#E7E9EF" />
+        <SolidColorBrush x:Key="FieldBorderBrush" Color="#DDE1E8" />
+        <SolidColorBrush x:Key="MutedTextBrush" Color="#8B94A6" />
+        <SolidColorBrush x:Key="AccentBrush" Color="#2563EB" />
+        <SolidColorBrush x:Key="AccentHoverBrush" Color="#1D4ED8" />
+        <Style TargetType="TextBlock" x:Key="FieldLabel">
+            <Setter Property="Foreground" Value="{StaticResource MutedTextBrush}" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="Margin" Value="0,0,0,3" />
+        </Style>
+        <Style TargetType="TextBox" x:Key="InputBox">
+            <Setter Property="Padding" Value="8,6" />
+            <Setter Property="BorderBrush" Value="{StaticResource FieldBorderBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Background" Value="White" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+        </Style>
+    </Window.Resources>
+
+    <StackPanel Margin="16" >
+        <TextBlock Text="周期任务会按规则自动生成未来的重复实例（每条可独立勾选完成）。"
+                   FontSize="11.5" TextWrapping="Wrap" Foreground="{StaticResource MutedTextBrush}" Margin="0,0,0,10" />
+
+        <TextBlock Text="任务内容" Style="{StaticResource FieldLabel}" />
+        <TextBox x:Name="TitleBox" Style="{StaticResource InputBox}" Margin="0,0,0,10" />
+
+        <TextBlock Text="重复频率" Style="{StaticResource FieldLabel}" />
+        <ComboBox x:Name="FrequencyBox" SelectedIndex="0" Margin="0,0,0,10" Padding="8,6">
+            <ComboBoxItem Content="每天" />
+            <ComboBoxItem Content="每周" />
+            <ComboBoxItem Content="每月" />
+            <ComboBoxItem Content="每年" />
+        </ComboBox>
+
+        <Grid Margin="0,0,0,4">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="12" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+            <StackPanel Grid.Column="0">
+                <TextBlock Text="间隔（默认 1，一般不用改）" Style="{StaticResource FieldLabel}"
+                           ToolTip="间隔 = 每 N 个频率单位重复一次" />
+                <TextBox x:Name="IntervalBox" Style="{StaticResource InputBox}" Text="1" />
+            </StackPanel>
+            <StackPanel Grid.Column="2">
+                <TextBlock Text="结束日期（可选）" Style="{StaticResource FieldLabel}" />
+                <DatePicker x:Name="EndDatePicker" />
+            </StackPanel>
+        </Grid>
+        <!-- 间隔的含义对多数人并不直观：不写清楚就得让人猜，索性把三档常见取值直接列出来。 -->
+        <TextBlock TextWrapping="Wrap" FontSize="10.5" Foreground="#9CA3AF" Margin="0,0,0,10"
+                   Text="间隔 = 1（默认）：每个周期一次，即每天都来、每周都来；间隔 = 2：隔天、隔周、每两月、每两年；间隔 = 3：每 3 天 / 每 3 周 / 每 3 个月……保留 1 即可满足大多数需求。" />
+
+        <TextBlock Text="任务时间（HH:mm，留空 = 9:00）" Style="{StaticResource FieldLabel}" />
+        <TextBox x:Name="TimeBox" Style="{StaticResource InputBox}" Margin="0,0,0,12" />
+
+        <TextBlock Text="提醒（可多选，一个都不勾 = 不提醒）" Style="{StaticResource FieldLabel}" />
+        <WrapPanel x:Name="ReminderHost" Margin="0,0,0,12" />
+
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+            <Button Content="取消" Padding="12,5" Margin="0,0,8,0" Click="Cancel_Click" />
+            <Button Content="确定" Padding="14,5" Background="{StaticResource AccentBrush}" Foreground="White"
+                    BorderThickness="0" Click="Confirm_Click" />
+        </StackPanel>
+    </StackPanel>
+</Window>

@@ -2,6 +2,18 @@ using System.Text.Json.Serialization;
 
 namespace MicaAgenda.App.Models;
 
+/// <summary>
+/// 周期任务的重复频率。
+/// </summary>
+public enum RecurrenceFrequency
+{
+    None = 0,
+    Daily = 1,
+    Weekly = 2,
+    Monthly = 3,
+    Yearly = 4,
+}
+
 public sealed class CalendarTask
 {
     public Guid Id { get; set; } = Guid.NewGuid();
@@ -32,6 +44,34 @@ public sealed class CalendarTask
     /// 这样与 my-mindmap agent 同步过来的复习任务（那边没有时间概念）保持同一份数据形态。
     /// </summary>
     public TimeOnly? Time { get; set; }
+
+    /// <summary>
+    /// 重复频率：None = 普通一次性任务；其余表示这是一条「周期任务」的<b>源任务</b>（系列根）。
+    /// 源任务自己就是第一次发生；后续发生的实例由 <see cref="SeriesId"/> 指向它。
+    /// </summary>
+    public RecurrenceFrequency Recurrence { get; set; } = RecurrenceFrequency.None;
+
+    /// <summary>重复间隔：每 N 天 / 周 / 月 / 年一次（最小 1）。</summary>
+    public int RecurrenceInterval { get; set; } = 1;
+
+    /// <summary>重复结束日期（含）。null = 不设结束，物化时封顶到约 2 年。</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public DateOnly? RecurrenceEnd { get; set; }
+
+    /// <summary>
+    /// 物化出来的重复实例指向源任务（系列根）的 Id；null 表示这不是周期任务的实例。
+    /// 源任务本身 <c>Recurrence != None</c> 且 <c>SeriesId == null</c>。
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public Guid? SeriesId { get; set; }
+
+    /// <summary>是否是周期任务的源任务（系列根）。</summary>
+    [JsonIgnore]
+    public bool IsRecurringMaster => Recurrence != RecurrenceFrequency.None;
+
+    /// <summary>是否是由周期任务物化出来的重复实例。</summary>
+    [JsonIgnore]
+    public bool IsRecurringInstance => SeriesId is not null;
 
     /// <summary>
     /// 主提醒的提前量（分钟）：在「当天基准时刻 - 本值」推一次提醒。
@@ -463,6 +503,17 @@ public sealed class CalendarTask
                     FiredReminderLeads = null;
                 }
             }
+        }
+
+        // 周期任务字段自洽：非重复任务不该残留重复规则；间隔最小为 1。
+        if (Recurrence == RecurrenceFrequency.None)
+        {
+            RecurrenceEnd = null;
+            RecurrenceInterval = 1;
+        }
+        else if (RecurrenceInterval < 1)
+        {
+            RecurrenceInterval = 1;
         }
     }
 

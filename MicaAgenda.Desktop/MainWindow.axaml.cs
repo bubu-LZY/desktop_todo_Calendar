@@ -28,7 +28,6 @@ public partial class MainWindow : Window
     private readonly AppConfigStore _configStore = new();
     private AppConfig _config;
     private MainViewModel? _viewModel;
-    private IntPtr _nativeHandle;
     private TrayIconService? _tray;
 
     // 关闭被彻底阻断（桌面小部件不该可点 × 关闭）；退出走托盘"退出"菜单，先置位再放行。
@@ -65,14 +64,9 @@ public partial class MainWindow : Window
     /// 2026-09 之前这里还兼作「窄窗只留今日任务」的判定；现在窄窗视图单独用
     /// <see cref="NarrowLayoutThreshold"/>，两者分开。
     /// </summary>
-    private const double NarrowLayoutThreshold = 460.0;
+    private const double NarrowLayoutThreshold = 380.0;
 
     /// <summary>
-    /// 「背景 + 透明度」这两个装饰设置所需的最小宽度。低于它就先收起这两个控件，
-    /// 而不是让「今天 / 视图 / 设置」压在上面。
-    /// </summary>
-    private const double ViewControlsWidthCost = 262.0;
-
     /// <summary>
     /// 顶栏单行能容下「日期信息 + 常驻按钮」的最小宽度。再窄就换行：
     /// 第一行只留日期信息，第二行放「今天 / 视图 / 设置 / 锁定」。
@@ -134,6 +128,15 @@ public partial class MainWindow : Window
     private readonly CalendarDataStore _store = new();
     private readonly ChinaHolidayService _holidayService = new();
     private DispatcherTimer? _saveTimer;
+    private System.Threading.Timer? _gcTrimTimer;
+    private readonly Services.MouseDismissHook _aiDismissHook = new();
+
+    /// <summary>
+    /// 数据文件加载失败时置 true，全程关闭自动保存。
+    /// 这是数据安全闸门：加载失败意味着原文件已损坏并被隔离改名，若照常自动保存，
+    /// 空数据会立刻在原路径新建一个空文件，用户会误以为数据被清空且无法找回。
+    /// </summary>
+    private bool _suppressAutoSave;
 
     // 后台服务：与 WPF 宿主对等。_syncRoot 与 MainViewModel/各服务共享，保证跨线程访问 CalendarData 的安全。
     private readonly object _syncRoot = new();
@@ -179,23 +182,38 @@ public partial class MainWindow : Window
         _tray = new TrayIconService(ShowCalendar, OpenSettings, ExitApplication);
         _ = InitializeAsync();
 
-        // 防抖自动保存：每 800ms 检查一次，脏了才落盘（覆盖所有改动入口，含月视图/右侧面板）。
-        _saveTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(800) };
+        // 自动保存改成「脏了才启动的一次性防抖」：MarkDirty 会触发 IsDirty 的 PropertyChanged，
+        // 宿主订阅它并启动 2 秒单次定时器（见 SubscribeAutoSave），干净状态下零定时器唤醒。
+        // 不再用 800ms 常驻轮询 —— 那会每天空转约 10.8 万次去读一个 bool。
+        _saveTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
         _saveTimer.Tick += (_, _) =>
         {
+            _saveTimer.Stop();
             if (_viewModel?.IsDirty == true)
             {
                 _ = SaveAsync();
             }
         };
-        _saveTimer.Start();
     }
 
     private async System.Threading.Tasks.Task InitializeAsync()
     {
         try
         {
-            var data = await _store.LoadAsync();
+            CalendarData data;
+            try
+            {
+                data = await _store.LoadAsync();
+            }
+            catch (CalendarDataLoadException ex)
+            {
+                // 数据文件损坏，已隔离改名留存。以空数据继续运行（挂件不能因为读不出文件就起不来），
+                // 但全程关闭自动保存 —— 否则空数据会立刻在原路径新建一个空文件，用户会误以为数据没了。
+                AppLog.Error(ex, "MainWindow.Initialize.Load");
+                _suppressAutoSave = true;
+                data = new CalendarData();
+            }
+
             var year = DateOnly.FromDateTime(DateTime.Now).Year;
             var holidays = await _holidayService.LoadCachedOrEmbeddedAsync(year);
             _viewModel = new MainViewModel(data, holidays: holidays, syncRoot: _syncRoot);
@@ -205,7 +223,12 @@ public partial class MainWindow : Window
             // 桌面端以前完全没订阅这个事件，而月/年视图的"正在看哪个月"是由滚动位置表达的，
             // 于是点「今天」只改了 ViewModel 状态、画面一动不动。
             _viewModel.TimelineRebuilt += OnTimelineRebuilt;
+            _viewModel.WeekScrollHeadTrimmed += OnWeekScrollHeadTrimmed;
+            SubscribeAutoSave();
             DataContext = _viewModel;
+
+            // 右上角迷你 AI 对话卡片：注入数据与配置，与 MCP 的 AI 工具共用同一套任务执行逻辑。
+            AiPanel.Initialize(_viewModel.Data, _syncRoot, () => _config, OnDataChangedFromApi, CreateHostActions());
 
             // 首屏也要定位一次：时间轴是以今天为中心往前多铺了一个月，
             // 不想办法滚一下，第一眼看到的是上个月。
@@ -219,6 +242,15 @@ public partial class MainWindow : Window
 
             // 应用已保存的视觉设置：背景模式 / 透明度 / 按视图记忆的窗口位置尺寸 + 同步工具栏控件。
             ApplySettingsToWindow();
+
+            // 长驻挂件空闲时定期做一次「优化式」非阻塞 GC，把工作集还给系统。
+            // 日历重建 / 任务增删改是高频短生命周期分配，默认并发 GC 会把已分配但未触达的内存
+            // 留在进程里，导致常驻内存越堆越高；Optimized 模式只在确实有垃圾时收集，不打断交互。
+            _gcTrimTimer = new System.Threading.Timer(
+                _ => GC.Collect(GC.MaxGeneration, GCCollectionMode.Optimized, blocking: false),
+                null,
+                TimeSpan.FromMinutes(3),
+                TimeSpan.FromMinutes(3));
 
             // 启动后自动查一次新版本（默认开启）。延迟几秒：先让首屏和「嵌入桌面」的置底
             // 稳定下来，再谈弹窗，免得开机瞬间就被一个对话框糊住。
@@ -245,6 +277,10 @@ public partial class MainWindow : Window
 
             // 首帧的 SizeChanged 未必赶在 Opened 之前到（或不触发），这里按当前宽度定一次版式。
             UpdateResponsiveLayout();
+
+            // 默认视图就是年视图时，月卡要等这次布局后才量得出实际列宽，
+            // Loaded 优先级补一次字号回填（UpdateResponsiveLayout 里 Bounds 还是 0 会跳过）。
+            Dispatcher.UIThread.Post(UpdateYearFontScale, DispatcherPriority.Loaded);
         }
         catch (Exception ex)
         {
@@ -252,15 +288,36 @@ public partial class MainWindow : Window
         }
     }
 
+    /// <summary>
+    /// 取当前的原生窗口句柄。
+    ///
+    /// <b>不能缓存。</b>Avalonia 会在若干时机重建底层原生窗口（托盘恢复、DPI 变化、
+    /// 主题/渲染后端切换等），旧句柄随之失效。早期版本把句柄缓存在字段里只取一次，
+    /// 结果看门狗之后一直在操作一个已经销毁的句柄：失效句柄上 <c>IsWindowVisible</c>
+    /// 恒为 false，判定"窗口被藏了"→ 每 200ms 无意义地反复调 ShowWindow，
+    /// 而真正的新窗口反而没人管（"显示桌面后拉不回来"的一种成因）。
+    ///
+    /// <c>TryGetPlatformHandle()</c> 本身只是读 Avalonia 内部字段、不涉及系统调用，
+    /// 每 tick 取一次的代价可以忽略，用它换掉缓存是稳赚的。
+    /// </summary>
     private IntPtr NativeHandle()
     {
-        if (_nativeHandle == IntPtr.Zero)
+        var handle = TryGetPlatformHandle()?.Handle ?? IntPtr.Zero;
+        if (handle != IntPtr.Zero)
         {
-            _nativeHandle = TryGetPlatformHandle()?.Handle ?? IntPtr.Zero;
+            _lastHandleFromAvalonia = true;
+            return handle;
         }
 
-        return _nativeHandle;
+        // Avalonia 交不出句柄（原生窗口被重建 / 销毁，典型是刚被「显示桌面」收走时），
+        // 这时绝不能放弃 —— 否则看门狗就在空转，窗口再也回不来。
+        // 退回 Win32 层按进程 ID 直接找：拿到的是此刻真实存在的窗口。
+        _lastHandleFromAvalonia = false;
+        return DesktopEmbedService.FindOwnMainWindow();
     }
+
+    /// <summary>上一次句柄是不是来自 Avalonia（false = 走了 Win32 枚举兜底）。诊断用。</summary>
+    private bool _lastHandleFromAvalonia = true;
 
     /// <summary>
     /// 又有人来启动程序了：把已经在跑的这个窗口叫到前面来，别让用户以为点了没反应。
@@ -356,12 +413,16 @@ public partial class MainWindow : Window
         if (!_embedWatchdogHooked)
         {
             _embedWatchdogHooked = true;
-            // 间隔固定 200ms，嵌入与非嵌入一致。
+            // 间隔 200ms。
             //
-            // 早期为了省开销，非嵌入模式用 1s 轮询 —— 但「显示桌面」正是靠这段时间差被用户
-            // 感知成"窗口被隐藏了"：窗口已经被收走，却要等最多 1 秒才被还原回来。
-            // 现在两次 tick 之间的代价只是 GetWindowLong / IsIconic / IsWindowVisible 这几个
-            // 只读调用（样式已是目标值就提前返回，不碰 Z 序），200ms 完全负担得起。
+            // 为什么不能放宽到秒级：用户实测点「显示桌面」后要等 1~2 秒窗口才回来，
+            // 说明前台事件钩子（InstallForegroundWatch）在「显示桌面」这条路径上并不可靠 ——
+            // Win+D / 右下角细条把 WorkerW 提上来的同时，前台窗口可能根本没变（或事件没按预期送到），
+            // 于是只能靠轮询兜底。200ms 是"体感无延迟"和"开销可控"的平衡点：
+            // 一秒 5 次、每次几个只读调用（样式已是目标值就提前返回），远低于 UI 刷新本身的开销。
+            //
+            // 事件钩子仍然保留：它在前台真正切换时能立刻纠一次 Z 序（比如用户切到别的应用），
+            // 把「显示桌面」这类前台不变的场景交给 200ms 轮询兜底。
             _embedWatchdog = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(200) };
             _embedWatchdog.Tick += (_, _) =>
             {
@@ -374,6 +435,20 @@ public partial class MainWindow : Window
                     AppLog.Error(ex, "ChromeWatchdog");
                 }
             };
+
+            // 前台窗口一变（含「显示桌面」把桌面提为前台）就立刻纠一次 Z 序，
+            // 这样窗口被桌面层盖住的瞬间就能回来，不用等 2s 的下一轮 tick。
+            DesktopEmbedService.InstallForegroundWatch(() =>
+            {
+                try
+                {
+                    ReinforceWindowChrome();
+                }
+                catch (Exception ex)
+                {
+                    AppLog.Error(ex, "ForegroundWatch");
+                }
+            });
         }
 
         _embedWatchdog?.Start();
@@ -411,6 +486,48 @@ public partial class MainWindow : Window
         Dispatcher.UIThread.Post(TryFocus, DispatcherPriority.Background);
     }
 
+    /// <summary>上一次写看门狗体检日志的时刻（限流用）。</summary>
+    private static DateTime _lastHealthLogAt = DateTime.MinValue;
+
+    /// <summary>
+    /// 每 tick 记录一次看门狗的"体检结果"，供真实环境复现时定位。
+    ///
+    /// 之所以需要它：窗口"消失"在开发环境里复现不出来（四条权威路径实测全都免疫），
+    /// 只能靠现场日志反推。它回答三个关键问题：
+    /// 句柄是 Avalonia 给的还是 Win32 枚举兜底的（暴露"句柄失效"这个根因）、
+    /// 窗口此刻到底是什么形态（最小化 / 隐藏 / 正常）、还原指令发出去后有没有落地。
+    /// </summary>
+    private void LogWatchdogHealth(IntPtr hwnd)
+    {
+        var now = DateTime.UtcNow;
+        if ((now - _lastHealthLogAt).TotalSeconds < 3)
+        {
+            return;
+        }
+
+        _lastHealthLogAt = now;
+
+        var hidden = DesktopEmbedService.IsHiddenOrMinimized(hwnd);
+        // 只在"窗口确实异常"时记，正常态不必刷屏。
+        if (!hidden)
+        {
+            return;
+        }
+
+        DesktopEmbedService.LogRestoreEvent(
+            hwnd,
+            $"health src={(_lastHandleFromAvalonia ? "avalonia" : "win32-enum")}");
+    }
+
+    /// <summary>
+    /// 同一个看门狗 tick 内允许的还原重试次数。
+    ///
+    /// 「显示桌面」施压是持续性的，一次 ShowWindow 可能刚好落在两次施压的缝里被立刻压回。
+    /// 等下一个 200ms tick 太慢（用户能明显看到窗口消失一段时间），所以在 tick 内小步重试。
+    /// 次数不能大：这里是 UI 线程，重试多了会反过来卡住界面。
+    /// </summary>
+    private const int RestoreRetryPerTick = 3;
+
     /// <summary>
     /// 把窗口外观重新拉回"桌面小部件"该有的样子（幂等，随时可重复调用）。
     ///
@@ -432,19 +549,65 @@ public partial class MainWindow : Window
             return;
         }
 
-        // 免疫「显示桌面」：Win+D / 任务栏右键菜单 / 右下角显示桌面细条会把所有普通顶层窗口
-        // 最小化或直接隐藏，本窗口没有任务栏按钮，被收走后用户无法找回。
+        // ===== 免疫「显示桌面」：摘样式 + 还原，且必须"摘 → 还原 → 再摘" =====
         //
-        // 顺序很重要：必须在摘标题栏样式之前先还原 —— 窗口还处于隐藏/最小化态时调
-        // SWP_FRAMECHANGED 是无效的（非客户区根本没在合成），先还原再改样式才落得下去。
-        // 托盘「隐藏」那一步会先打开 SuppressAutoRestore 闸门，不会被这里立刻拉回来。
-        DesktopEmbedService.RestoreIfMinimized(hwnd);
+        // Win+D / 任务栏右键 / 右下角细条会把所有普通顶层窗口收走，本窗口没有任务栏按钮，
+        // 被收走后用户无法找回。两道防线交替上：
+        //
+        //  ① 摘掉 WS_MINIMIZEBOX / WS_SYSMENU，让批量最小化从源头跳过本窗口；
+        //  ② 万一还是被带走（最小化 或 WS_VISIBLE 被清零），无激活还原。
+        //
+        // 关键在于 ① 要做两次：实测（app-error.log 的 ShowDesktopWatchdog 记录）发现，
+        // 还原用的 SW_RESTORE 会连带<b>重建非客户区</b>，把刚摘掉的 WS_MINIMIZEBOX 又写回来 ——
+        // 于是下一轮 tick 里窗口又是"可最小化"的，系统随时能在还原的那条缝里再收一次，
+        // 表现为"窗口一直反复消失"。所以还原之后必须立刻再摘一遍，把状态收敛干净。
+        //
+        // 这两步都不能只在启动时做一次：宿主在激活、改尺寸、DPI 变化、从托盘 Show() 等时机
+        // 都会把样式写回去，所以必须周期性重放。托盘「隐藏」会先开 SuppressAutoRestore 闸门，
+        // 不会被这里的还原立刻拉回来。
+        // 看门狗每 tick 的体检。窗口"消失"却查不到原因时，这条是唯一的现场证据：
+        // 它记下句柄来源（Avalonia 还是 Win32 枚举兜底）和窗口的真实形态。
+        // 限流 3 秒一条，避免高频 tick 把日志刷爆。
+        LogWatchdogHealth(hwnd);
 
-        // 任何模式下都彻底去掉标题栏系统按钮（最小化 / 最大化 / 关闭），并隐藏任务栏按钮。
-        // 关键点：不能只在启动时做一次 —— 宿主在激活、改尺寸、DPI 变化、从托盘 Show() 等时机
-        // 都会把窗口样式写回去，所以必须周期性重放。
         DesktopEmbedService.RemoveCaptionButtons(hwnd);
         DesktopEmbedService.HideFromTaskbar(hwnd);
+
+        // 第三道（也是唯一真正闭环的）防线：把最小化消息在窗口过程里直接吃掉。
+        //
+        // 前两道 —— 摘 WS_MINIMIZEBOX + 事后还原 —— 都只能"减少被收走的概率"或
+        // "事后补救"，而「显示桌面」的施压是连续的，补救永远慢半拍（实测最坏 200ms 窗口期，
+        // 用户看到的就是闪一下没了）。装钩子之后窗口从未进入最小化态，问题从根上消失。
+        //
+        // 句柄会变（Avalonia 重建原生窗口），所以每 tick 调一次；方法内部幂等，句柄没变时
+        // 只做一次句柄比较。
+        DesktopEmbedService.GuardAgainstMinimize(hwnd);
+
+        if (DesktopEmbedService.RestoreIfMinimized(hwnd))
+        {
+            // 真的发生了还原才记一条。这是「显示桌面把窗口带走了」的现场证据：
+            // 日志里这条记录的数量和时刻就是还原被触发的铁证；
+            // 若日志里一条都没有却仍然"窗口消失"，说明窗口是被本类判定之外的
+            // 途径收走的，需要重新审视 IsIconic / IsWindowVisible 这对判据。
+            DesktopEmbedService.LogRestoreEvent(hwnd, "before-restrip");
+
+            // SW_RESTORE 重建非客户区时会把最小化样式写回来，这里再摘一次压住它。
+            DesktopEmbedService.RemoveCaptionButtons(hwnd);
+
+            // 还原指令发出去了，但「显示桌面」可能还在持续施压，窗口此刻未必真的可见。
+            // 复查一次，没落地就立刻原 tick 重试 —— 否则要等 200ms 后的下一轮 tick，
+            // 用户感知就是"窗口消失了一会儿才回来"。
+            for (var retry = 0; retry < RestoreRetryPerTick; retry++)
+            {
+                if (!DesktopEmbedService.IsHiddenOrMinimized(hwnd))
+                {
+                    break;
+                }
+
+                DesktopEmbedService.RestoreIfMinimized(hwnd);
+                DesktopEmbedService.RemoveCaptionButtons(hwnd);
+            }
+        }
 
         if (!_config.EmbedDesktop)
         {
@@ -653,16 +816,15 @@ public partial class MainWindow : Window
 
         // 设置窗里也可能改了这一项，顶栏按钮文案 / 颜色跟着同步。
         UpdateLockButton();
+        UpdateAiButton();
 
         ApplyDesktopEmbed();
 
-        // 看门狗轮询频率跟随嵌入开关：嵌入 200ms（高频压底）/ 非嵌入 1s（巡检还原 + 样式纠偏）。
-        // 间隔此前只在首次启动时按当时配置定死，运行中切换开关不会跟着变。
+        // 看门狗轮询频率统一 200ms（「显示桌面」路径前台事件不可靠，必须靠轮询保体感，
+        // 见 StartChromeWatchdog 注释）。运行中切换嵌入开关不改变它。
         if (OperatingSystem.IsWindows() && _embedWatchdog is not null)
         {
-            _embedWatchdog.Interval = config.EmbedDesktop
-                ? TimeSpan.FromMilliseconds(200)
-                : TimeSpan.FromMilliseconds(1000);
+            _embedWatchdog.Interval = TimeSpan.FromMilliseconds(200);
         }
 
         // 关掉嵌入：窗口还压在最底层，得把它捞回前台，否则用户会以为"设置没生效"。
@@ -698,39 +860,50 @@ public partial class MainWindow : Window
         }
     }
 
+    private bool _isExiting;
+
     private async void ExitApplication()
     {
-        _saveTimer?.Stop();
-        _allowClose = true;
-
-        // 记住当前视图的窗口位置/尺寸（会 MarkDirty，确保随后落盘）。
-        SaveCurrentViewBounds();
-
-        // 退出前兜底落盘：防抖定时器可能还没轮到，这里确保脏数据不丢。
-        if (_viewModel?.IsDirty == true)
+        // 托盘「退出」可能被连点 / 重复触发，这里只放行一次，避免并发走两遍 Shutdown。
+        if (_isExiting)
         {
-            try
+            return;
+        }
+
+        _isExiting = true;
+
+        try
+        {
+            _saveTimer?.Stop();
+            _allowClose = true;
+
+            // 记住当前视图的窗口位置/尺寸（会 MarkDirty，确保随后落盘）。
+            SaveCurrentViewBounds();
+
+            // 退出前兜底落盘：防抖定时器可能还没轮到，这里确保脏数据不丢。
+            if (_viewModel?.IsDirty == true)
             {
                 await SaveAsync();
             }
-            catch (Exception ex)
+
+            DisposeServices();
+
+            if (Application.Current?.ApplicationLifetime is IClassicDesktopStyleApplicationLifetime lifetime)
             {
-                AppLog.Error(ex, "MainWindow.ExitApplication.Save");
+                lifetime.Shutdown();
             }
         }
-
-        DisposeServices();
-
-        if (Application.Current?.ApplicationLifetime is IClassicDesktopStyleApplicationLifetime lifetime)
+        catch (Exception ex)
         {
-            lifetime.Shutdown();
+            // async void 的异常会直接终止进程，退出路径必须整体兜底，绝不能崩在退出瞬间。
+            AppLog.Error(ex, "MainWindow.ExitApplication");
         }
     }
 
     /// <summary>把当前数据写回磁盘并清除脏标记；落盘失败不致命（保留 IsDirty 以便重试）。</summary>
     private async System.Threading.Tasks.Task SaveAsync()
     {
-        if (_viewModel is null)
+        if (_viewModel is null || _suppressAutoSave)
         {
             return;
         }
@@ -744,6 +917,39 @@ public partial class MainWindow : Window
         {
             AppLog.Error(ex, "MainWindow.SaveAsync");
         }
+    }
+
+    /// <summary>
+    /// 订阅 <see cref="MainViewModel.IsDirty"/> 的 PropertyChanged，脏了才启动 2 秒一次性落盘防抖。
+    /// 连续改动会不断顺延定时器，不会高频写盘；干净状态下零定时器唤醒。
+    /// </summary>
+    private void SubscribeAutoSave()
+    {
+        var viewModel = _viewModel;
+        if (viewModel is null)
+        {
+            return;
+        }
+
+        viewModel.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName != nameof(MainViewModel.IsDirty) || viewModel.IsDirty != true)
+            {
+                return;
+            }
+
+            // MarkDirty 可能在任意线程触发，DispatcherTimer 只能 UI 线程操作，统一 Post 回 UI 线程。
+            Dispatcher.UIThread.Post(() =>
+            {
+                if (_saveTimer is null)
+                {
+                    return;
+                }
+
+                _saveTimer.Stop();
+                _saveTimer.Start();
+            });
+        };
     }
 
     // ===== 后台服务（与 WPF 宿主对等：API/MCP/提醒/备份/报告/思维导图同步）=====
@@ -766,7 +972,9 @@ public partial class MainWindow : Window
             var taskRegistered = false;
             if (_config.HighPriorityStartup)
             {
-                HighPriorityStartupService.ApplyProcessPriority(true);
+                // 启动瞬间提到 High 抢首屏，15 秒后自动回落到 AboveNormal 常驻 ——
+                // 既保留「高优先级」诉求，又不让桌面挂件长期跟前台应用抢时间片。
+                HighPriorityStartupService.ApplyProcessPriorityWithFallback(true);
 
                 var result = EnableHighPriorityTask();
                 taskRegistered = result.TaskRegistered;
@@ -866,7 +1074,11 @@ public partial class MainWindow : Window
             OnDataChangedFromApi,
             NotifyReviewDeletion,
             OnReviewTaskStatusChanged);
-        _apiServer.Start(_config.ApiPort);
+        if (!_apiServer.Start(_config.ApiPort))
+        {
+            // 端口被占用 / 前缀注册失败时 Start 返回 false：必须让用户知道，否则以为 API 开着其实没开。
+            AppLog.Error(null, $"HTTP API 启动失败：端口 {_config.ApiPort} 可能被占用。");
+        }
     }
 
     private void StartMcpServer()
@@ -882,9 +1094,26 @@ public partial class MainWindow : Window
             OnDataChangedFromApi,
             _config.ApiToken,
             NotifyReviewDeletion,
-            OnReviewTaskStatusChanged);
-        _mcpServer.Start(_config.McpPort);
+            OnReviewTaskStatusChanged,
+            () => _config,
+            CreateHostActions());
+        if (!_mcpServer.Start(_config.McpPort))
+        {
+            AppLog.Error(null, $"MCP 服务启动失败：端口 {_config.McpPort} 可能被占用。");
+        }
     }
+
+    /// <summary>
+    /// 宿主能力桥：把「发送 / 预览报告」「立即备份」包成工具能力，供 MCP 与 AI 面板共用
+    /// （AI 面板内部另建了一个不监听端口的工具服务，同样需要这份能力）。
+    /// 委托是调用时才求值的，所以可以先建桥、后创建服务实例。
+    /// </summary>
+    private McpHostActions CreateHostActions() => new()
+    {
+        SendReportAsync = () => _reportService!.RunOnceAsync(),
+        PreviewReport = () => _reportService!.Preview(),
+        RunBackupAsync = async () => McpHostActions.DescribeBackup(await _backupService!.RunBackupAsync())
+    };
 
     private void StartReminderService()
     {
@@ -1388,29 +1617,36 @@ public partial class MainWindow : Window
             try
             {
                 await System.Threading.Tasks.Task.Delay(250);
-                lock (_apiRefreshLock)
-                {
-                    _apiRefreshPending = false;
-                }
 
-                if (_viewModel is null)
+                if (_viewModel is not null)
                 {
-                    return;
+                    _viewModel.RebuildCalendar();
+                    _viewModel.MarkDirty();
+                    await SaveAsync();
                 }
-
-                _viewModel.RebuildCalendar();
-                _viewModel.MarkDirty();
-                await SaveAsync();
             }
             catch (Exception ex)
             {
                 AppLog.Error(ex, "OnDataChangedFromApi");
+            }
+            finally
+            {
+                // 复位必须放 finally：RebuildCalendar 一旦抛异常，标志位会永久卡 true，
+                // 之后所有 API 刷新都会被静默跳过（数据改了 UI 却不更新）。
+                lock (_apiRefreshLock)
+                {
+                    _apiRefreshPending = false;
+                }
             }
         });
     }
 
     private void DisposeServices()
     {
+        _gcTrimTimer?.Dispose();
+        _gcTrimTimer = null;
+        _aiDismissHook.Dispose();
+
         // 逐个兜底释放：任一服务 Dispose 抛异常都不能影响其余资源清理。
         TryDispose(() => _apiServer?.Dispose(), "ApiServer");
         _apiServer = null;
@@ -1449,6 +1685,132 @@ public partial class MainWindow : Window
     private void TaskView_Click(object? sender, RoutedEventArgs e) => SwitchView(CalendarViewMode.Tasks);
     private void Settings_Click(object? sender, RoutedEventArgs e) => OpenSettings();
 
+    /// <summary>点击 AI 按钮：切换右上角迷你对话覆盖层的显示状态。</summary>
+    private void AiChat_Click(object? sender, RoutedEventArgs e) => SetAiPanelOpen(!AiPanel.IsVisible);
+
+    /// <summary>点击透明背板（面板外的任意位置）：收起 AI 对话面板，并吃掉本次点击避免触发窗口拖动。</summary>
+    private void AiBackdrop_PointerPressed(object? sender, PointerPressedEventArgs e)
+    {
+        e.Handled = true;
+        SetAiPanelOpen(false);
+    }
+
+    /// <summary>
+    /// 显示/隐藏 AI 对话覆盖层。打开时把键盘焦点落进输入框 —— 覆盖层在主窗口内，
+    /// 普通控件焦点正常，点开即可直接打字。
+    /// </summary>
+    private void SetAiPanelOpen(bool open)
+    {
+        if (AiPanel is null)
+        {
+            return;
+        }
+
+        AiPanel.IsVisible = open;
+        if (AiBackdrop is not null)
+        {
+            AiBackdrop.IsVisible = open;
+        }
+
+        if (open)
+        {
+            // 嵌入桌面下窗口带 WS_EX_NOACTIVATE，键盘消息根本送不进来，光 Focus() 打不进字；
+            // 必须先 BeginTextEntry 放开激活，再聚焦（与 FocusInlineTextBox 同一套流程，双次兜底）。
+            void TryFocus()
+            {
+                BeginTextEntry();
+                AiPanel.FocusInput();
+            }
+
+            Dispatcher.UIThread.Post(TryFocus, DispatcherPriority.Loaded);
+            Dispatcher.UIThread.Post(TryFocus, DispatcherPriority.Background);
+
+            // 装全局鼠标钩子：点窗口外的桌面 / 其他应用也能关掉面板
+            //（窗口内的点击由 AiBackdrop 负责，钩子负责背板够不到的外部）。
+            _aiDismissHook.Install(OnAiOutsideClick);
+        }
+        else
+        {
+            _aiDismissHook.Uninstall();
+        }
+    }
+
+    /// <summary>钩子回调：按下的位置在 AI 面板和 AI 按钮之外（含程序外的桌面）就收起面板。</summary>
+    private void OnAiOutsideClick(Avalonia.PixelPoint screen)
+    {
+        // 点在面板内 = 正常交互；点在 AI 按钮上 = 按钮自己的 Click 负责切换，钩子都不插手。
+        if (IsScreenPointInside(AiPanel, screen) || IsScreenPointInside(AiButton, screen))
+        {
+            return;
+        }
+
+        SetAiPanelOpen(false);
+    }
+
+    /// <summary>屏幕像素坐标是否落在某控件当前占据的矩形内。</summary>
+    private static bool IsScreenPointInside(Visual? visual, Avalonia.PixelPoint screen)
+    {
+        if (visual is null || !visual.IsVisible)
+        {
+            return false;
+        }
+
+        try
+        {
+            var topLeft = visual.PointToScreen(new Avalonia.Point(0, 0));
+            var bottomRight = visual.PointToScreen(new Avalonia.Point(visual.Bounds.Width, visual.Bounds.Height));
+            return screen.X >= topLeft.X && screen.X <= bottomRight.X
+                && screen.Y >= topLeft.Y && screen.Y <= bottomRight.Y;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>打开数据统计小面板（本周 / 本月完成情况）。</summary>
+    private async void Statistics_Click(object? sender, RoutedEventArgs e)
+    {
+        if (_viewModel is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var dialog = new StatisticsWindow();
+            dialog.Initialize(_viewModel.Data, _syncRoot);
+            await dialog.ShowDialog(this);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error(ex, "MainWindow.Statistics");
+        }
+    }
+
+    /// <summary>
+    /// 打开「周期任务管理」窗口：列出所有周期任务系列，支持添加 / 编辑 / 删除单个 / 删除全部。
+    /// </summary>
+    private async void RecurringTask_Click(object? sender, RoutedEventArgs e)
+    {
+        if (_viewModel is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var manager = new RecurringManagerWindow();
+            manager.Initialize(_viewModel);
+            await manager.ShowDialog(this);
+            await SaveAsync();
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error(ex, "MainWindow.RecurringTask");
+        }
+    }
+
     /// <summary>
     /// 视图下拉打开前：把当前所在视图的那一项加粗，菜单里不用再靠勾选标记也能看出当前选择。
     /// </summary>
@@ -1459,7 +1821,24 @@ public partial class MainWindow : Window
             return;
         }
 
-        var mode = _viewModel.Settings.ViewMode;
+        // 窄屏时实际显示的是任务面板，所以高亮也要落在「任务视图」上。
+        UpdateViewMenuSelection(_viewModel.IsNarrowTaskOnly
+            ? CalendarViewMode.Tasks
+            : _viewModel.Settings.ViewMode);
+    }
+
+    /// <summary>
+    /// 把视图下拉里的当前项加粗高亮。抽出来是因为窄屏切换也要刷它 ——
+    /// 只在菜单弹出时更新的话，用户缩窗口后一打开菜单会看到"没有任何一项被选中"。
+    /// </summary>
+    private void UpdateViewMenuSelection(CalendarViewMode mode)
+    {
+        if (ViewMonthItem is null || ViewWeekItem is null
+            || ViewYearItem is null || ViewTaskItem is null)
+        {
+            return;
+        }
+
         ViewMonthItem.FontWeight = mode == CalendarViewMode.Month ? FontWeight.Bold : FontWeight.Normal;
         ViewWeekItem.FontWeight = mode == CalendarViewMode.Week ? FontWeight.Bold : FontWeight.Normal;
         ViewYearItem.FontWeight = mode == CalendarViewMode.Year ? FontWeight.Bold : FontWeight.Normal;
@@ -1542,10 +1921,17 @@ public partial class MainWindow : Window
                     UpdateWeekCellSize();
                     if (WeekScrollViewer is not null)
                     {
-                        WeekScrollViewer.Offset = new Avalonia.Vector(0, 0);
+                        // 走带闸门的版本：切视图后的这次归位同样不该触发尾部追加。
+                        ApplyWeekOffset(0);
                     }
                 },
                 DispatcherPriority.Loaded);
+        }
+        else if (mode == CalendarViewMode.Year)
+        {
+            // 切到年视图时月卡才第一次真正布局；Loaded 优先级等布局完成后
+            // 再按实际列宽回填日期字号（初始是默认值 11，小窗口下会偏大裁字）。
+            Dispatcher.UIThread.Post(UpdateYearFontScale, DispatcherPriority.Loaded);
         }
     }
 
@@ -1555,7 +1941,8 @@ public partial class MainWindow : Window
     /// </summary>
     private void PlayContentFadeIn()
     {
-        var narrow = Bounds.Width > 0 && Bounds.Width <= NarrowLayoutThreshold;
+        var narrow = Bounds.Width > 0 && Bounds.Width <= NarrowLayoutThreshold
+                     && _viewModel?.Settings.ViewMode != CalendarViewMode.Week;
         var host = narrow ? (InputElement?)NarrowTaskOnlyView : NormalViewHost;
         if (host is null)
         {
@@ -1592,6 +1979,22 @@ public partial class MainWindow : Window
         ApplyBackground();
         ApplyWindowBounds(GetBoundsForView(s.ViewMode));
         UpdateLockButton();
+        UpdateAiButton();
+    }
+
+    /// <summary>AI 顶栏按钮只在「启用 AI 助手」时显示；关闭时同时收起可能还开着的对话面板。</summary>
+    private void UpdateAiButton()
+    {
+        if (AiButton is null)
+        {
+            return;
+        }
+
+        AiButton.IsVisible = _config.AiEnabled;
+        if (!_config.AiEnabled)
+        {
+            SetAiPanelOpen(false);
+        }
     }
 
     private void SelectBackgroundMode(CalendarBackgroundMode mode)
@@ -1888,8 +2291,10 @@ public partial class MainWindow : Window
         SetBrush("TodayPanelBorderBrush", dark ? Argb(140, 255, 255, 255) : Argb(34, 0, 0, 0));
         SetBrush("WindowEdgeBrush", mode switch
         {
-            CalendarBackgroundMode.None => Argb(34, 255, 255, 255),
-            CalendarBackgroundMode.ClearBorder => Argb(38, 255, 255, 255),
+            // 无背景模式下窗口整体全透明，必须给一圈看得见的描边，
+            // 否则挂件和壁纸糊成一片、看不出边界在哪。
+            // 取中性灰（明暗壁纸上都看得见），而不是之前那种 13% 白（等于没有）。
+            CalendarBackgroundMode.None or CalendarBackgroundMode.ClearBorder => Argb(130, 100, 116, 139),
             CalendarBackgroundMode.FrostedDark or CalendarBackgroundMode.Graphite => Argb(42, 255, 255, 255),
             _ => Argb(30, 17, 24, 39)
         });
@@ -1913,7 +2318,11 @@ public partial class MainWindow : Window
             SetBrush("DayCellOutMonthBackgroundBrush", Brushes.Transparent);
             SetBrush("YearMonthBackgroundBrush", Brushes.Transparent);
             SetBrush("TaskBackgroundBrush", dark ? Argb(120, 31, 41, 55) : Argb(130, 236, 253, 245));
-            SetBrush("TodayPanelBackgroundBrush", dark ? Argb(215, 36, 42, 52) : Argb(225, 255, 255, 255));
+            // 右侧任务面板也跟着透明：原先固定 Argb(225,255,255,255)（近乎不透明的白），
+            // 在「无背景」下会留下一块突兀的白方块。改成薄磨砂 —— 透出桌面，
+            // 同时靠这层薄底 + 稍明显的边框兜住任务文字的对比度。
+            SetBrush("TodayPanelBackgroundBrush", dark ? Argb(110, 17, 24, 39) : Argb(90, 255, 255, 255));
+            SetBrush("TodayPanelBorderBrush", dark ? Argb(150, 255, 255, 255) : Argb(100, 17, 24, 39));
             SetBrush("SelectedCellBackgroundBrush", dark ? Argb(120, 59, 130, 246) : Argb(102, 37, 99, 235));
             return;
         }
@@ -1974,6 +2383,10 @@ public partial class MainWindow : Window
     /// </summary>
     private const double WeekMinHeight = 500;
 
+    /// <summary>切视图时使用的默认窗口尺寸（宽 × 高）。取值偏保守，小屏上也放得下。</summary>
+    private const double DefaultWindowWidth = 900;
+    private const double DefaultWindowHeight = 620;
+
     private WindowBounds GetBoundsForView(CalendarViewMode mode)
     {
         if (_viewModel is null)
@@ -1981,21 +2394,13 @@ public partial class MainWindow : Window
             return new WindowBounds(Position.X, Position.Y, Width, Height);
         }
 
-        var s = _viewModel.Settings;
-        var fallback = s.WindowBounds ?? new WindowBounds(120, 90, 980, 680);
-        var sizeSource = mode switch
-        {
-            CalendarViewMode.Month => s.MonthWindowBounds ?? fallback,
-            CalendarViewMode.Week => s.WeekWindowBounds ?? fallback,
-            CalendarViewMode.Year => s.YearWindowBounds ?? fallback,
-            _ => fallback
-        };
+        // 切视图时统一回到「该视图的默认尺寸」，不再沿用上次自己拖出来的尺寸：
+        // 记忆的尺寸可能已经小到放不下这个视图（周视图本身就能拖得很窄，最容易中招），
+        // 切过去会显示不全、甚至被窄窗规则强制成任务面板，表现就是"点了没反应"。
+        // 位置保持不动、只换尺寸，免得窗口在屏幕上乱跳。
+        var height = mode == CalendarViewMode.Week ? WeekMinHeight : DefaultWindowHeight;
 
-        var height = mode == CalendarViewMode.Week
-            ? Math.Max(sizeSource.Height, WeekMinHeight)
-            : sizeSource.Height;
-
-        return new WindowBounds(fallback.Left, fallback.Top, sizeSource.Width, height);
+        return new WindowBounds(Position.X, Position.Y, DefaultWindowWidth, height);
     }
 
     private void Window_SizeChanged(object? sender, SizeChangedEventArgs e)
@@ -2057,17 +2462,51 @@ public partial class MainWindow : Window
     /// 另外窗口窄到 <see cref="NarrowLayoutThreshold"/> 时，主体只留「今日任务」这一块
     /// （今日任务 + 本周任务完成情况 + 未完成 / 已完成）。
     /// </summary>
+    /// <summary>顶栏按钮的密度档，从宽到窄依次尝试（null = 样式默认档）。</summary>
+    private static readonly string?[] TopBarDensitySteps = [null, "compact", "ultra"];
+
+    /// <summary>
+    /// 按密度档给顶栏所有常驻按钮加 / 去样式类（null = 恢复默认档）。
+    ///
+    /// 这些按钮在窄窗下不隐藏 —— 窄屏恰恰就是任务视图：藏掉「设置」用户就没法改配置、
+    /// 藏掉「AI」就调不出对话、藏掉「周期」就加不了周期任务。所以只能缩字号与内边距。
+    /// 改完类后 DesiredSize 会自动失效，紧接着的 MeasurePanelWidth 量到的就是新档位的真实宽度。
+    /// </summary>
+    private void SetTopBarDensity(string? densityClass)
+    {
+        if (TopActionPanel is null)
+        {
+            return;
+        }
+
+        foreach (var button in TopActionPanel.GetVisualDescendants().OfType<Button>())
+        {
+            button.Classes.Remove("compact");
+            button.Classes.Remove("ultra");
+            if (densityClass is not null)
+            {
+                button.Classes.Add(densityClass);
+            }
+        }
+    }
+
     private void UpdateResponsiveLayout()
     {
         if (NormalViewHost is null || NarrowTaskOnlyView is null
-            || ViewControlsPanel is null || ViewSwitchPanel is null
+            || ViewControlsPanel is null
             || TopActionPanel is null || DateInfoPanel is null || TopBarGrid is null)
         {
             return;
         }
 
         var width = Bounds.Width;
-        var narrowView = width > 0 && width <= NarrowLayoutThreshold;
+
+        // 窄窗退化为「只留任务面板」—— 但周视图除外：
+        // 周视图本身就是「左列日期格子 + 右侧任务面板」的窄布局，窄窗下依然可用。
+        // 若把它也强制成任务面板，用户在窄窗里点「周视图」就会像"没反应"
+        //（切换其实生效了，只是立刻被这条规则盖回任务面板）。
+        var narrowView = width > 0 && width <= NarrowLayoutThreshold
+                         && _viewModel?.Settings.ViewMode != CalendarViewMode.Week;
 
         // ===== 用「实际测量」而不是「拍脑袋常量」来决定档位 =====
         //
@@ -2088,8 +2527,20 @@ public partial class MainWindow : Window
         var needsWrap = false;
         if (double.IsFinite(available))
         {
-            var essential = MeasurePanelWidth(DateInfoPanel, exclude: ViewControlsPanel) + MeasurePanelWidth(TopActionPanel);
-            needsWrap = essential > available;
+            // 顶栏按钮先逐级降密度（正常 → 紧凑 → 超紧凑），取第一个能塞下的档。
+            // 顺序很关键：先缩字号、最后才换行 —— 换行会白白吃掉一行高度，
+            // 而这些按钮本来就只差一点点宽度。
+            var dateWidth = MeasurePanelWidth(DateInfoPanel, exclude: ViewControlsPanel);
+            needsWrap = true;
+            foreach (var density in TopBarDensitySteps)
+            {
+                SetTopBarDensity(density);
+                if (dateWidth + MeasurePanelWidth(TopActionPanel) <= available)
+                {
+                    needsWrap = false;
+                    break;
+                }
+            }
         }
 
         // ===== 第 ③ 档：连「日期信息 + 常驻按钮」都摆不下 → 换行 =====
@@ -2114,18 +2565,30 @@ public partial class MainWindow : Window
         // 换行档下第二行会多出一段高度，外壳高度是外部算好的，这里只负责上下留白不贴边。
         TopActionPanel.Margin = wrap ? new Avalonia.Thickness(0, 3, 0, 0) : default;
 
+        // 换行后按钮行独占整行，但水平 StackPanel 是从左往右排的、末尾会剩一段空白，
+        // 最右的「锁定」就比下方内容区的右边框短一截。
+        // 这里把余量**均摊到按钮之间的间隙**上（按钮尺寸保持不变）：
+        // 只拉某一个按钮会把它撑成长条（第一版就是那样错的），而改间隙既铺满整行、
+        // 又不会让任何按钮变形，缩放过程中也是平滑过渡、不会来回跳。
+        // 只在换行档做：不换行时按钮跟在日期右侧，右边缘本来就贴着内容区。
+        // 第二行的铺满交给 XAML 里 TopActionPanel 的弹性列自动完成（Auto 列放按钮、* 列吸收余量），
+        // 这里不再按像素反算间距 —— 手算的做法在 SizeChanged 这一轮里量不准，会偶发对不齐。
+
         // ===== 第 ① / ② 档：背景 + 透明度是否还放得下 =====
         // 换行之后第一行的宽度需求降到「只有日期信息」，所以先按换行后的实际情况再量一次：
         // 只有连「日期信息 + 背景/透明度」都摆不下，才收起这两个装饰设置。
         if (double.IsFinite(available))
         {
-            // 换行时按钮在第二行、不再和日期信息共处一行，第一行只需要容纳日期信息本身。
+            // 第一行净需求 = 日期信息（不含「背景+透明度」）+ 常驻按钮（换行时按钮在第二行）。
+            // 再单独量这组装饰设置的真实宽度，二者相加与可用宽度比较 —— 全程真量。
+            // （旧版把 ViewControlsWidthCost 常量加在已经含了 ViewControlsPanel 的测量值上，
+            //   等于多算了 262px，用户得把窗口拉得特别开才看得到亮度条。）
             var firstRowNeed = wrap
-                ? MeasurePanelWidth(DateInfoPanel)
-                : MeasurePanelWidth(DateInfoPanel) + MeasurePanelWidth(TopActionPanel);
-            var withViewControls = firstRowNeed + ViewControlsWidthCost;
+                ? MeasurePanelWidth(DateInfoPanel, exclude: ViewControlsPanel)
+                : MeasurePanelWidth(DateInfoPanel, exclude: ViewControlsPanel) + MeasurePanelWidth(TopActionPanel);
+            var viewControlsWidth = MeasurePanelWidth(ViewControlsPanel);
 
-            if (withViewControls > available)
+            if (firstRowNeed + viewControlsWidth > available)
             {
                 ViewControlsPanel.IsVisible = false;
             }
@@ -2133,7 +2596,7 @@ public partial class MainWindow : Window
             {
                 // 背景/透明度保住了，再看今日 / 本周计数是否也挤得下（它比装饰设置次要）。
                 var countsCost = MeasurePanelWidth(TaskCountsPanel);
-                if (firstRowNeed + ViewControlsWidthCost + countsCost > available
+                if (firstRowNeed + viewControlsWidth + countsCost > available
                     && TaskCountsPanel is not null)
                 {
                     TaskCountsPanel.IsVisible = false;
@@ -2141,25 +2604,47 @@ public partial class MainWindow : Window
             }
         }
 
-        // 视图切换已经收纳成一个下拉按钮，任何宽度都放得下，必须常驻
-        //（否则窄屏无法退出任务视图、开不了设置）。
-        ViewSwitchPanel.IsVisible = true;
+        // 顶栏常驻按钮（含视图下拉、设置、锁定）在任何宽度都保留 —— 窄屏下它们更是唯一入口，
+        // 由上面的密度档缩字号来容纳，不再隐藏。
 
         // ===== 周视图：正方形格子的边长 =====
         // 用户要的是「7 个格子刚好铺满当前界面高度」，所以边长 = 左栏可用高度 ÷ 7，
         // 再夹到合理区间。左栏宽度与格子宽高绑同一个值，三边相等 → 正方形。
         UpdateWeekCellSize();
 
+        // ===== 年视图：日期数字字号随月卡实际列宽缩放 =====
+        UpdateYearFontScale();
+
         NormalViewHost.IsVisible = !narrowView;
         NarrowTaskOnlyView.IsVisible = narrowView;
+
+        // 窄屏下主体被换成任务面板，顶栏下拉的标签也要跟着改口，
+        // 否则会出现「画面是任务列表、按钮却写着周视图」这种自相矛盾的状态。
+        if (_viewModel is not null && _viewModel.IsNarrowTaskOnly != narrowView)
+        {
+            _viewModel.IsNarrowTaskOnly = narrowView;
+
+            // 窄屏时下拉项要跟着高亮「任务视图」，否则一打开菜单发现没有任何一项被选中。
+            if (narrowView)
+            {
+                UpdateViewMenuSelection(CalendarViewMode.Tasks);
+            }
+            else
+            {
+                UpdateViewMenuSelection(_viewModel.Settings.ViewMode);
+            }
+        }
     }
 
     /// <summary>
-    /// 计算并回填周视图格子的正方形边长。
+    /// 计算并回填周视图格子的高度。
     ///
-    /// 高度基准取自窗口内容区减去顶栏之后的剩余高度（格子在顶栏下面），除以 7 得到"7 个
-    /// 刚好铺满"的边长。夹取下限 64（再小日期和任务都看不清），上限 200（太大就失去
-    /// "小格子"的意义，且宽度会挤掉右侧面板）。
+    /// 只算高度：宿主按「左栏可用高度 ÷ 7」求出让 7 个格子刚好铺满界面高度的值。
+    /// 宽度不在这里算 —— 它固定为 <see cref="MainViewModel.WeekScrollColumnWidth"/>，
+    /// 窗口缩放时左栏纹丝不动，多出来的空间全部给右侧今日任务面板。
+    ///
+    /// 夹取下限 44（再矮日期和任务都看不清），上限 96（超出这个高度格子会显得空荡，
+    /// 用户已明确反馈"格子左右两侧空白太多"，纵向同理不该无限拉伸）。
     /// </summary>
     private void UpdateWeekCellSize()
     {
@@ -2180,12 +2665,49 @@ public partial class MainWindow : Window
         // 每个格子自带 4dp 下外边距，7 个格子共 7 份间距也要算进去，否则会溢出一点点。
         const double rowSpacing = 4.0;
         const int visibleRows = 7;
-        var side = (bodyHeight - (rowSpacing * visibleRows)) / visibleRows;
-        _viewModel.WeekScrollCellSize = Math.Clamp(side, 64, 200);
+        var rowHeight = (bodyHeight - (rowSpacing * visibleRows)) / visibleRows;
+        _viewModel.WeekScrollCellHeight = Math.Clamp(rowHeight, 44, 96);
     }
 
     /// <summary>周视图根 Grid 的上下 Margin 之和（见 MainWindow.axaml，Margin="8"）。</summary>
     private const double WeekViewVerticalMargin = 16.0;
+
+    /// <summary>
+    /// 按年视图月卡的<b>实际列宽</b>回填日期数字字号。
+    ///
+    /// 年视图一行 3 张月卡、每卡 7 列：窗口缩小时列宽跟着缩小，字号若不同步缩小，
+    /// 两位日期数字会被右侧的节日徽标盖住或直接裁掉（用户实测"缩小之后数字看不清了"）。
+    /// 这里从 YearScrollViewer 的实际宽度反推列宽，除以「基准列宽 40px」（窗口宽度
+    /// 约 945px 时的实测值）得到缩放系数交给 <see cref="MainViewModel.SetYearFontScale"/>，
+    /// 由它夹取与量化（0.62~1.0、步进 0.02），避免拖窗口时产生连续的通知与重排。
+    /// </summary>
+    private void UpdateYearFontScale()
+    {
+        if (_viewModel is null || YearScrollViewer is null)
+        {
+            return;
+        }
+
+        // YearScrollViewer → Margin 8×2 → 三列 UniformGrid；卡片间 Margin 4×2 ×3 列；
+        // 卡片 Padding 6×2 + 边框 1×2；剩下的就是一列的可用宽度。
+        var gridWidth = YearScrollViewer.Bounds.Width - 16 - 12; // 滚动条预留 ~12
+        // 注意：这里必须写 !(x > 0) 而不是 x <= 0 —— 视图刚切换 / 首帧时 Bounds.Width 可能是 NaN，
+        // 而 NaN <= 0 恒为 false，用 <= 判会把它漏过去，一路算成 NaN 的缩放系数，
+        // 最终让年视图整片日期数字不渲染（只剩节日徽标）。
+        if (!(gridWidth > 0))
+        {
+            return;
+        }
+
+        var cardOuter = (gridWidth - 8 * 3) / 3;
+        var columnWidth = (cardOuter - 14) / 7;
+        if (!(columnWidth > 0))
+        {
+            return;
+        }
+
+        _viewModel.SetYearFontScale(columnWidth / 40.0);
+    }
 
     /// <summary>
     /// 周视图左栏滚动：滚到接近底部时追加后续日期，让用户能一直往未来翻。
@@ -2195,6 +2717,15 @@ public partial class MainWindow : Window
     private void WeekScroll_ScrollChanged(object? sender, ScrollChangedEventArgs e)
     {
         if (_viewModel is null || sender is not ScrollViewer viewer)
+        {
+            return;
+        }
+
+        // 程序自身的定位（点「今天」/ 切视图归位）也会触发 ScrollChanged。
+        // 那种情况下不能再追加日期：追加会往 ItemsControl 里塞 28 个新容器，
+        // 布局在滚动动画中途整批重算，用户感觉到的是「点了今天要卡 1~2 秒」。
+        // 定位期间的目标行本来就在已铺开的范围内，也不需要追加。
+        if (_suppressWeekAutoExtend)
         {
             return;
         }
@@ -2210,6 +2741,27 @@ public partial class MainWindow : Window
         // 追加成功即可（AppLog 只有 Error 级别，这里不需要额外记录）。
         _viewModel.ExtendWeekScroll();
     }
+
+    /// <summary>
+    /// 周视图左栏超出上限、头部被裁掉 N 天时回调：内容整体上移了 N 行，
+    /// 滚动偏移必须下调 N × 行高，否则用户当前看到的位置会瞬间跳变。
+    /// 用程序化滚动闸门包住，避免这次补偿滚动又被误判成「滚到底」而再次追加。
+    /// </summary>
+    private void OnWeekScrollHeadTrimmed(int trimmedDays)
+    {
+        if (WeekScrollViewer is null || _viewModel is null)
+        {
+            return;
+        }
+
+        var delta = trimmedDays * _viewModel.WeekScrollCellHeight;
+        var current = WeekScrollViewer.Offset.Y;
+        ApplyWeekOffset(Math.Max(0, current - delta));
+    }
+
+    /// <summary>抑制「滚到接近底部就追加日期」的闸门。<see cref="ScrollWeekToToday"/> 在赋值 Offset
+    /// 前后把它置位，避免程序化滚动被误判成用户滚到底。</summary>
+    private bool _suppressWeekAutoExtend;
 
     /// <summary>顶栏左右内边距 + 列间距的固定开销（Padding 8,4 两侧 + 三列之间的间距）。</summary>
     private const double TopBarHorizontalChrome = 24.0;
@@ -2260,12 +2812,20 @@ public partial class MainWindow : Window
             var screen = Screens.ScreenFromWindow(this) ?? Screens.Primary;
             if (screen?.WorkingArea is PixelRect wa)
             {
-                w = Math.Min(w, Math.Max(MinWindowWidth, wa.Width));
-                h = Math.Min(h, Math.Max(MinWindowHeight, wa.Height));
+                // 关键：WorkingArea 是**物理像素**，而窗口的 Width/Height 是**逻辑像素** ——
+                // 直接比大小会在 DPI 缩放下失效（缩放 125% 时物理宽比逻辑宽大 25%，
+                // 于是 980 逻辑宽的窗口被判定"没超"，实际早已超出屏幕）。
+                // 位置（Position）本来就是物理像素，所以只需把尺寸换算成逻辑像素来比较。
+                var scaling = screen.Scaling <= 0 ? 1.0 : screen.Scaling;
+                w = Math.Min(w, Math.Max(MinWindowWidth, wa.Width / scaling));
+                h = Math.Min(h, Math.Max(MinWindowHeight, wa.Height / scaling));
                 Width = w;
                 Height = h;
-                var x = Math.Clamp((int)b.Left, wa.X, Math.Max(wa.X, wa.X + wa.Width - (int)w));
-                var y = Math.Clamp((int)b.Top, wa.Y, Math.Max(wa.Y, wa.Y + wa.Height - (int)h));
+
+                var pixelWidth = (int)Math.Round(w * scaling);
+                var pixelHeight = (int)Math.Round(h * scaling);
+                var x = Math.Clamp((int)b.Left, wa.X, Math.Max(wa.X, wa.X + wa.Width - pixelWidth));
+                var y = Math.Clamp((int)b.Top, wa.Y, Math.Max(wa.Y, wa.Y + wa.Height - pixelHeight));
                 Position = new PixelPoint(x, y);
             }
             else
@@ -2521,7 +3081,8 @@ public partial class MainWindow : Window
     private void CommitAdd(DayCellViewModel cell)
     {
         var title = cell.DraftTitle?.Trim();
-        var leads = cell.DraftReminderLeads;
+        // 含「不提醒」→ 空列表；空（未指定）→ null（默认提前15分钟）；否则档位列表。
+        var leads = MicaAgenda.App.Helpers.ReminderLeadCatalog.ToCommitLeads(cell.ReminderLeadLabels);
         var time = cell.DraftTimeOnly;   // CancelAdd 会把草稿清掉，先取值
         cell.CancelAdd();
         if (ReferenceEquals(_pendingAddCell, cell))
@@ -2708,12 +3269,39 @@ public partial class MainWindow : Window
     /// </summary>
     private bool IsFocusInsideAddTaskForm()
     {
+        // 时间选择弹层打开中：焦点可能正在弹层里（弹层是独立顶层窗口，不在主窗口视觉树里，
+        // 光靠 GetVisualAncestors 找不到），也可能处于"点了按钮但焦点还没落进弹层"的瞬间。
+        // 只要弹层开着，就视为"仍在表单交互中"，绝不能提交。
+        if (_timePopupOpen)
+        {
+            return true;
+        }
+
         if (TopLevel.GetTopLevel(this)?.FocusManager?.GetFocusedElement() is not Visual focused)
         {
             return false;
         }
 
         return focused.GetVisualAncestors().Any(ancestor => ancestor is Control { Tag: "AddTaskForm" });
+    }
+
+    /// <summary>时间选择弹层是否打开中（由 ToggleButton 的 IsCheckedChanged 维护）。</summary>
+    private bool _timePopupOpen;
+
+    /// <summary>
+    /// 时间小按钮的开关状态变化（弹层开/关）。
+    ///
+    /// 弹层打开时置标记，挡住「输入框失焦 → 误提交表单」的时序：
+    /// 点按钮瞬间输入框先失焦、焦点还没落进 Popup，Background 优先级里
+    /// <see cref="CommitTodayAddIfFocusLeftForm"/> 会误判焦点已离开表单而提交收起。
+    /// 用这个标记让判定在弹层打开期间始终返回"还在表单内"。
+    /// </summary>
+    private void TodayTimeToggle_IsCheckedChanged(object? sender, RoutedEventArgs e)
+    {
+        if (sender is ToggleButton toggle)
+        {
+            _timePopupOpen = toggle.IsChecked == true;
+        }
     }
 
     private void CommitTodayTask_Click(object? sender, RoutedEventArgs e) => CommitTodayAdd();
@@ -2814,6 +3402,110 @@ public partial class MainWindow : Window
 
     private static bool IsLeftButton(PointerPressedEventArgs e, object? sender)
         => e.GetCurrentPoint(sender as Visual).Properties.IsLeftButtonPressed;
+
+    // ===== 任务拖拽改期（月 / 周视图：按住任务条拖到目标日期格子松开）=====
+
+    private Guid? _dragTaskId;
+    private Avalonia.Point? _dragOrigin;
+    private bool _dragging;
+
+    private void TaskItem_PointerPressed(object? sender, PointerPressedEventArgs e)
+    {
+        if (!IsLeftButton(e, sender) || sender is not Control { DataContext: TaskItemViewModel vm } control)
+        {
+            return;
+        }
+
+        // 记录起始任务 + 起始位置，并捕获指针：移动/松开事件即使指针已移出任务条也能路由回来。
+        _dragTaskId = vm.Id;
+        _dragOrigin = e.GetPosition(this);
+        _dragging = false;
+        DragGhostText.Text = vm.Title;
+        e.Pointer.Capture(control);
+    }
+
+    /// <summary>拖拽中：位移超过阈值后显示跟随鼠标的幽灵预览，实时反映"正在把任务拖到哪"。</summary>
+    private void TaskItem_PointerMoved(object? sender, PointerEventArgs e)
+    {
+        if (_dragTaskId is null || _dragOrigin is null)
+        {
+            return;
+        }
+
+        var pos = e.GetPosition(this);
+        var origin = _dragOrigin.Value;
+        var isDragging = Math.Abs(pos.X - origin.X) >= 6 || Math.Abs(pos.Y - origin.Y) >= 6;
+        if (!isDragging)
+        {
+            return;
+        }
+
+        _dragging = true;
+        DragGhost.IsVisible = true;
+
+        // 幽灵预览悬停在光标右下方一点，避免遮住目标格子；位置在窗口坐标系里直接摆。
+        Canvas.SetLeft(DragGhost, Math.Min(pos.X + 14, Math.Max(0, Bounds.Width - 160)));
+        Canvas.SetTop(DragGhost, Math.Min(pos.Y + 12, Math.Max(0, Bounds.Height - 40)));
+    }
+
+    private void TaskItem_PointerReleased(object? sender, PointerReleasedEventArgs e)
+    {
+        if (_dragTaskId is null || _dragOrigin is null)
+        {
+            return;
+        }
+
+        var taskId = _dragTaskId.Value;
+        var origin = _dragOrigin.Value;
+        var wasDragging = _dragging;
+        _dragTaskId = null;
+        _dragOrigin = null;
+        _dragging = false;
+        DragGhost.IsVisible = false;
+
+        if (sender is Control control)
+        {
+            e.Pointer.Capture(null);
+        }
+
+        var end = e.GetPosition(this);
+        // 位移小于 6px 视为点击（勾选 / 选中），不是拖拽
+        if (!wasDragging && Math.Abs(end.X - origin.X) < 6 && Math.Abs(end.Y - origin.Y) < 6)
+        {
+            return;
+        }
+
+        // 找松开位置所在的日期格子（DataContext 是 DayCellViewModel 的容器）
+        if (FindDayCellAt(end)?.DataContext is DayCellViewModel day && _viewModel is not null)
+        {
+            if (_viewModel.ChangeTaskDate(taskId, day.Date))
+            {
+                _ = SaveAsync();
+            }
+        }
+    }
+
+    /// <summary>按窗口坐标找到其下的日期格子（月视图 dayCell / 周视图 weekDayRow，DataContext 都是 DayCellViewModel）。</summary>
+    private Control? FindDayCellAt(Avalonia.Point windowPos)
+    {
+        foreach (var control in this.GetVisualDescendants().OfType<Control>())
+        {
+            if (control.DataContext is not DayCellViewModel)
+            {
+                continue;
+            }
+
+            if (control.TranslatePoint(new Avalonia.Point(0, 0), this) is { } origin)
+            {
+                if (new Avalonia.Rect(origin, control.Bounds.Size).Contains(windowPos))
+                {
+                    return control;
+                }
+            }
+        }
+
+        return null;
+    }
 
     // ===== 无标题栏窗口的拖动 / 边缘缩放 =====
     //
@@ -2952,7 +3644,8 @@ public partial class MainWindow : Window
         foreach (var ancestor in visual.GetSelfAndVisualAncestors())
         {
             if (ancestor is Button or ToggleButton or TextBox or ComboBox or Slider or ScrollBar or Thumb
-                or ListBoxItem or MenuItem or TabItem or CalendarDatePicker)
+                or ListBoxItem or MenuItem or TabItem or CalendarDatePicker
+                or Controls.AiChatPanel)
             {
                 return true;
             }
@@ -3142,7 +3835,10 @@ public partial class MainWindow : Window
             {
                 CalendarViewMode.Month => ScrollMonthBlockToTop(anchor),
                 CalendarViewMode.Year => ScrollYearMonthToTop(anchor),
-                // 周视图没有可滚动的月份列表，视图本身已随 SelectedDate 重建
+                // 周视图左栏是一条可无限上下的滚动长列表，"现在看的是哪一段"同样由滚动位置表达。
+                // 用户翻到几周之后时点「今天」，必须把列表滚回今天所在那一周 ——
+                // 否则日期数据虽然回到了今天，画面却还停在原来那一段，看起来就是"点了没反应"。
+                CalendarViewMode.Week => ScrollWeekToToday(),
                 _ => true
             };
         }
@@ -3159,9 +3855,78 @@ public partial class MainWindow : Window
         }
     }
 
-    /// <summary>把月视图时间轴滚到指定月份块的顶边。返回 false 表示容器尚未生成，调用方应重试。</summary>
-    private bool ScrollMonthBlockToTop(DateOnly month)
+    /// <summary>
+    /// 把周视图左栏滚回"今天所在那一周"。
+    ///
+    /// 左栏是一维的日期长列表（从"本周周日"起铺，只往后追加），所以定位就是
+    /// 「目标行的索引 × 行高」。用行高算偏移而不是 ScrollIntoView：
+    /// 后者要先把容器虚拟化出来才拿得到，首帧/刚切视图时拿不到就会静默失败；
+    /// 行高是已知量（格子高度 + 下外边距），算出来直接赋值最稳。
+    ///
+    /// 目标是**今天所在周的第一行**（周日），而不是今天那一行 —— 用户点「今天」是想看
+    /// "这一周"，让整周完整出现在视口里才符合预期。
+    /// </summary>
+    private bool ScrollWeekToToday()
     {
+        if (WeekScrollViewer is null || _viewModel is null)
+        {
+            return true;
+        }
+
+        var todayIndex = _viewModel.IndexOfTodayInWeekScroll;
+        if (todayIndex < 0)
+        {
+            // 理论上不会发生（列表起点就是本周周日）。兜底滚回顶部，等同于"回到最近 7 天"。
+            ApplyWeekOffset(0);
+            return true;
+        }
+
+        // 今天所在周的第一行：把索引向前对齐到 7 的整数倍。
+        var weekStartIndex = todayIndex - (todayIndex % 7);
+        var rowSpan = _viewModel.WeekScrollCellHeight + WeekDayRowBottomMargin;
+        var target = weekStartIndex * rowSpan;
+
+        // 夹到可滚动范围内，避免超出上下限导致偏移被拒（赋值被忽略看起来就像"没生效"）。
+        var maxOffset = Math.Max(0, WeekScrollViewer.Extent.Height - WeekScrollViewer.Viewport.Height);
+        ApplyWeekOffset(Math.Clamp(target, 0, maxOffset));
+        return true;
+    }
+
+    /// <summary>
+    /// 带闸门地设置周视图左栏的滚动偏移。
+    ///
+    /// 闸门关掉的这段时间里 <see cref="WeekScroll_ScrollChanged"/> 不会追加日期 —— 否则
+    /// 程序化滚动会被当成"用户滚到底"，在滚动还没稳定时往列表尾部塞 28 个容器，
+    /// 布局整批重算，表现为点「今天」后卡顿 1~2 秒。
+    ///
+    /// 用 <c>DispatcherPriority.Background</c> 复位而不是立即复位：Offset 赋值引发的
+    /// ScrollChanged 是异步派发的，立刻放开闸门会赶在它之前，等于没拦。
+    /// </summary>
+    private void ApplyWeekOffset(double offset)
+    {
+        if (WeekScrollViewer is null)
+        {
+            return;
+        }
+
+        _suppressWeekAutoExtend = true;
+        try
+        {
+            WeekScrollViewer.Offset = new Avalonia.Vector(0, offset);
+        }
+        finally
+        {
+            Dispatcher.UIThread.Post(
+                () => _suppressWeekAutoExtend = false,
+                DispatcherPriority.Background);
+        }
+    }
+
+    /// <summary>周视图日期行自带的下外边距（见 WeekDayRowTemplate 的 Margin="0,0,0,4"）。</summary>
+    private const double WeekDayRowBottomMargin = 4.0;
+
+    /// <summary>把月视图时间轴滚到指定月份块的顶边。返回 false 表示容器尚未生成，调用方应重试。</summary>
+    private bool ScrollMonthBlockToTop(DateOnly month)    {
         if (MonthScrollViewer is null || MonthItemsControl is null || _viewModel is null)
         {
             return true;

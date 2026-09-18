@@ -41,13 +41,13 @@ public sealed class ReportService : IDisposable
         _sender = new WebhookSender(TimeSpan.FromSeconds(20));
         LoadState();
         // 立即执行一次（处理开机补发），随后每 60 秒检查一次
-        _timer = new System.Threading.Timer(_ => CheckAsync(), null, TimeSpan.Zero, TimeSpan.FromSeconds(60));
+        _timer = new System.Threading.Timer(_ => _ = CheckAsync(), null, TimeSpan.Zero, TimeSpan.FromSeconds(60));
     }
 
     /// <summary>报告已发出时触发（参数为报告纯文本，方便 UI 提示）。</summary>
     public event Action<string>? ReportSent;
 
-    private async void CheckAsync()
+    private async Task CheckAsync()
     {
         if (Interlocked.Exchange(ref _running, 1) == 1)
         {
@@ -157,7 +157,7 @@ public sealed class ReportService : IDisposable
         }
         catch (Exception ex)
         {
-            // 定时器回调是 async void（线程池），异常会终止进程，必须在此兜底
+            // 定时器回调是 async Task（线程池），异常不会终止进程，但仍有必要记日志兜底
             AppLog.Error(ex, "ReportService");
         }
         finally

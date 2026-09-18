@@ -41,7 +41,7 @@ public sealed class BackupService : IDisposable
         _httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
         _lastBackupDate = LoadLastBackupDate();
         // 立即执行一次（处理开机补备份），随后每 30 秒检查一次
-        _timer = new System.Threading.Timer(_ => CheckAsync(), null, TimeSpan.Zero, TimeSpan.FromSeconds(30));
+        _timer = new System.Threading.Timer(_ => _ = CheckAsync(), null, TimeSpan.Zero, TimeSpan.FromSeconds(30));
     }
 
     /// <summary>每个周期最多保留的备份文件数，超出后从最旧开始删。</summary>
@@ -86,7 +86,7 @@ public sealed class BackupService : IDisposable
         }
     }
 
-    private async void CheckAsync()
+    private async Task CheckAsync()
     {
         // 备份耗时可能超过 30 秒的定时器周期，用原子标记防止重入重复备份
         if (Interlocked.Exchange(ref _backing, 1) == 1)
@@ -135,7 +135,7 @@ public sealed class BackupService : IDisposable
         }
         catch (Exception ex)
         {
-            // 定时器回调是 async void（线程池），异常会终止进程，必须在此兜底
+            // 定时器回调是 async Task（线程池），异常不会终止进程，但仍有必要记日志兜底
             AppLog.Error(ex, "BackupService");
         }
         finally

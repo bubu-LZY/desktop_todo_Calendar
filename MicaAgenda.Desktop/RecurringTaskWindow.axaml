@@ -1,0 +1,86 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:ctl="using:MicaAgenda.Desktop.Controls"
+        x:Class="MicaAgenda.Desktop.RecurringTaskWindow"
+        Title="添加周期任务"
+        Width="380" MinWidth="340"
+        SizeToContent="Height"
+        WindowStartupLocation="CenterOwner"
+        CanResize="False"
+        Background="#F7F8FA"
+        FontSize="13"
+        RequestedThemeVariant="Light"
+        x:CompileBindings="False">
+
+  <Window.Styles>
+    <Style Selector="TextBlock.fieldLabel">
+      <Setter Property="Foreground" Value="#6B7280" />
+      <Setter Property="FontSize" Value="12" />
+      <Setter Property="Margin" Value="0,0,0,3" />
+    </Style>
+    <Style Selector="TextBox.inputBox">
+      <Setter Property="Padding" Value="8,6" />
+      <Setter Property="BorderBrush" Value="#E2E6EB" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="Background" Value="#FFFFFF" />
+      <Setter Property="CornerRadius" Value="7" />
+      <Setter Property="VerticalContentAlignment" Value="Center" />
+    </Style>
+    <Style Selector="ComboBox">
+      <Setter Property="CornerRadius" Value="7" />
+      <Setter Property="Padding" Value="10,6" />
+    </Style>
+  </Window.Styles>
+
+  <StackPanel Margin="16" Spacing="10">
+    <TextBlock Text="周期任务会按规则自动生成未来的重复实例（每条可独立勾选完成、独立提醒）。"
+               FontSize="11.5" TextWrapping="Wrap" Foreground="#6B7280" />
+
+    <StackPanel>
+      <TextBlock Classes="fieldLabel" Text="任务内容" />
+      <TextBox x:Name="TitleBox" Classes="inputBox" PlaceholderText="输入任务标题" />
+    </StackPanel>
+
+    <StackPanel>
+      <TextBlock Classes="fieldLabel" Text="重复频率" />
+      <ComboBox x:Name="FrequencyBox" SelectedIndex="0">
+        <ComboBoxItem Content="每天" />
+        <ComboBoxItem Content="每周" />
+        <ComboBoxItem Content="每月" />
+        <ComboBoxItem Content="每年" />
+      </ComboBox>
+    </StackPanel>
+
+    <StackPanel Spacing="4">
+      <Grid ColumnDefinitions="*,*">
+        <StackPanel Grid.Column="0" Margin="0,0,4,0">
+          <TextBlock Classes="fieldLabel" Text="间隔（默认 1，一般不用改）" />
+          <TextBox x:Name="IntervalBox" Classes="inputBox" Text="1"
+                   ToolTip.Tip="间隔 = 每 N 个频率单位重复一次" />
+        </StackPanel>
+        <StackPanel Grid.Column="1" Margin="4,0,0,0">
+          <TextBlock Classes="fieldLabel" Text="结束日期（可选）" />
+          <DatePicker x:Name="EndDatePicker" />
+        </StackPanel>
+      </Grid>
+      <!-- 间隔的含义对多数人并不直观：不写清楚就得让人猜，索性把三档常见取值直接列出来。 -->
+      <TextBlock TextWrapping="Wrap" FontSize="10.5" Foreground="#9CA3AF"
+                 Text="间隔 = 1（默认）：每个周期一次，即每天都来、每周都来；间隔 = 2：隔天、隔周、每两月、每两年；间隔 = 3：每 3 天 / 每 3 周 / 每 3 个月……保留 1 即可满足大多数需求。" />
+    </StackPanel>
+
+    <StackPanel>
+      <TextBlock Classes="fieldLabel" Text="任务时间" />
+      <ctl:TimeField x:Name="TimeBox" HorizontalAlignment="Left" />
+    </StackPanel>
+
+    <StackPanel>
+      <TextBlock Classes="fieldLabel" Text="提醒" />
+      <ctl:ReminderLeadPicker x:Name="ReminderBox" HorizontalAlignment="Left" />
+    </StackPanel>
+
+    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8" Margin="0,6,0,0">
+      <Button Content="取消" Padding="12,5" Click="Cancel_Click" />
+      <Button Content="确定" Padding="14,5" Click="Confirm_Click" />
+    </StackPanel>
+  </StackPanel>
+</Window>

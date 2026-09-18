@@ -662,6 +662,35 @@
                     </StackPanel>
                 </Border>
 
+                <!-- AI 助手（OpenAI 兼容） -->
+                <Border Style="{StaticResource Card}">
+                    <StackPanel>
+                        <StackPanel Style="{StaticResource SectionHeader}">
+                            <Border Style="{StaticResource SectionBar}" />
+                            <TextBlock Text="AI 助手（OpenAI 兼容）" Style="{StaticResource GroupTitle}" />
+                        </StackPanel>
+                        <CheckBox x:Name="AiEnabledBox" Content="启用 AI 助手（顶栏对话窗 + 自然语言增删改查任务）" Style="{StaticResource SoftCheckBox}" Margin="0,0,0,10" />
+                        <TextBlock Text="API URL（兼容 OpenAI 的接口地址，如 https://api.openai.com 或国内代理 /v1）" Style="{StaticResource FieldLabel}" Margin="0,0,0,5" />
+                        <TextBox x:Name="AiBaseUrlBox" Style="{StaticResource InputBox}" Margin="0,0,0,10" />
+                        <TextBlock Text="API Key" Style="{StaticResource FieldLabel}" Margin="0,0,0,5" />
+                        <TextBox x:Name="AiApiKeyBox" Style="{StaticResource InputBox}" Margin="0,0,0,10" />
+                        <TextBlock Text="模型（点击「检索模型」自动列出，也支持手动输入）" Style="{StaticResource FieldLabel}" Margin="0,0,0,5" />
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <ComboBox x:Name="AiModelBox" Grid.Column="0" Style="{StaticResource SoftComboBox}" IsEditable="True" />
+                            <Button x:Name="RetrieveAiModelsButton" Grid.Column="1" Content="检索模型" Style="{StaticResource ActionButton}" Margin="8,0,0,0" Click="RetrieveAiModels_Click" />
+                        </Grid>
+                        <CheckBox x:Name="AiAutoCompleteUrlBox" Content="自动补全链接（开启后自动检测 URL 是否完整，不完整时补全到 /v1/chat/completions）" Style="{StaticResource SoftCheckBox}" Margin="0,10,0,0" />
+                        <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                            <Button x:Name="TestAiButton" Content="测试连接" Style="{StaticResource ActionButton}" Click="TestAiConnection_Click" />
+                            <TextBlock x:Name="AiStatus" Style="{StaticResource StatusText}" Margin="10,0,0,0" VerticalAlignment="Center" TextWrapping="Wrap" />
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
+
                 <!-- 桌面行为 -->
                 <Border Style="{StaticResource Card}">
                     <StackPanel>

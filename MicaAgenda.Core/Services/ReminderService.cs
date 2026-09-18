@@ -40,10 +40,10 @@ public sealed class ReminderService : IDisposable
         _httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
         _lastReminderDate = LoadLastReminderDate();
         // 立即执行一次（处理开机补发），随后每 30 秒检查一次
-        _timer = new System.Threading.Timer(_ => CheckAsync(), null, TimeSpan.Zero, TimeSpan.FromSeconds(30));
+        _timer = new System.Threading.Timer(_ => _ = CheckAsync(), null, TimeSpan.Zero, TimeSpan.FromSeconds(30));
     }
 
-    private async void CheckAsync()
+    private async Task CheckAsync()
     {
         // 定时器每 30 秒触发一次，若上一次推送尚未完成（网络慢/多渠道路由），
         // 这里可能重入导致重复提醒，用原子标记挡掉并发执行。
@@ -76,7 +76,7 @@ public sealed class ReminderService : IDisposable
         }
         catch (Exception ex)
         {
-            // 定时器回调是 async void（线程池），异常会终止进程，必须在此兜底
+            // 定时器回调是 async Task（线程池），异常不会终止进程，但仍有必要记日志兜底
             AppLog.Error(ex, "ReminderService");
         }
         finally

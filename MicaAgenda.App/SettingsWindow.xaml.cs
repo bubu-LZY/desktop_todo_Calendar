@@ -74,6 +74,7 @@ public partial class SettingsWindow : Window
         LockWindowBox.IsChecked = _config.LockWindow;
         AutoStartBox.IsChecked = _config.AutoStart;
         HighPriorityBox.IsChecked = _config.HighPriorityStartup;
+        LoadAiValues();
         LoadReportValues();
         UpdateApiHint();
         UpdateMcpEndpoint();
@@ -206,6 +207,69 @@ public partial class SettingsWindow : Window
         _config.ReportSendToWeCom = ReportSendWeComBox.IsChecked == true;
         _config.ReportCustomWebhook = customHook;
         return true;
+    }
+
+    // ===== AI 助手 =====
+
+    private void LoadAiValues()
+    {
+        AiEnabledBox.IsChecked = _config.AiEnabled;
+        AiBaseUrlBox.Text = _config.AiBaseUrl;
+        AiApiKeyBox.Text = _config.AiApiKey;
+        AiModelBox.Text = _config.AiModel;
+        AiAutoCompleteUrlBox.IsChecked = _config.AiAutoCompleteUrl;
+    }
+
+    private async void RetrieveAiModels_Click(object sender, RoutedEventArgs e)
+    {
+        var url = (AiBaseUrlBox.Text ?? string.Empty).Trim();
+        var key = (AiApiKeyBox.Text ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(url) || string.IsNullOrWhiteSpace(key))
+        {
+            AiStatus.Text = "请先填写 URL 和 API Key。";
+            return;
+        }
+
+        RetrieveAiModelsButton.IsEnabled = false;
+        AiStatus.Text = "正在检索模型…";
+        try
+        {
+            using var client = new OpenAiClient();
+            var models = await client.ListModelsAsync(url, key);
+            AiModelBox.ItemsSource = models;
+            AiStatus.Text = models.Count > 0 ? $"已列出 {models.Count} 个模型。" : "未返回任何模型。";
+        }
+        catch (Exception ex)
+        {
+            AiStatus.Text = "检索失败：" + ex.Message;
+        }
+        finally
+        {
+            RetrieveAiModelsButton.IsEnabled = true;
+        }
+    }
+
+    private async void TestAiConnection_Click(object sender, RoutedEventArgs e)
+    {
+        var url = (AiBaseUrlBox.Text ?? string.Empty).Trim();
+        var key = (AiApiKeyBox.Text ?? string.Empty).Trim();
+        var model = (AiModelBox.Text ?? string.Empty).Trim();
+
+        TestAiButton.IsEnabled = false;
+        AiStatus.Text = "正在测试连接…";
+        try
+        {
+            using var client = new OpenAiClient();
+            AiStatus.Text = await client.TestConnectionAsync(url, key, string.IsNullOrWhiteSpace(model) ? null : model);
+        }
+        catch (Exception ex)
+        {
+            AiStatus.Text = "测试失败：" + ex.Message;
+        }
+        finally
+        {
+            TestAiButton.IsEnabled = true;
+        }
     }
 
     private void UpdateMcpEndpoint()
@@ -570,6 +634,11 @@ public partial class SettingsWindow : Window
         _config.MyMindMapToken = MyMindMapTokenBox.Text.Trim();
         _config.EmbedDesktop = EmbedDesktopBox.IsChecked == true;
         _config.LockWindow = LockWindowBox.IsChecked == true;
+        _config.AiEnabled = AiEnabledBox.IsChecked == true;
+        _config.AiBaseUrl = (AiBaseUrlBox.Text ?? string.Empty).Trim();
+        _config.AiApiKey = (AiApiKeyBox.Text ?? string.Empty).Trim();
+        _config.AiModel = (AiModelBox.Text ?? string.Empty).Trim();
+        _config.AiAutoCompleteUrl = AiAutoCompleteUrlBox.IsChecked == true;
 
         // 报告相关字段单独校验并写回（校验不通过时直接 return，不落盘、不关闭窗口）
         if (!TryApplyReportValues(showErrors: true))
@@ -756,9 +825,9 @@ public partial class SettingsWindow : Window
         {
             if (highPriority)
             {
-                // 先把当前进程的优先级提上去：这一步不需要任何权限，立刻生效，
-                // 也是「高优先级」真正能被感知到的部分。
-                Services.HighPriorityStartupService.ApplyProcessPriority(true);
+                // 先把当前进程的优先级提上去：这一步不需要任何权限，立刻生效。
+                // 启动瞬间用 High，15 秒后自动回落到 AboveNormal 常驻（见 ApplyProcessPriorityWithFallback）。
+                Services.HighPriorityStartupService.ApplyProcessPriorityWithFallback(true);
 
                 var result = Services.HighPriorityStartupService.Enable(allowElevation: true);
                 if (!result.TaskRegistered)

@@ -189,6 +189,8 @@ public static class HighPriorityStartupService
     /// <summary>移除开机任务，并把进程优先级恢复为普通。</summary>
     public static SetupResult Disable(bool allowElevation = true)
     {
+        // 关掉高优先级：先取消可能还在排队的「回落」定时器，再立刻把优先级拉回 Normal。
+        CancelPriorityFallback();
         ApplyProcessPriority(false);
 
         if (!QueryTask())
@@ -245,6 +247,68 @@ public static class HighPriorityStartupService
             AppLog.Error(ex, "HighPriorityStartupService.ApplyProcessPriority");
             return false;
         }
+    }
+
+    /// <summary>启动后保持 High 优先级的时长：足够覆盖首屏渲染与初始化，之后回落到常驻档位。</summary>
+    private static readonly TimeSpan HighPriorityWindow = TimeSpan.FromSeconds(15);
+
+    private static Timer? _priorityFallbackTimer;
+
+    /// <summary>
+    /// 提升进程优先级，并在启动窗口结束后自动回落到常驻档位 <see cref="ProcessPriorityClass.AboveNormal"/>。
+    ///
+    /// High 只该在启动瞬间抢资源；桌面挂件长期挂 High 会跟前台全屏应用抢时间片，让整机手感变涩。
+    /// AboveNormal 仍保留「高于普通应用」的调度偏好，但不会饿到前台 —— 既尊重「高优先级」的诉求，
+    /// 又不牺牲整机响应。回退由一次性 Timer 触发，不占用 UI 线程。
+    /// </summary>
+    public static void ApplyProcessPriorityWithFallback(bool high)
+    {
+        CancelPriorityFallback();
+
+        if (high)
+        {
+            ApplyProcessPriority(true);
+            _priorityFallbackTimer = new Timer(
+                _ =>
+                {
+                    _priorityFallbackTimer?.Dispose();
+                    _priorityFallbackTimer = null;
+                    ApplySustainedPriority();
+                },
+                null,
+                HighPriorityWindow,
+                Timeout.InfiniteTimeSpan);
+        }
+        else
+        {
+            ApplyProcessPriority(false);
+        }
+    }
+
+    /// <summary>把进程优先级从 High 降到常驻的 AboveNormal（不是 High 就不动）。</summary>
+    public static bool ApplySustainedPriority()
+    {
+        try
+        {
+            using var current = Process.GetCurrentProcess();
+            if (current.PriorityClass == ProcessPriorityClass.High)
+            {
+                current.PriorityClass = ProcessPriorityClass.AboveNormal;
+            }
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error(ex, "HighPriorityStartupService.ApplySustainedPriority");
+            return false;
+        }
+    }
+
+    private static void CancelPriorityFallback()
+    {
+        _priorityFallbackTimer?.Dispose();
+        _priorityFallbackTimer = null;
     }
 
     /// <summary>

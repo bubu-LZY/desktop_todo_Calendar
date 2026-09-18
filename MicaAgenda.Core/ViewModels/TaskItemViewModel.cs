@@ -191,6 +191,7 @@ public sealed class TaskItemViewModel : ViewModelBase
             OnPropertyChanged(nameof(ReminderTimeText));
             OnPropertyChanged(nameof(HasReminder));
             OnPropertyChanged(nameof(HasMultipleReminders));
+            OnPropertyChanged(nameof(TaskTimeText));
             OnPropertyChanged(nameof(TimeBadge));
             OnPropertyChanged(nameof(TooltipText));
         }
@@ -228,6 +229,7 @@ public sealed class TaskItemViewModel : ViewModelBase
     {
         SyncFromModel();
         OnPropertyChanged(nameof(TooltipText));
+        OnPropertyChanged(nameof(TaskTimeText));
         OnPropertyChanged(nameof(TimeBadge));
     }
 
@@ -236,17 +238,14 @@ public sealed class TaskItemViewModel : ViewModelBase
     private DateOnly Today => DateOnly.FromDateTime(_now().LocalDateTime);
 
     /// <summary>
-    /// 紧凑的提醒徽标（如 "08:30 提醒 · 3天未完" / "逾期2天" / "用时2小时"）。
-    /// 设了提前提醒的任务把提醒时刻顶在最前面：右侧面板里一眼就能看出几点会响。
+    /// 紧凑的时间徽标（如 "14:30 · 今天" / "09:00 · 逾期2天" / "14:30 · 用时2小时"）。
+    /// 显示的是<b>任务自己的时刻</b>（没显式设时刻则回落当天默认 9:00）——
+    /// 用户要看的是「这条任务几点做」，而不是「几点提醒」；提醒档位改在悬浮提示里列全。
     /// </summary>
-    public string TimeBadge
-    {
-        get
-        {
-            var status = StatusBadge;
-            return HasReminder ? $"{ReminderTimeText} 提醒 · {status}" : status;
-        }
-    }
+    public string TimeBadge => $"{TaskTimeText} · {StatusBadge}";
+
+    /// <summary>任务时刻文本（"14:30"）；没显式设时刻时是当天默认时刻（9:00）。</summary>
+    public string TaskTimeText => _task.ScheduledAt.ToString("HH:mm");
 
     /// <summary>状态徽标本体（与"有没有设时间"无关）。</summary>
     private string StatusBadge

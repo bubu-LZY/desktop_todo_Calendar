@@ -1,3 +1,4 @@
+using System.IO;
 using MicaAgenda.App.Models;
 using MicaAgenda.App.Services;
 
@@ -185,6 +186,53 @@ public sealed class CalendarCoreTests
     }
 
     [Fact]
+    public async Task CalendarDataStore_CorruptFile_QuarantinesAndThrows()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), $"mica-agenda-corrupt-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        var path = Path.Combine(dir, "calendar-data.json");
+        await File.WriteAllTextAsync(path, "{ 这不是合法 JSON ");
+
+        try
+        {
+            var store = new CalendarDataStore(path);
+
+            // 损坏文件绝不能静默返回空数据（那会被自动保存覆盖成空文件），必须抛专用异常。
+            await Assert.ThrowsAsync<CalendarDataLoadException>(() => store.LoadAsync());
+
+            // 坏文件必须被改名隔离，而不是留在原位等下一次保存覆盖。
+            Assert.False(File.Exists(path));
+            Assert.Single(Directory.GetFiles(dir, "calendar-data.json.corrupt-*"));
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task CalendarDataStore_MissingFile_ReturnsEmptyData()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), $"mica-agenda-missing-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        var path = Path.Combine(dir, "calendar-data.json");
+
+        try
+        {
+            var store = new CalendarDataStore(path);
+            var data = await store.LoadAsync();
+
+            // 首次启动（文件不存在）必须返回空数据、不抛异常 —— 与损坏文件严格区分。
+            Assert.NotNull(data);
+            Assert.Empty(data.Tasks);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task CalendarDataStore_MapsLegacyClearBorderBackgroundToNone()
     {
         var path = Path.Combine(Path.GetTempPath(), $"mica-agenda-clear-border-{Guid.NewGuid():N}.json");
@@ -339,6 +387,129 @@ public sealed class CalendarCoreTests
 
         Assert.Equal(new TimeOnly(14, 30), loaded.Time);
         Assert.Equal([0, 30, 1440], loaded.AllReminderLeads.ToArray());
+
+        File.Delete(path);
+    }
+
+    // ===== 周期任务：物化展开 =====
+
+    [Fact]
+    public void RecurrenceService_ExpandDaily_GeneratesConsecutiveDays()
+    {
+        var master = new CalendarTask
+        {
+            Id = Guid.NewGuid(),
+            Date = new DateOnly(2026, 9, 1),
+            Title = "吃药",
+            Recurrence = RecurrenceFrequency.Daily,
+            RecurrenceInterval = 1,
+            RecurrenceEnd = new DateOnly(2026, 9, 5),
+        };
+
+        var instances = RecurrenceService.Expand(master);
+
+        // 模板本身是 9/1，实例从 9/2 到 9/5（含结束日期），共 4 个。
+        Assert.Equal(4, instances.Count);
+        Assert.Equal(new DateOnly(2026, 9, 2), instances[0].Date);
+        Assert.Equal(new DateOnly(2026, 9, 5), instances[^1].Date);
+        // 所有实例都指向源任务，且各自 Id 独立。
+        Assert.All(instances, i => Assert.Equal(master.Id, i.SeriesId));
+        Assert.Equal(instances.Count, instances.Select(i => i.Id).Distinct().Count());
+        Assert.All(instances, i => Assert.Equal("吃药", i.Title));
+    }
+
+    [Fact]
+    public void RecurrenceService_ExpandWeekly_StepsSevenDays()
+    {
+        var master = new CalendarTask
+        {
+            Date = new DateOnly(2026, 9, 1),
+            Title = "组会",
+            Recurrence = RecurrenceFrequency.Weekly,
+            RecurrenceInterval = 1,
+            RecurrenceEnd = new DateOnly(2026, 9, 15),
+        };
+
+        var instances = RecurrenceService.Expand(master);
+
+        Assert.Equal(2, instances.Count); // 9/8, 9/15
+        Assert.Equal(new DateOnly(2026, 9, 8), instances[0].Date);
+        Assert.Equal(new DateOnly(2026, 9, 15), instances[1].Date);
+    }
+
+    [Fact]
+    public void RecurrenceService_ExpandMonthly_KeepsDayOfMonth()
+    {
+        var master = new CalendarTask
+        {
+            Date = new DateOnly(2026, 1, 15),
+            Title = "交房租",
+            Recurrence = RecurrenceFrequency.Monthly,
+            RecurrenceInterval = 1,
+            RecurrenceEnd = new DateOnly(2026, 3, 15),
+        };
+
+        var instances = RecurrenceService.Expand(master);
+
+        Assert.Equal(2, instances.Count); // 2/15, 3/15
+        Assert.Equal(new DateOnly(2026, 2, 15), instances[0].Date);
+        Assert.Equal(new DateOnly(2026, 3, 15), instances[1].Date);
+    }
+
+    [Fact]
+    public void RecurrenceService_ExpandWithoutEnd_CapsAtTwoYears()
+    {
+        var master = new CalendarTask
+        {
+            Date = new DateOnly(2026, 1, 1),
+            Title = "打卡",
+            Recurrence = RecurrenceFrequency.Daily,
+            RecurrenceInterval = 1,
+            RecurrenceEnd = null,
+        };
+
+        var instances = RecurrenceService.Expand(master);
+
+        // 封顶 MaxMaterializedDays 天：从 1/2 起到 1/1 + 730 天（不含模板本身）
+        Assert.Equal(RecurrenceService.MaxMaterializedDays, instances.Count);
+        Assert.Equal(new DateOnly(2026, 1, 2), instances[0].Date);
+    }
+
+    [Fact]
+    public void RecurrenceService_ExpandNone_ReturnsEmpty()
+    {
+        var master = new CalendarTask
+        {
+            Date = new DateOnly(2026, 9, 1),
+            Title = "普通任务",
+            Recurrence = RecurrenceFrequency.None,
+        };
+
+        Assert.Empty(RecurrenceService.Expand(master));
+    }
+
+    [Fact]
+    public async Task CalendarDataStore_RoundTripsRecurrenceFields()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"mica-agenda-recur-{Guid.NewGuid():N}.json");
+        var store = new CalendarDataStore(path);
+        var master = new CalendarTask
+        {
+            Id = Guid.NewGuid(),
+            Date = new DateOnly(2026, 9, 1),
+            Title = "周报",
+            Recurrence = RecurrenceFrequency.Weekly,
+            RecurrenceInterval = 2,
+            RecurrenceEnd = new DateOnly(2026, 12, 31),
+            CreatedAt = new DateTimeOffset(2026, 9, 1, 9, 0, 0, TimeSpan.Zero),
+        };
+        await store.SaveAsync(new CalendarData { Tasks = [master] });
+
+        var loaded = (await store.LoadAsync()).Tasks.Single();
+
+        Assert.Equal(RecurrenceFrequency.Weekly, loaded.Recurrence);
+        Assert.Equal(2, loaded.RecurrenceInterval);
+        Assert.Equal(new DateOnly(2026, 12, 31), loaded.RecurrenceEnd);
 
         File.Delete(path);
     }

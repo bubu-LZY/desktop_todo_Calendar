@@ -2,9 +2,21 @@ using System.IO;
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using MicaAgenda.App.Helpers;
 using MicaAgenda.App.Models;
 
 namespace MicaAgenda.App.Services;
+
+/// <summary>
+/// 数据文件读取失败时抛出，用于和「首次启动（文件不存在）」严格区分。
+/// 宿主拿到它必须：① 提示用户；② 关闭自动保存，避免空数据把原文件覆盖回去。
+/// </summary>
+public sealed class CalendarDataLoadException : Exception
+{
+    public CalendarDataLoadException(string message, Exception inner) : base(message, inner)
+    {
+    }
+}
 
 public sealed class CalendarDataStore
 {
@@ -41,28 +53,39 @@ public sealed class CalendarDataStore
             await using var stream = File.OpenRead(_path);
             var data = await JsonSerializer.DeserializeAsync<CalendarData>(stream, JsonOptions) ?? new CalendarData();
             Normalize(data);
+
+            // 加载成功后，把「本次会话开始前」的数据拍一份快照，供误删 / 逻辑性覆盖后回退。
+            // （parse 失败的数据不在这里，走下面的 quarantine 隔离，不会被快照顶掉。）
+            WriteStartupSnapshot();
             return data;
         }
-        catch (IOException)
+        catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException)
         {
-            return new CalendarData();
-        }
-        catch (JsonException)
-        {
-            return new CalendarData();
+            // 数据文件读不出来（损坏 / 被杀毒锁住 / 上次写入被断电截断）。
+            //
+            // 绝不能静默返回空对象：宿主拿不到失败信号，会照常建 ViewModel，
+            // 用户随手拖一下窗口就触发自动保存，把空数据原子覆盖回原文件 —— 不可逆丢失。
+            // 这里先把坏文件改名隔离（绝不留在原位被覆盖），再向上抛，让宿主报警并禁用自动保存。
+            QuarantineCorruptFile(ex);
+            throw new CalendarDataLoadException(
+                $"数据文件无法读取，已隔离保存（{_path}）。请从启动快照或备份目录恢复。", ex);
         }
     }
 
     public async Task SaveAsync(CalendarData data)
     {
-        // 落盘前统一自洽：新建/外部写入的任务可能没带 UpdatedAt，
-        // 补齐后同步仲裁才有可靠的时间戳可比较。
-        Normalize(data);
         await _saveGate.WaitAsync();
         var temporaryPath = $"{_path}.{Guid.NewGuid():N}.tmp";
 
         try
         {
+            // 落盘前统一自洽：新建/外部写入的任务可能没带 UpdatedAt，补齐后同步仲裁才有可靠的时间戳。
+            //
+            // 必须在锁内：Normalize 会原地改 data.Settings、给每个 task 补 UpdatedAt、甚至重 assign
+            // 重复 Id。放到锁外的话，API/MCP 写入、UI 编辑、定时保存三者并发时，Normalize 会和
+            // 遍历 data.Tasks 的代码同时跑，出现「Collection was modified」或 Id 在遍历途中被改写的偶发错乱。
+            Normalize(data);
+
             var directory = Path.GetDirectoryName(_path);
             if (!string.IsNullOrWhiteSpace(directory))
             {
@@ -80,7 +103,7 @@ public sealed class CalendarDataStore
                 await JsonSerializer.SerializeAsync(stream, data, JsonOptions);
             }
 
-            MoveWithRetry(temporaryPath, _path);
+            await MoveWithRetryAsync(temporaryPath, _path);
         }
         finally
         {
@@ -104,8 +127,10 @@ public sealed class CalendarDataStore
     /// 原子替换目标文件，遇到瞬时文件锁（杀毒 / 索引器 / 并发读短暂占用）时退避重试。
     /// Windows 的 File.Move(overwrite:true) 底层是 MoveFileEx，目标被占用会抛
     /// UnauthorizedAccessException/IOException；不重试会让保存（含自动保存）偶发失败。
+    /// 退避用 await Task.Delay 而不是 Thread.Sleep：SaveAsync 常从 UI 线程同步上下文发起，
+    /// Thread.Sleep 会冻结界面（最坏约 100+200+300+400+500+600=2.1s），纯属无谓卡顿。
     /// </summary>
-    private static void MoveWithRetry(string source, string destination)
+    private static async Task MoveWithRetryAsync(string source, string destination)
     {
         const int maxAttempts = 6;
         for (var attempt = 1; ; attempt++)
@@ -117,8 +142,70 @@ public sealed class CalendarDataStore
             }
             catch (Exception ex) when ((ex is IOException or UnauthorizedAccessException) && attempt < maxAttempts)
             {
-                Thread.Sleep(20 * attempt);
+                await Task.Delay(20 * attempt);
             }
+        }
+    }
+
+    /// <summary>隔离坏数据文件：改名留存，绝不留在原位被下一次自动保存覆盖。</summary>
+    private void QuarantineCorruptFile(Exception ex)
+    {
+        try
+        {
+            var quarantine = $"{_path}.corrupt-{DateTime.Now:yyyyMMddHHmmss}";
+            File.Move(_path, quarantine, overwrite: false);
+            AppLog.Error(ex, $"CalendarDataStore.Load：数据文件损坏，已隔离到 {quarantine}");
+        }
+        catch (Exception moveEx)
+        {
+            // 隔离失败（文件被独占锁死等）：原文件仍留在原位，但我们已经向上抛错，
+            // 宿主会关闭自动保存，至少不会再被覆盖。
+            AppLog.Error(moveEx, "CalendarDataStore.Quarantine：隔离失败，原文件仍留在原位");
+        }
+    }
+
+    /// <summary>
+    /// 每次启动加载成功后，把「本次会话开始前」的数据拍一份滚动快照
+    /// （calendar-data.json.bak / .bak.2 / .bak.3，共 3 份）。
+    ///
+    /// 这是针对「逻辑性数据丢失」的兜底：如果某个 bug 在今天清空了任务后又正常自动保存，
+    /// 用户至少还有昨天 / 前天的快照可以手工回退 —— 因为那种情况文件能正常解析，
+    /// quarantine 和 parse 异常都救不了它。
+    /// </summary>
+    private void WriteStartupSnapshot()
+    {
+        try
+        {
+            const int keep = 3;
+            var newest = _path + ".bak";
+
+            // 轮转：.bak.3 扔掉，其余各往后挪一位，再把当前文件复制成新的 .bak。
+            var oldest = newest + "." + keep;
+            if (File.Exists(oldest))
+            {
+                File.Delete(oldest);
+            }
+
+            for (var i = keep - 1; i >= 1; i--)
+            {
+                var from = newest + "." + i;
+                var to = newest + "." + (i + 1);
+                if (File.Exists(from))
+                {
+                    File.Move(from, to, overwrite: true);
+                }
+            }
+
+            if (File.Exists(newest))
+            {
+                File.Move(newest, newest + ".1", overwrite: true);
+            }
+
+            File.Copy(_path, newest, overwrite: true);
+        }
+        catch
+        {
+            // 快照失败不影响主流程：最坏就是没有回退点，加载照常返回。
         }
     }
 

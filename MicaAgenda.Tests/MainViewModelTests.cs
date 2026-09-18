@@ -203,6 +203,141 @@ public sealed class MainViewModelTests
     }
 
     [Fact]
+    public void IndexOfTodayInWeekScroll_PointsAtToday()
+    {
+        var data = new CalendarData();
+        var viewModel = new MainViewModel(data, () => new DateTimeOffset(2026, 5, 10, 9, 0, 0, TimeSpan.Zero));
+        viewModel.SetViewMode(CalendarViewMode.Week);
+
+        var index = viewModel.IndexOfTodayInWeekScroll;
+
+        // 周视图从"今天所在那一周的周一"开始铺，所以今天一定落在首屏之内；
+        // 宿主点「今天」时就是靠这个下标反推要滚到哪一行。
+        Assert.InRange(index, 0, (MainViewModel.WeekScrollInitialWeeks * 7) - 1);
+        Assert.Equal(new DateOnly(2026, 5, 10), viewModel.VisibleDays[index].Date);
+        Assert.True(viewModel.VisibleDays[index].IsToday);
+
+        // 首行必须是那一周的第一天，否则 ScrollWeekToToday 会滚到半周中间去。
+        // 本项目全链路（CalendarService / MainViewModel / TaskApiServer）都以**周日**为
+        // 一周起点，即 AddDays(-(int)DayOfWeek)，所以这里是 Sunday 而不是 Monday。
+        Assert.Equal(DayOfWeek.Sunday, viewModel.VisibleDays[0].Date.DayOfWeek);
+
+        // 宿主滚到的是"今天所在那一周的第一行"：该行日期必须仍是同一周、且是周起点。
+        var weekStartIndex = index - (index % 7);
+        Assert.Equal(DayOfWeek.Sunday, viewModel.VisibleDays[weekStartIndex].Date.DayOfWeek);
+        Assert.Equal(viewModel.VisibleDays[index].Date.AddDays(-(index % 7)),
+            viewModel.VisibleDays[weekStartIndex].Date);
+    }
+
+    [Fact]
+    public void IndexOfTodayInWeekScroll_SurvivesExtendingTheList()
+    {
+        var data = new CalendarData();
+        var viewModel = new MainViewModel(data, () => new DateTimeOffset(2026, 5, 10, 9, 0, 0, TimeSpan.Zero));
+        viewModel.SetViewMode(CalendarViewMode.Week);
+
+        var before = viewModel.IndexOfTodayInWeekScroll;
+
+        // 向下滚到底会追加整周，但今天始终还在原地 —— 追加只发生在尾部，
+        // 所以下标不能漂移，否则点「今天」会越滚越偏。
+        viewModel.ExtendWeekScroll();
+        viewModel.ExtendWeekScroll();
+
+        Assert.Equal(before, viewModel.IndexOfTodayInWeekScroll);
+        Assert.True(viewModel.IndexOfTodayInWeekScroll >= 0);
+    }
+
+    [Fact]
+    public void ExtendWeekScroll_TrimsHeadBeyondCap()
+    {
+        var data = new CalendarData();
+        var viewModel = new MainViewModel(data, () => new DateTimeOffset(2026, 5, 10, 9, 0, 0, TimeSpan.Zero));
+        viewModel.SetViewMode(CalendarViewMode.Week);
+
+        var trimmed = 0;
+        viewModel.WeekScrollHeadTrimmed += n => trimmed += n;
+
+        // 首屏 8 周（56 天），每次追加 4 周（28 天）。连续滚 4 次之后 56 + 28*4 = 168，
+        // 超出上限 112 天，应从头裁剪到恰好 112 天，且触发头部裁剪回调。
+        viewModel.ExtendWeekScroll();
+        viewModel.ExtendWeekScroll();
+        viewModel.ExtendWeekScroll();
+        viewModel.ExtendWeekScroll();
+
+        Assert.Equal(MainViewModel.WeekScrollMaxDays, viewModel.VisibleDays.Count);
+        Assert.True(trimmed > 0);
+
+        // 裁掉的是头部（用户早已滚过去的日期），尾部日期必须仍然连续。
+        var head = viewModel.VisibleDays[0].Date;
+        var tail = viewModel.VisibleDays[^1].Date;
+        Assert.Equal(head.AddDays(MainViewModel.WeekScrollMaxDays - 1), tail);
+    }
+
+    [Fact]
+    public void GoToday_InWeekView_SkipsRebuildWhenDataUnchanged()
+    {
+        var data = new CalendarData();
+        var clock = () => new DateTimeOffset(2026, 5, 10, 9, 0, 0, TimeSpan.Zero);
+        var viewModel = new MainViewModel(data, clock);
+        viewModel.SetViewMode(CalendarViewMode.Week);
+
+        var before = viewModel.VisibleDays.Count;
+        var firstDate = viewModel.VisibleDays[0].Date;
+
+        // 用户只是把左栏滚到了几周之后，SelectedDate 一直就是今天。
+        // 此时点「今天」数据一个字节都没变 —— 重建 56 个格子纯属浪费，
+        // 宿主只要收到一次滚动信号把列表滚回去就够了。
+        var rebuilt = 0;
+        viewModel.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName == nameof(MainViewModel.VisibleDays))
+            {
+                rebuilt++;
+            }
+        };
+
+        viewModel.GoToday();
+
+        // 关键：不能因为滚远了就整列表重建（那是点「今天」卡顿 1~2 秒的主因）。
+        Assert.Equal(before, viewModel.VisibleDays.Count);
+        Assert.Equal(firstDate, viewModel.VisibleDays[0].Date);
+        Assert.True(viewModel.IndexOfTodayInWeekScroll >= 0);
+
+        // 但今天必须仍然是"今天"，且选中态已回到今日任务。
+        var today = DateOnly.FromDateTime(clock().LocalDateTime);
+        Assert.Equal(today, viewModel.SelectedDate);
+        Assert.Null(viewModel.SelectedCellDate);
+    }
+
+    [Fact]
+    public void NarrowLayoutForcesTaskViewLabel()
+    {
+        var data = new CalendarData();
+        var viewModel = new MainViewModel(data, () => new DateTimeOffset(2026, 5, 10, 9, 0, 0, TimeSpan.Zero));
+        viewModel.SetViewMode(CalendarViewMode.Week);
+
+        Assert.False(viewModel.IsNarrowTaskOnly);
+        Assert.Equal("周视图", viewModel.CurrentViewLabel);
+
+        // 缩窄到阈值以下：主体被宿主换成任务面板，标签必须跟着改口，
+        // 否则会出现「画面是任务列表、按钮却写着周视图」这种自相矛盾的状态。
+        var notified = new List<string?>();
+        viewModel.PropertyChanged += (_, e) => notified.Add(e.PropertyName);
+        viewModel.IsNarrowTaskOnly = true;
+
+        Assert.Equal("任务视图", viewModel.CurrentViewLabel);
+        // 标签是派生值，必须跟着窄屏状态一起通知，否则界面不会重绘。
+        Assert.Contains(nameof(MainViewModel.CurrentViewLabel), notified);
+
+        // 关键：底层 ViewMode 不能被窄屏改掉 —— 用户把窗口拉宽后要回到原来那个视图。
+        Assert.Equal(CalendarViewMode.Week, data.Settings.ViewMode);
+        Assert.True(viewModel.IsWeekView);
+
+        viewModel.IsNarrowTaskOnly = false;
+        Assert.Equal("周视图", viewModel.CurrentViewLabel);
+    }
+
+    [Fact]
     public void ViewFlagsFollowTheActiveViewMode()
     {
         var data = new CalendarData();
@@ -1282,5 +1417,109 @@ public sealed class MainViewModelTests
         viewModel.DeleteTask(Guid.NewGuid());
 
         Assert.Empty(removed);
+    }
+
+    [Fact]
+    public void TodayTaskTimeText_FollowsDraftTime()
+    {
+        var data = new CalendarData();
+        var viewModel = new MainViewModel(data, () => new DateTimeOffset(2026, 9, 17, 9, 0, 0, TimeSpan.Zero));
+
+        // 紧凑添加表单的时间小按钮直接显示这个文本；默认 09:00
+        Assert.Equal("09:00", viewModel.TodayTaskTimeText);
+
+        viewModel.TodayTaskTime = new TimeSpan(14, 5, 0);
+        Assert.Equal("14:05", viewModel.TodayTaskTimeText);
+    }
+
+    [Fact]
+    public void SetYearFontScale_ClampsQuantizesAndNotifies()
+    {
+        var data = new CalendarData();
+        var viewModel = new MainViewModel(data, () => new DateTimeOffset(2026, 9, 17, 9, 0, 0, TimeSpan.Zero));
+
+        // 默认基准字号（列宽充足时保持原版观感）
+        Assert.Equal(11, viewModel.YearDayFontSize);
+        Assert.Equal(9, viewModel.YearBadgeFontSize);
+
+        var notified = new List<string>();
+        viewModel.PropertyChanged += (_, e) => notified.Add(e.PropertyName ?? string.Empty);
+
+        // 半档：数字与徽标一起缩
+        viewModel.SetYearFontScale(0.75);
+        Assert.InRange(viewModel.YearDayFontSize, 8.0, 8.5);
+        Assert.InRange(viewModel.YearBadgeFontSize, 6.5, 7.0);
+        Assert.Contains(nameof(MainViewModel.YearDayFontSize), notified);
+        Assert.Contains(nameof(MainViewModel.YearBadgeFontSize), notified);
+
+        // 过小 → 夹到下限 0.62；过大 → 夹到上限 1.0（不在大窗口下放大）
+        viewModel.SetYearFontScale(0.1);
+        Assert.Equal(6.8, viewModel.YearDayFontSize);
+        viewModel.SetYearFontScale(3.0);
+        Assert.Equal(11, viewModel.YearDayFontSize);
+        Assert.Equal(9, viewModel.YearBadgeFontSize);
+
+        // 量化：同一个 0.02 步进档内的微小变化不再触发通知（拖窗口时不抖动）
+        notified.Clear();
+        viewModel.SetYearFontScale(0.995);
+        Assert.DoesNotContain(nameof(MainViewModel.YearDayFontSize), notified);
+    }
+
+    [Fact]
+    public void AddRecurringTask_MaterializesFutureInstances()
+    {
+        var data = new CalendarData();
+        var viewModel = new MainViewModel(data, () => new DateTimeOffset(2026, 9, 1, 9, 0, 0, TimeSpan.Zero));
+
+        var master = viewModel.AddRecurringTask(
+            new DateOnly(2026, 9, 1),
+            "每周组会",
+            RecurrenceFrequency.Weekly,
+            interval: 1,
+            end: new DateOnly(2026, 9, 15),
+            time: new TimeOnly(10, 0),
+            reminderLeads: [30]);
+
+        // 源任务 + 两个实例（9/8、9/15）
+        Assert.Equal(RecurrenceFrequency.Weekly, master.Recurrence);
+        Assert.Equal(3, data.Tasks.Count);
+        Assert.Equal(2, data.Tasks.Count(t => t.SeriesId == master.Id));
+        Assert.Contains(data.Tasks, t => t.Date == new DateOnly(2026, 9, 8) && t.SeriesId == master.Id);
+
+        // 实例继承了提醒档位与时刻
+        var instance = data.Tasks.Single(t => t.Date == new DateOnly(2026, 9, 8));
+        Assert.Equal(new TimeOnly(10, 0), instance.Time);
+        Assert.Equal([30], instance.AllReminderLeads.ToArray());
+
+        // 数据变脏
+        Assert.True(viewModel.IsDirty);
+    }
+
+    [Fact]
+    public void DeleteRecurringSeries_RemovesMasterAndAllInstances()
+    {
+        var data = new CalendarData();
+        var viewModel = new MainViewModel(data, () => new DateTimeOffset(2026, 9, 1, 9, 0, 0, TimeSpan.Zero));
+
+        var master = viewModel.AddRecurringTask(
+            new DateOnly(2026, 9, 1), "每日打卡", RecurrenceFrequency.Daily,
+            interval: 1, end: new DateOnly(2026, 9, 3), time: null, reminderLeads: null);
+        Assert.Equal(3, data.Tasks.Count); // 9/1, 9/2, 9/3
+
+        var removed = viewModel.DeleteRecurringSeries(master.Id);
+
+        Assert.Equal(3, removed);
+        Assert.Empty(data.Tasks);
+    }
+
+    [Fact]
+    public void DeleteRecurringSeries_UnknownId_ReturnsZero()
+    {
+        var data = new CalendarData();
+        var viewModel = new MainViewModel(data, () => new DateTimeOffset(2026, 9, 1, 9, 0, 0, TimeSpan.Zero));
+        viewModel.AddTask(new DateOnly(2026, 9, 1), "普通任务");
+
+        Assert.Equal(0, viewModel.DeleteRecurringSeries(Guid.NewGuid()));
+        Assert.Single(data.Tasks);
     }
 }

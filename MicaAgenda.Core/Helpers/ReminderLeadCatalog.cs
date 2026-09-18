@@ -20,6 +20,12 @@ public static class ReminderLeadCatalog
     /// <summary>「提前一天」：任务时刻往前 24 小时推（提前量 1440 分钟）。</summary>
     public const string OneDayLabel = "提前一天";
 
+    /// <summary>
+    /// 新建任务默认的提前提醒量（分钟）：提前 15 分钟。
+    /// 除非用户 / AI 明确表达「不提醒」，否则所有新增任务（手动 / AI / MCP / 周期）都默认带这个档位。
+    /// </summary>
+    public const int DefaultLeadMinutes = 15;
+
     // 提前量 0 有两个落点：「不提醒」存 null（完全不推），「到时提醒」存 0（到点推）。
     // 二者在数据上是 null 与 0 的区别，判断提醒时只在 ToMinutes 这一处收口。
     private static readonly (string Label, int Minutes)[] Table =
@@ -155,7 +161,8 @@ public static class ReminderLeadCatalog
         return SelectableLabels.Where(labels.Contains).ToList();
     }
 
-    /// <summary>多选摘要：空 = 「不提醒」，否则把勾选项用顿号连起来（如「提前30分钟、到时提醒」）。</summary>
+    /// <summary>
+    /// 多选摘要：空 = 「不提醒」，否则把勾选项用顿号连起来（如「提前30分钟、到时提醒」）。</summary>
     public static string Summarize(IEnumerable<string>? labels)
     {
         var selected = labels?
@@ -164,5 +171,27 @@ public static class ReminderLeadCatalog
             .ToList();
 
         return selected is null || selected.Count == 0 ? NoneLabel : string.Join("、", selected);
+    }
+
+    /// <summary>
+    /// 把提醒标签集合转成「提交用」提前量列表，区分三种状态：
+    /// 含「不提醒」→ 空列表（明确不提醒）；空 / null（未指定）→ null（走默认「提前15分钟」）；
+    /// 否则返回档位分钟列表。供添加任务的提交路径调用。
+    /// </summary>
+    public static IReadOnlyList<int>? ToCommitLeads(IEnumerable<string>? labels)
+    {
+        if (labels is null)
+        {
+            return null;
+        }
+
+        var list = labels as ICollection<string> ?? labels.ToList();
+        if (list.Contains(NoneLabel))
+        {
+            return Array.Empty<int>();
+        }
+
+        var minutes = ToMinutesList(list);
+        return minutes.Count > 0 ? minutes : null;
     }
 }

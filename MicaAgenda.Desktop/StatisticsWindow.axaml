@@ -1,0 +1,58 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="MicaAgenda.Desktop.StatisticsWindow"
+        Title="数据统计"
+        Width="420" Height="540"
+        MinWidth="360" MinHeight="420"
+        WindowStartupLocation="CenterOwner"
+        CanResize="True"
+        Background="#F7F8FA"
+        FontSize="13"
+        RequestedThemeVariant="Light"
+        x:CompileBindings="False">
+
+  <Window.Styles>
+    <Style Selector="Border.card">
+      <Setter Property="Background" Value="#FFFFFF" />
+      <Setter Property="BorderBrush" Value="#E7E9EF" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="9" />
+    </Style>
+    <Style Selector="TextBlock.sectionTitle">
+      <Setter Property="FontSize" Value="13" />
+      <Setter Property="FontWeight" Value="Bold" />
+      <Setter Property="Foreground" Value="#111827" />
+      <Setter Property="Margin" Value="0,10,0,4" />
+    </Style>
+    <Style Selector="ToggleButton">
+      <Setter Property="Padding" Value="12,5" />
+      <Setter Property="CornerRadius" Value="7" />
+    </Style>
+  </Window.Styles>
+
+  <ScrollViewer VerticalScrollBarVisibility="Auto">
+    <StackPanel Margin="16" Spacing="6">
+      <StackPanel Orientation="Horizontal" Spacing="6">
+        <ToggleButton x:Name="WeekBtn" Content="本周" Click="Week_Click" />
+        <ToggleButton x:Name="MonthBtn" Content="本月" Click="Month_Click" />
+      </StackPanel>
+
+      <Border Classes="card" Padding="14,12">
+        <StackPanel Spacing="6">
+          <TextBlock x:Name="CompletionText" FontSize="30" FontWeight="Bold" Foreground="#2563EB" />
+          <TextBlock x:Name="OverviewText" FontSize="12" Foreground="#374151" TextWrapping="Wrap" />
+          <TextBlock x:Name="AvgText" FontSize="12" Foreground="#6B7280" TextWrapping="Wrap" />
+        </StackPanel>
+      </Border>
+
+      <TextBlock x:Name="LongestText" Classes="sectionTitle" />
+      <TextBlock x:Name="LongestList" FontSize="12" Foreground="#374151" TextWrapping="Wrap" />
+
+      <TextBlock x:Name="OpenTitle" Classes="sectionTitle" />
+      <TextBlock x:Name="OpenList" FontSize="12" Foreground="#374151" TextWrapping="Wrap" />
+
+      <TextBlock x:Name="OverdueTitle" Classes="sectionTitle" />
+      <TextBlock x:Name="OverdueList" FontSize="12" Foreground="#DC2626" TextWrapping="Wrap" />
+    </StackPanel>
+  </ScrollViewer>
+</Window>

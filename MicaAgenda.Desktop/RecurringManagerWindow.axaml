@@ -1,0 +1,28 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="MicaAgenda.Desktop.RecurringManagerWindow"
+        Title="周期任务"
+        Width="560" Height="520"
+        MinWidth="460" MinHeight="360"
+        WindowStartupLocation="CenterOwner"
+        CanResize="True"
+        Background="#F7F8FA"
+        FontSize="13"
+        RequestedThemeVariant="Light"
+        x:CompileBindings="False">
+  <DockPanel Margin="14">
+    <TextBlock DockPanel.Dock="Top" Text="周期任务会按规则自动生成未来实例，这里统一查看、编辑、删除。"
+               Foreground="#6B7280" FontSize="12" TextWrapping="Wrap" Margin="0,0,0,10" />
+
+    <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Spacing="8" Margin="0,10,0,0">
+      <Button Content="添加周期任务" Click="Add_Click" Padding="14,6" CornerRadius="7"
+              Background="#2563EB" Foreground="#FFFFFF" BorderThickness="0" FontWeight="SemiBold" Cursor="Hand" />
+      <Button Content="删除全部" Click="DeleteAll_Click" Padding="14,6" CornerRadius="7"
+              Background="#FFFFFF" BorderBrush="#FCA5A5" BorderThickness="1" Foreground="#DC2626" Cursor="Hand" />
+    </StackPanel>
+
+    <ScrollViewer VerticalScrollBarVisibility="Auto">
+      <StackPanel x:Name="ListHost" Spacing="8" />
+    </ScrollViewer>
+  </DockPanel>
+</Window>

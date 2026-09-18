@@ -99,6 +99,7 @@ public partial class SettingsWindow : Window
         MyMindMapTokenBox.Text = _config.MyMindMapToken;
         EmbedDesktopBox.IsChecked = _config.EmbedDesktop;
         LockWindowBox.IsChecked = _config.LockWindow;
+        LoadAiValues();
         if (OperatingSystem.IsWindows())
         {
             AutoStartBox.IsChecked = _config.AutoStart;
@@ -233,6 +234,69 @@ public partial class SettingsWindow : Window
     }
 
     private void UpdateMcpEndpoint() => McpEndpointBox.Text = _mcpEndpointProvider();
+
+    // ===== AI 助手 =====
+
+    private void LoadAiValues()
+    {
+        AiEnabledBox.IsChecked = _config.AiEnabled;
+        AiBaseUrlBox.Text = _config.AiBaseUrl;
+        AiApiKeyBox.Text = _config.AiApiKey;
+        AiModelBox.Text = _config.AiModel;
+        AiAutoCompleteUrlBox.IsChecked = _config.AiAutoCompleteUrl;
+    }
+
+    private async void RetrieveAiModels_Click(object? sender, RoutedEventArgs e)
+    {
+        var url = (AiBaseUrlBox.Text ?? string.Empty).Trim();
+        var key = (AiApiKeyBox.Text ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(url) || string.IsNullOrWhiteSpace(key))
+        {
+            AiStatus.Text = "请先填写 URL 和 API Key。";
+            return;
+        }
+
+        RetrieveAiModelsButton.IsEnabled = false;
+        AiStatus.Text = "正在检索模型…";
+        try
+        {
+            using var client = new OpenAiClient();
+            var models = await client.ListModelsAsync(url, key);
+            AiModelBox.ItemsSource = models;
+            AiStatus.Text = models.Count > 0 ? $"已列出 {models.Count} 个模型。" : "未返回任何模型。";
+        }
+        catch (Exception ex)
+        {
+            AiStatus.Text = "检索失败：" + ex.Message;
+        }
+        finally
+        {
+            RetrieveAiModelsButton.IsEnabled = true;
+        }
+    }
+
+    private async void TestAiConnection_Click(object? sender, RoutedEventArgs e)
+    {
+        var url = (AiBaseUrlBox.Text ?? string.Empty).Trim();
+        var key = (AiApiKeyBox.Text ?? string.Empty).Trim();
+        var model = (AiModelBox.Text ?? string.Empty).Trim();
+
+        TestAiButton.IsEnabled = false;
+        AiStatus.Text = "正在测试连接…";
+        try
+        {
+            using var client = new OpenAiClient();
+            AiStatus.Text = await client.TestConnectionAsync(url, key, string.IsNullOrWhiteSpace(model) ? null : model);
+        }
+        catch (Exception ex)
+        {
+            AiStatus.Text = "测试失败：" + ex.Message;
+        }
+        finally
+        {
+            TestAiButton.IsEnabled = true;
+        }
+    }
 
     private void UpdateApiHint()
     {
@@ -650,6 +714,11 @@ public partial class SettingsWindow : Window
         _config.MyMindMapToken = (MyMindMapTokenBox.Text ?? string.Empty).Trim();
         _config.EmbedDesktop = EmbedDesktopBox.IsChecked == true;
         _config.LockWindow = LockWindowBox.IsChecked == true;
+        _config.AiEnabled = AiEnabledBox.IsChecked == true;
+        _config.AiBaseUrl = (AiBaseUrlBox.Text ?? string.Empty).Trim();
+        _config.AiApiKey = (AiApiKeyBox.Text ?? string.Empty).Trim();
+        _config.AiModel = (AiModelBox.Text ?? string.Empty).Trim();
+        _config.AiAutoCompleteUrl = AiAutoCompleteUrlBox.IsChecked == true;
 
         // 开机启动相关要在关窗之前办完：登记计划任务需要管理员授权，只有窗口还在才能把
         // UAC 授权框挂到正确的父窗口上，也才有机会在失败时回滚，而不是留下「勾着但没生效」的假象。
@@ -711,9 +780,9 @@ public partial class SettingsWindow : Window
         {
             if (highPriority)
             {
-                // 先把当前进程的优先级提上去：这一步不需要任何权限、立刻生效，
-                // 也是「高优先级」真正能被感知到的部分。
-                HighPriorityStartupService.ApplyProcessPriority(true);
+                // 先把当前进程的优先级提上去：这一步不需要任何权限、立刻生效。
+                // 启动瞬间用 High，15 秒后自动回落到 AboveNormal 常驻（见 ApplyProcessPriorityWithFallback）。
+                HighPriorityStartupService.ApplyProcessPriorityWithFallback(true);
 
                 // 登记任务要起 schtasks、可能弹 UAC：放到线程池，别堵住界面线程。
                 var result = await Task.Run(EnableHighPriorityTask);
@@ -930,6 +999,7 @@ public partial class SettingsWindow : Window
         ("report", nameof(CardReport)),
         ("backup", nameof(CardBackup)),
         ("mcp", nameof(CardMcp)),
+        ("ai", nameof(CardAi)),
         ("desktop", nameof(CardDesktop)),
         ("update", nameof(CardUpdate)),
         ("holiday", nameof(CardHoliday)),

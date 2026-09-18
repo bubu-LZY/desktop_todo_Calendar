@@ -28,27 +28,37 @@ public sealed class TaskScheduleTests
     }
 
     [Fact]
-    public void AddTask_WithoutLead_NeverReminds()
+    public void AddTask_WithoutLead_DefaultsToFifteenMinutes()
     {
         var viewModel = new MainViewModel(new CalendarData());
 
         var task = viewModel.AddTask(new DateOnly(2026, 5, 12), "随手记");
 
+        // 新口径：不指定提醒 = 默认「提前 15 分钟」
         Assert.Null(task.Time);
-        Assert.Null(task.ReminderLeadMinutes);
-        Assert.Null(task.ReminderTriggerAt());
-        Assert.False(task.ShouldFireReminder(new DateTime(2026, 5, 12, 12, 0, 0)));
-        Assert.False(task.IsReminderExpired(new DateTime(2026, 5, 20, 12, 0, 0)));
+        Assert.Equal(15, task.ReminderLeadMinutes);
+        Assert.Equal(new DateTime(2026, 5, 12, 8, 45, 0), task.ReminderTriggerAt());
     }
 
     [Fact]
-    public void AddTask_NullLead_IsTreatedAsNoReminder()
+    public void AddTask_NullLead_DefaultsToFifteenMinutes()
     {
         var viewModel = new MainViewModel(new CalendarData());
 
         var task = viewModel.AddTask(new DateOnly(2026, 5, 12), "无提醒", null);
+        Assert.Equal(15, task.ReminderLeadMinutes);
+        Assert.Equal(new DateTime(2026, 5, 12, 8, 45, 0), task.ReminderTriggerAt());
+    }
+
+    [Fact]
+    public void AddTask_EmptyLeadList_IsExplicitNoReminder()
+    {
+        var viewModel = new MainViewModel(new CalendarData());
+
+        // 空列表 = 明确「不提醒」，与 null（默认 15 分钟）严格区分
+        var task = viewModel.AddTask(new DateOnly(2026, 5, 12), "明确不提醒", Array.Empty<int>(), null);
         Assert.Null(task.ReminderLeadMinutes);
-        Assert.Null(task.ReminderTriggerAt());
+        Assert.False(task.HasReminders);
     }
 
     /// <summary>
@@ -447,20 +457,27 @@ public sealed class TaskScheduleTests
     }
 
     [Fact]
-    public void TaskItemViewModel_ExposesReminderInsteadOfTime()
+    public void TaskItemViewModel_ShowsTaskTimeAndKeepsReminderInTooltip()
     {
         var withLead = new TaskItemViewModel(ScheduledTask(new TimeOnly(14, 5), 30));
 
         Assert.True(withLead.HasReminder);
+        // 徽标显示任务自己的时刻（14:05），不是提醒时刻（13:35）
+        Assert.Equal("14:05", withLead.TaskTimeText);
+        Assert.StartsWith("14:05 · ", withLead.TimeBadge);
+        Assert.DoesNotContain("提醒 ·", withLead.TimeBadge);
+
+        // 提醒档位改为只出现在悬浮提示里
         Assert.Equal("13:35", withLead.ReminderTimeText);
-        Assert.StartsWith("13:35 提醒 · ", withLead.TimeBadge);
         Assert.Contains("提醒：13:35", withLead.TooltipText);
         Assert.Contains("提前 30分钟", withLead.TooltipText);
 
         var withoutLead = new TaskItemViewModel(ScheduledTask(null, null));
         Assert.False(withoutLead.HasReminder);
         Assert.Equal(string.Empty, withoutLead.ReminderTimeText);
-        Assert.DoesNotContain("提醒 ·", withoutLead.TimeBadge);
+        // 没显式设时刻的任务，徽标回落到当天默认时刻（9:00）
+        Assert.Equal("09:00", withoutLead.TaskTimeText);
+        Assert.StartsWith("09:00 · ", withoutLead.TimeBadge);
     }
 
     [Fact]

@@ -90,7 +90,10 @@ public static class ToastHelper
                         {
                             toast.Close();
                         }
-                        catch { }
+                        catch
+                        {
+                            // 关闭 toast 失败（用户已手动关掉 / 窗口已销毁）无副作用：忽略即可。
+                        }
                         _toastWindow = null;
                     };
                     toast.BeginAnimation(UIElement.OpacityProperty, fadeOut);

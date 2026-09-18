@@ -592,14 +592,25 @@ public sealed class TaskApiServer : IDisposable
 
         if (method == "GET" && action == string.Empty)
         {
-            var task = FindTask(id);
-            if (task is null)
+            // FindTask 遍历的是共享集合，其余写路径都持 _syncRoot。
+            // 锁内只做查找 + 快照 DTO，网络写响应放锁外（不能在 lock 里 await）。
+            object? dto = null;
+            lock (_syncRoot)
+            {
+                var task = FindTask(id);
+                if (task is not null)
+                {
+                    dto = ToDto(task);
+                }
+            }
+
+            if (dto is null)
             {
                 await WriteJsonAsync(response, 404, new { error = "task not found" });
                 return;
             }
 
-            await WriteJsonAsync(response, 200, ToDto(task));
+            await WriteJsonAsync(response, 200, dto);
             return;
         }
 
@@ -851,6 +862,18 @@ public sealed class TaskApiServer : IDisposable
             // 忽略关闭异常
         }
 
+        // 等 RunLoop 真正退出后再释放 CTS：GetContextAsync().WaitAsync(token) 可能还挂着
+        // 对 token 的注册，提前 Dispose 会触发竞态异常。listener.Stop() 已让它立刻退出，
+        // 这里通常毫秒级；兜底 2 秒超时避免异常路径下永久卡住退出流程。
+        try
+        {
+            _runTask?.Wait(TimeSpan.FromSeconds(2));
+        }
+        catch
+        {
+            // RunLoop 内部已把所有异常就地消化，这里不应再有异常；即便有也挡不住退出。
+        }
+
         try
         {
             _cts?.Dispose();
@@ -861,6 +884,7 @@ public sealed class TaskApiServer : IDisposable
         }
 
         _cts = null;
+        _runTask = null;
     }
 
     private sealed class AddTaskRequest

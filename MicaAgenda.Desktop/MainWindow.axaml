@@ -9,6 +9,7 @@
         Title="{Binding Title}"
         WindowDecorations="None"
         Background="Transparent"
+        Cursor="Arrow"
         SizeChanged="Window_SizeChanged"
         x:CompileBindings="False">
 
@@ -96,6 +97,9 @@
     <DataTemplate x:Key="TaskTemplate" DataType="vm:TaskItemViewModel">
       <Border Classes="taskPill" Classes.important="{Binding IsImportant}"
               Margin="0,0.5" Padding="2,0" CornerRadius="3" BorderThickness="1"
+              PointerPressed="TaskItem_PointerPressed"
+              PointerMoved="TaskItem_PointerMoved"
+              PointerReleased="TaskItem_PointerReleased"
               ToolTip.Tip="{Binding TooltipText}">
         <Border.ContextMenu>
           <ContextMenu>
@@ -232,20 +236,24 @@
       </Border>
     </DataTemplate>
 
-  <!-- ===== 周视图左栏的日期格子（竖排，正方形）=====
-       用户要求格子是「正方形」，且 7 个刚好铺满当前界面高度：
-       边长由 WeekScrollCellSize 统一给定（宿主按「左栏可用高度 ÷ 7」算出），
-       宽高绑同一个值，所以任何窗口尺寸下都是正方形；左列宽度也绑它，两者永远一致。
+  <!-- ===== 周视图左栏的日期格子（竖排）=====
+       布局约定（用户明确要求）：
+       - **宽度固定**为 WeekScrollColumnWidth(132)，不随窗口缩放变化；
+         调窗口大小时变的是右侧「今日任务」面板宽度，左栏纹丝不动。
+       - **高度自适应**：由宿主按「左栏可用高度 ÷ 7」算出 WeekScrollCellHeight 回填，
+         让 7 个格子刚好铺满界面高度，纵向不留空。
+       → 所以格子是「定宽 + 变高」的矩形，不再强行做成正方形
+         （正方形会让格子左右两侧留出大片空白，而右面板反被挤窄）。
        内容仍是「日 + 星期」+ 当天任务条，任务多时格子内部自己滚动而不是把格子撑高。
        整列可上下滚动：默认停在开头（最近 7 天），往下滚看到后面日期的格子。
        尺寸改动时记得同步 MicaAgenda.App/MainWindow.xaml 的同名模板。 -->
   <DataTemplate x:Key="WeekDayRowTemplate" DataType="vm:DayCellViewModel">
-    <!-- 宽高绑同一个值（宿主按「可用高度 ÷ 7」算出）→ 永远正方形。
+    <!-- 宽度用常量、高度绑 ViewModel 回填值。
          这里用 $parent[Window].DataContext 取回 MainViewModel：格子模板的 DataContext 是
          DayCellViewModel，拿不到宿主的尺寸属性，必须沿视觉树往上找到 Window。
          x:CompileBindings 在本文件已关，所以不需要写类型转换。 -->
-    <Border Width="{Binding $parent[Window].DataContext.WeekScrollCellSize}"
-            Height="{Binding $parent[Window].DataContext.WeekScrollCellSize}"
+    <Border Width="132"
+            Height="{Binding $parent[Window].DataContext.WeekScrollCellHeight}"
             CornerRadius="6" Margin="0,0,0,4" Padding="5,4"
             Classes="weekDayRow"
             Classes.outmonth="{Binding IsOutMonth}"
@@ -344,9 +352,16 @@
                         Height="24" Margin="1" Padding="3" CornerRadius="4"
                         PointerPressed="DayCell_PointerPressed">
                   <Grid>
-                    <TextBlock Text="{Binding DayNumber}" FontSize="11" Foreground="{DynamicResource PrimaryTextBrush}" />
+                    <!-- 字号绑定 VM 回填值：窗口缩小时月卡列宽变小，
+                         字号不同步缩小的话两位日期数字会被节日徽标盖住/裁掉
+                         （宿主 UpdateResponsiveLayout 按实际列宽回填，见 SetYearFontScale）。 -->
+                    <TextBlock Text="{Binding DayNumber}"
+                               FontSize="{Binding $parent[Window].DataContext.YearDayFontSize, FallbackValue=11}"
+                               Foreground="{DynamicResource PrimaryTextBrush}" />
                     <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Bottom">
-                      <TextBlock Text="{Binding FirstHolidayBadge}" FontSize="9" FontWeight="Bold"
+                      <TextBlock Text="{Binding FirstHolidayBadge}"
+                                 FontSize="{Binding $parent[Window].DataContext.YearBadgeFontSize, FallbackValue=9}"
+                                 FontWeight="Bold"
                                  Foreground="{DynamicResource HolidayTextBrush}" Margin="0,0,3,0" IsVisible="{Binding HasHolidays}" />
                       <Ellipse Width="6" Height="6" Fill="#22C55E" VerticalAlignment="Center"
                                IsVisible="{Binding HasTasks}" />
@@ -476,35 +491,55 @@
               <TextBlock Text="{Binding TodayTaskSummary}" FontSize="10.5" Foreground="{DynamicResource MutedTextBrush}" Margin="0,2,0,0" />
             </StackPanel>
           </DockPanel>
-          <!-- ===== 快速添加表单：任务内容 + 任务时刻 + 提醒时间 + 确定 =====
-               先选任务时刻（日期由面板头上的日期决定，默认 09:00），再选「提前多久提醒」，
-               提醒时刻 = 任务时刻 − 提前量。下拉只有一列固定档位，不需要再让用户自己算。
+          <!-- ===== 快速添加表单（紧凑单行）：输入框 + 任务时间小按钮 + 提醒小按钮 =====
+               时间与提醒不再各占一行、说明也不再单独一行 —— 右侧面板宽度有限，
+               三行设置 + 一行说明把任务列表挤没了。现在：
+               · 输入框右边两个小按钮：「HH:mm」点开浮层改时刻；「不提醒/摘要」是
+                 ReminderLeadPicker 的紧凑模式（Compact），点开选档位；
+               · 说明文字分别挪进两个弹层里（时间微调提示 / 档位说明）。
                用 Tag 而不是 x:Name 定位：这段在 DataTemplate 内部，x:Name 生成不了字段
                （模板有自己的命名空间），宿主里既有右侧面板又有窄窗视图两份实例。 -->
           <StackPanel Grid.Row="1" Tag="AddTaskForm" IsVisible="{Binding IsAddingTodayTask}"
                       Margin="0,0,0,5" Spacing="4">
-            <TextBox Tag="TodayTaskDraftBox" Text="{Binding TodayTaskDraft}"
-                     Padding="4,3" FontSize="11.5" MinHeight="22"
-                     PlaceholderText="输入任务，回车添加"
-                     KeyDown="TodayTaskTextBox_KeyDown" LostFocus="TodayTaskTextBox_LostFocus" />
-            <Grid ColumnDefinitions="Auto,*">
-              <TextBlock Grid.Column="0" Text="任务时间" FontSize="10.5" Margin="0,0,5,0"
-                         Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center" />
-              <ctl:TimeField Grid.Column="1" Tag="TodayTimeBox" HorizontalAlignment="Left"
-                             Time="{Binding TodayTaskTime, Mode=TwoWay}"
-                             ToolTip.Tip="任务时刻，默认 09:00（滚轮 / ↑↓ 微调，Shift 分钟步进 1）" />
-            </Grid>
-            <Grid ColumnDefinitions="Auto,*">
-              <TextBlock Grid.Column="0" Text="提醒时间" FontSize="10.5" Margin="0,0,5,0"
-                         Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center" />
-              <ctl:ReminderLeadPicker Grid.Column="1" Tag="TaskLeadBox"
-                                      HorizontalAlignment="Left"
+            <Grid ColumnDefinitions="*,Auto,Auto">
+              <TextBox Grid.Column="0" Tag="TodayTaskDraftBox" Text="{Binding TodayTaskDraft}"
+                       Padding="4,3" FontSize="11.5" MinHeight="22"
+                       PlaceholderText="输入任务，回车添加"
+                       KeyDown="TodayTaskTextBox_KeyDown" LostFocus="TodayTaskTextBox_LostFocus" />
+              <!-- 任务时间：小按钮直接显示当前时刻，点开浮层修改（滚轮 / ↑↓ 微调）
+                   用 x:Name + #TimeToggle 引用而不是 $parent：Popup 是 ToggleButton 的逻辑子元素、
+                   不在其视觉祖先链上，$parent[ToggleButton] 解析不到（弹层永远打不开）。
+                   CompileBindings=False，所以 #Name 运行时引用可用。
+                   IsCheckedChanged 通知宿主"时间弹层开/关"，用来抑制「失焦提交」——
+                   否则点按钮瞬间输入框失焦、焦点还没进弹层，表单就被误提交收起。 -->
+              <ToggleButton x:Name="TimeToggle" Grid.Column="1" Classes="chip" Content="{Binding TodayTaskTimeText}"
+                            Height="22" Padding="6,0" FontSize="10" CornerRadius="6" Margin="3,0,0,0"
+                            VerticalAlignment="Center"
+                            IsCheckedChanged="TodayTimeToggle_IsCheckedChanged"
+                            ToolTip.Tip="任务时刻，默认 09:00（点击修改）">
+                <Popup IsOpen="{Binding #TimeToggle.IsChecked, Mode=TwoWay}"
+                       Placement="Bottom" PlacementTarget="{Binding #TimeToggle}"
+                       VerticalOffset="3" IsLightDismissEnabled="True">
+                  <!-- 弹层里也带 AddTaskForm 标记：焦点判定把弹层内当表单内，不会误提交 -->
+                  <Border Classes="panel" CornerRadius="8" Padding="8" BorderThickness="1" Tag="AddTaskForm">
+                    <StackPanel Spacing="4">
+                      <ctl:TimeField Tag="TodayTimeBox" Time="{Binding TodayTaskTime, Mode=TwoWay}"
+                                     HorizontalAlignment="Left" />
+                      <TextBlock Text="滚轮 / ↑↓ 微调，Shift 分钟步进 1；改完点外面收起"
+                                 FontSize="9.5" TextWrapping="Wrap" MaxWidth="180"
+                                 Foreground="{DynamicResource MutedTextBrush}" />
+                    </StackPanel>
+                  </Border>
+                </Popup>
+              </ToggleButton>
+              <!-- 提醒时间：多选下拉的紧凑模式（弹层里带档位说明） -->
+              <ctl:ReminderLeadPicker Grid.Column="2" Tag="TaskLeadBox" Compact="True"
+                                      Margin="3,0,0,0"
+                                      VerticalAlignment="Center"
+                                      ToolTip.Tip="提醒按「任务时间」往前推，可多选；一个都不勾＝不提醒"
                                       SelectedLabels="{Binding TodayTaskLeadLabels}"
                                       FirstLeadSelected="TodayLeadPicker_FirstSelected" />
             </Grid>
-            <TextBlock Text="提醒按「任务时间」往前推，可多选；「到时提醒」＝到点那一刻推，一个都不勾＝完全不推。"
-                       FontSize="9.5" TextWrapping="Wrap"
-                       Foreground="{DynamicResource MutedTextBrush}" />
             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="4">
               <Button Content="取消" FontSize="10.5" Padding="8,2" MinHeight="0" Click="CancelTodayTask_Click" />
               <Button Content="确定" FontSize="10.5" Padding="10,2" MinHeight="0" Click="CommitTodayTask_Click" />
@@ -656,7 +691,9 @@
       <Setter Property="Background" Value="{DynamicResource DayCellBackgroundBrush}" />
       <Setter Property="BorderBrush" Value="{DynamicResource CellBorderBrush}" />
       <Setter Property="BorderThickness" Value="0.5" />
-      <Setter Property="MinHeight" Value="40" />
+      <!-- 高度完全交给 WeekScrollCellHeight（宿主按「可用高度 ÷ 7」回填）控制，
+           这里不设 MinHeight —— 残留的下限会在矮窗口里反向把格子撑高，
+           导致「7 格铺满」算出来的高度失效、整列溢出。 -->
     </Style>
     <Style Selector="Border.weekDayRow.outmonth">
       <Setter Property="Background" Value="{DynamicResource DayCellOutMonthBackgroundBrush}" />
@@ -742,6 +779,18 @@
       <Setter Property="Background" Value="{DynamicResource ToolbarControlBackgroundBrush}" />
       <Setter Property="BorderBrush" Value="{DynamicResource ToolbarControlBorderBrush}" />
       <Setter Property="Foreground" Value="{DynamicResource PrimaryTextBrush}" />
+    </Style>
+    <!-- 窄窗时的两级紧凑档：顶栏入口在窄屏下都不可缺（窄屏正是任务视图，最需要加任务 / 开设置），
+         所以只能逐级缩字号与内边距，不能隐藏。由 UpdateResponsiveLayout 按实测宽度自动切换。 -->
+    <Style Selector="Button.toolbar.compact">
+      <Setter Property="Height" Value="21" />
+      <Setter Property="Padding" Value="6,0" />
+      <Setter Property="FontSize" Value="10" />
+    </Style>
+    <Style Selector="Button.toolbar.ultra">
+      <Setter Property="Height" Value="19" />
+      <Setter Property="Padding" Value="4,0" />
+      <Setter Property="FontSize" Value="9" />
     </Style>
     <!-- 锁定按钮按下后的"已锁"态：边框/字换成提醒色，一眼能看出当前是锁住的 -->
     <Style Selector="Button.toolbar.locked">
@@ -864,8 +913,8 @@
              行高不锁死：Fluent 滑块拇指是 18px 圆形且模板带触摸边距，固定 26 行会把
              拇指垂直裁成「穹顶」；只给 MinHeight 保底，让滑块按自然高度把行撑开，
              其余 24px 高的控件垂直居中，中线自然对齐。 -->
-        <Border x:Name="TopBarBorder" Grid.Row="0" Padding="8,4" BorderBrush="{DynamicResource CellBorderBrush}" BorderThickness="0,0,0,1">
-          <Grid x:Name="TopBarGrid" RowDefinitions="Auto,Auto" ColumnDefinitions="Auto,Auto,*" MinHeight="28" VerticalAlignment="Center">
+        <Border x:Name="TopBarBorder" Grid.Row="0" Padding="8,2" BorderBrush="{DynamicResource CellBorderBrush}" BorderThickness="0,0,0,1">
+          <Grid x:Name="TopBarGrid" RowDefinitions="Auto,Auto" ColumnDefinitions="Auto,Auto,*" MinHeight="24" VerticalAlignment="Center">
             <!-- 左侧：日期 + 任务计数 + 背景/透明度（后两者按可用宽度逐级隐藏）。
                  ClipToBounds 是防遮挡的兜底：水平 StackPanel 超宽时默认会溢出绘制到
                  右侧按钮上（任务视图窗口很窄时日期文字就会盖住按钮），裁掉保证不越界。 -->
@@ -909,39 +958,48 @@
                  它们只有 Width 变成 NaN 才愿意跟 DateInfoPanel 共处一行（Auto 列会无视可用宽度直接溢出），
                  所以这里两组内容按需在「同一行右侧」和「第二行」之间搬家 —— 见 UpdateResponsiveLayout。
                  Grid.Row/Column 走的是附加属性，代码里用 Grid.SetRow / Grid.SetColumn 即可搬。 -->
-            <StackPanel x:Name="TopActionPanel" Grid.Row="0" Grid.Column="1"
-                        Orientation="Horizontal" Spacing="4"
-                        HorizontalAlignment="Right" VerticalAlignment="Center">
-              <StackPanel x:Name="ViewSwitchPanel" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
-                <Button Classes="toolbar" Content="今天" VerticalAlignment="Center" Click="Today_Click" />
-                <!-- 视图切换下拉：月 / 周 / 年 / 任务视图都收在这里，顶栏不再一字排开 -->
-                <Button x:Name="ViewMenuButton" Classes="toolbar" VerticalAlignment="Center">
-                  <Button.Flyout>
-                    <MenuFlyout Opening="ViewMenu_Opening">
-                      <MenuItem x:Name="ViewMonthItem" Header="月视图" Click="MonthView_Click" />
-                      <MenuItem x:Name="ViewWeekItem" Header="周视图" Click="WeekView_Click" />
-                      <MenuItem x:Name="ViewYearItem" Header="年视图" Click="YearView_Click" />
-                      <MenuItem x:Name="ViewTaskItem" Header="任务视图" Click="TaskView_Click" />
-                    </MenuFlyout>
-                  </Button.Flyout>
-                  <StackPanel Orientation="Horizontal" Spacing="4"
-                              HorizontalAlignment="Center" VerticalAlignment="Center">
-                    <TextBlock Text="{Binding CurrentViewLabel}" VerticalAlignment="Center" />
-                    <TextBlock Text="▾" FontSize="9" Opacity="0.55" VerticalAlignment="Center" />
-                  </StackPanel>
-                </Button>
-              </StackPanel>
-              <StackPanel x:Name="UtilityPanel" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center" Margin="4,0,0,0">
-                <Button Classes="toolbar" Content="设置" VerticalAlignment="Center" Click="Settings_Click" />
-                <!-- 锁定：只留锁形图标，不显示文字；锁住后随 .locked 态变红，含义靠 ToolTip 说明。
-                     用 Shapes.Path 而非 PathIcon：PathIcon 不支持 Stretch、按几何原始尺寸绘制会溢出。 -->
-                <Button x:Name="LockButton" Classes="toolbar" Width="28" Padding="0" VerticalAlignment="Center" Click="LockPosition_Click">
-                  <Path x:Name="LockIcon" Width="13" Height="13" Stretch="Uniform"
-                        Fill="{Binding $parent[Button].Foreground}"
-                        HorizontalAlignment="Center" VerticalAlignment="Center" />
-                </Button>
-              </StackPanel>
-            </StackPanel>
+            <!-- 「今天 / 视图下拉 / 统计 / 周期 / AI / 设置 / 锁定」这一组常驻按钮。
+                 用「Auto 列 + * 弹性列」交替排布（不在中间塞普通间隔）：
+                 - 窗口够宽、按钮与日期同处一行时，本面板宽度就是内容宽，弹性列归零 → 按钮紧凑；
+                 - 换行到第二行、面板被拉满整行时，弹性列吸收全部余量 → 按钮均匀铺开，
+                   首尾边框始终与下方内容区（今日任务面板）对齐。
+                 这是布局机制保证的，不需要宿主按像素反算间距 —— 那样在缩放过程中会来回跳。
+                 Grid.Row/Column 走附加属性，代码里用 Grid.SetRow / Grid.SetColumn 搬行。 -->
+            <Grid x:Name="TopActionPanel" Grid.Row="0" Grid.Column="1"
+                  ColumnDefinitions="Auto,*,Auto,*,Auto,*,Auto,*,Auto,*,Auto,*,Auto"
+                  HorizontalAlignment="Right" VerticalAlignment="Center">
+              <Button Grid.Column="0" Classes="toolbar" Content="今天" VerticalAlignment="Center" Click="Today_Click" />
+              <!-- 视图切换下拉：月 / 周 / 年 / 任务视图都收在这里，顶栏不再一字排开 -->
+              <Button x:Name="ViewMenuButton" Grid.Column="2" Classes="toolbar" VerticalAlignment="Center">
+                <Button.Flyout>
+                  <MenuFlyout Opening="ViewMenu_Opening">
+                    <MenuItem x:Name="ViewMonthItem" Header="月视图" Click="MonthView_Click" />
+                    <MenuItem x:Name="ViewWeekItem" Header="周视图" Click="WeekView_Click" />
+                    <MenuItem x:Name="ViewYearItem" Header="年视图" Click="YearView_Click" />
+                    <MenuItem x:Name="ViewTaskItem" Header="任务视图" Click="TaskView_Click" />
+                  </MenuFlyout>
+                </Button.Flyout>
+                <StackPanel Orientation="Horizontal" Spacing="4"
+                            HorizontalAlignment="Center" VerticalAlignment="Center">
+                  <TextBlock Text="{Binding CurrentViewLabel}" VerticalAlignment="Center" />
+                  <TextBlock Text="▾" FontSize="9" Opacity="0.55" VerticalAlignment="Center" />
+                </StackPanel>
+              </Button>
+              <Button Grid.Column="4" Classes="toolbar" Content="统计" VerticalAlignment="Center" Click="Statistics_Click"
+                      ToolTip.Tip="查看本周 / 本月的任务完成情况统计" />
+              <Button Grid.Column="6" Classes="toolbar" Content="周期" VerticalAlignment="Center" Click="RecurringTask_Click"
+                      ToolTip.Tip="管理周期任务（每天 / 每周 / 每月 / 每年自动重复）" />
+              <Button x:Name="AiButton" Grid.Column="8" Classes="toolbar" Content="AI" VerticalAlignment="Center" Click="AiChat_Click"
+                      ToolTip.Tip="AI 对话（自然语言增删改查任务）" />
+              <Button Grid.Column="10" Classes="toolbar" Content="设置" VerticalAlignment="Center" Click="Settings_Click" />
+              <!-- 锁定：只留锁形图标，不显示文字；锁住后随 .locked 态变红，含义靠 ToolTip 说明。
+                   用 Shapes.Path 而非 PathIcon：PathIcon 不支持 Stretch、按几何原始尺寸绘制会溢出。 -->
+              <Button x:Name="LockButton" Grid.Column="12" Classes="toolbar" Width="28" Padding="0" VerticalAlignment="Center" Click="LockPosition_Click">
+                <Path x:Name="LockIcon" Width="13" Height="13" Stretch="Uniform"
+                      Fill="{Binding $parent[Button].Foreground}"
+                      HorizontalAlignment="Center" VerticalAlignment="Center" />
+              </Button>
+            </Grid>
           </Grid>
         </Border>
 
@@ -956,12 +1014,13 @@
           </Grid.Transitions>
 
           <!-- 周视图：左侧竖排近 7 天日期格子 + 右侧任务面板（左右布局）。
-               左列是正方形格子：宽度绑 WeekScrollCellSize，与格子高度同值，
-               由 UpdateResponsiveLayout 按「左栏可用高度 ÷ 7」算出（7 格刚好铺满界面高度）。
+               左列宽度**固定 132**（WeekScrollColumnWidth），不随窗口缩放变化：
+               调窗口大小时只有右侧「今日任务」面板跟着变宽变窄。
+               格子高度由宿主按「可用高度 ÷ 7」回填，7 格刚好铺满界面高度。
                整列可上下滚动 —— 默认停在开头（最近 7 天），往下滚能看到后面日期的格子。 -->
           <Grid IsVisible="{Binding IsWeekView}" Margin="8">
             <Grid.ColumnDefinitions>
-              <ColumnDefinition Width="{Binding WeekScrollCellSize}" MinWidth="64" />
+              <ColumnDefinition Width="132" />
               <ColumnDefinition Width="*" />
             </Grid.ColumnDefinitions>
             <ScrollViewer x:Name="WeekScrollViewer" Grid.Column="0"
@@ -1035,6 +1094,18 @@
             </Transitions>
           </ContentControl.Transitions>
         </ContentControl>
+
+        <!-- ===== AI 迷你对话覆盖层 =====
+             不用 Popup（独立窗口拿不到键盘焦点，输入框打不进字），而是窗口内覆盖层：
+             - AiBackdrop：透明背板盖住整窗，点击即关闭（AiBackdrop_PointerPressed）；
+             - AiPanel：浮在右上角（顶栏下方），普通控件、键盘焦点正常。
+             点击 AI 按钮切开关（AiChat_Click → SetAiPanelOpen）。 -->
+        <Border x:Name="AiBackdrop" Grid.RowSpan="2" Background="#01000000"
+                IsVisible="False" ZIndex="90"
+                PointerPressed="AiBackdrop_PointerPressed" />
+        <ctl:AiChatPanel x:Name="AiPanel" Grid.Row="1"
+                         HorizontalAlignment="Right" VerticalAlignment="Top"
+                         Margin="0,8,8,0" ZIndex="100" IsVisible="False" />
       </Grid>
     </Border>
 
@@ -1052,5 +1123,13 @@
             PointerPressed="Shell_PointerPressed" PointerMoved="Shell_PointerMoved" />
     <Border x:Name="ResizeEdgeRight" HorizontalAlignment="Right" Width="8" Background="#01000000"
             PointerPressed="Shell_PointerPressed" PointerMoved="Shell_PointerMoved" />
+
+    <!-- ===== 拖拽任务时的幽灵预览：跟随鼠标，显示正在拖拽的任务标题 ===== -->
+    <Canvas x:Name="DragGhostLayer" IsHitTestVisible="False" ZIndex="1000">
+      <Border x:Name="DragGhost" IsVisible="False" Background="#2563EB" CornerRadius="8"
+              Padding="10,6" BoxShadow="0 4 14 0 #40000000">
+        <TextBlock x:Name="DragGhostText" Foreground="#FFFFFF" FontSize="12" />
+      </Border>
+    </Canvas>
   </Grid>
 </Window>
