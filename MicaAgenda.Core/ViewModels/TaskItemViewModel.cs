@@ -270,7 +270,7 @@ public sealed class TaskItemViewModel : ViewModelBase
         }
     }
 
-    /// <summary>悬浮提示全文：标题 + 创建时间 + 完成时间 + 未完成/逾期/用时等。</summary>
+    /// <summary>悬浮提示全文：标题 + 提醒档位 + 完成时间/未完成/逾期/用时等。</summary>
     public string TooltipText
     {
         get
@@ -279,7 +279,6 @@ public sealed class TaskItemViewModel : ViewModelBase
             var sb = new StringBuilder();
             sb.AppendLine(Title);
 
-            var createdDay = _task.CreatedDate;
             var leads = _task.AllReminderLeads;
             if (leads.Count > 0)
             {
@@ -304,17 +303,6 @@ public sealed class TaskItemViewModel : ViewModelBase
                     sb.AppendLine($"提醒 {leads.Count} 次：{string.Join("、", parts)}");
                 }
             }
-
-            sb.Append($"创建：{_task.CreatedAt:MM/dd HH:mm}");
-            if (createdDay == today)
-            {
-                sb.Append("（今天）");
-            }
-            else
-            {
-                sb.Append($"（{createdDay:MM/dd}）");
-            }
-            sb.AppendLine();
 
             if (IsCompleted)
             {

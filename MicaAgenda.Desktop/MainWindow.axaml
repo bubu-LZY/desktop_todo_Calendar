@@ -124,10 +124,9 @@
             <TextBlock Grid.Column="2" Text="★" Margin="0,0,2,0" FontSize="8.5" FontWeight="Bold"
                        Foreground="{DynamicResource ImportantTaskTextBrush}"
                        VerticalAlignment="Center" IsVisible="{Binding IsImportant}" />
-            <TextBlock Grid.Column="3" Text="{Binding ReminderTimeText}" FontSize="8" Margin="0,0,2,0"
-                       ToolTip.Tip="提醒时刻（提前量见悬浮提示）"
-                       Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center"
-                       IsVisible="{Binding HasReminder}" />
+            <TextBlock Grid.Column="3" Text="{Binding TaskTimeText}" FontSize="8" Margin="0,0,2,0"
+                       ToolTip.Tip="任务时刻（没设时间默认 09:00）"
+                       Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center" />
             <!-- 已完成：不显示勾选框，标题直接加删除线、整体变淡；还原入口在行首悬停出现 -->
             <TextBlock Grid.Column="4" Classes="taskTitle" Classes.important="{Binding IsImportant}"
                        Text="{Binding Title}" FontSize="8.5" VerticalAlignment="Center"
