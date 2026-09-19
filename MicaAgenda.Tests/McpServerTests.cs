@@ -123,10 +123,13 @@ public sealed class McpServerTests
     [Fact]
     public void UpdateTask_ReplacesRemindersAndClearsTime_AndResetsFiredMarks()
     {
-        var added = Call("add_task", """
+        // 用「明确落在过去」的日期，避免断言依赖运行当天的时刻/时区：
+        // 只要任务日已经是昨天，下面 1440 档位的触发点与 60 分钟补发宽限都必定已过。
+        var past = DateOnly.FromDateTime(DateTime.Now).AddDays(-3);
+        var added = Call("add_task", $$"""
         {
           "title": "开会",
-          "date": "2026-09-20",
+          "date": "{{past:yyyy-MM-dd}}",
           "time": "14:30",
           "reminders": ["提前30分钟"]
         }
@@ -153,11 +156,11 @@ public sealed class McpServerTests
 
         // 改时间后旧的「30 已推」标记必须作废（30 已不在档位里，读它天然为 false）
         Assert.False(stored.IsReminderFired(30));
-        // 1440 现在是第一个档位（主提醒），且已过补发窗口，会被直接记成已推
+        // 1440 是新的主提醒档位，且补发宽限早已过去 → 直接记为已推
         // —— 这是刻意的防「改完立刻蹦陈旧提醒」行为，不是漏推。
         Assert.True(stored.IsReminderFired(1440));
-        // 「到时提醒」(0) 尚未到点，保持可推
-        Assert.False(stored.IsReminderFired(0));
+        // 「到时提醒」(0) 同样早已过点，也应记为已推（当天补发窗口也过了）
+        Assert.True(stored.IsReminderFired(0));
     }
 
     [Fact]
@@ -368,8 +371,12 @@ public sealed class McpServerTests
         Assert.Equal("monday", week.GetProperty("weekStartsOn").GetString());
 
         var titles = week.GetProperty("tasks").EnumerateArray()
-            .Select(t => t.GetProperty("title").GetString()!).OrderBy(t => t).ToArray();
-        Assert.Equal(["周日", "周一"], titles);
+            .Select(t => t.GetProperty("title").GetString()!).ToArray();
+        // 顺序无关：中文字符串的 OrderBy 在不同 ICU/culture 下结果不同（CI 与本地会不一致），
+        // 这里只关心「命中了哪两条」，不关心排列。
+        Assert.Equal(2, titles.Length);
+        Assert.Contains("周一", titles);
+        Assert.Contains("周日", titles);
     }
 
     [Fact]
