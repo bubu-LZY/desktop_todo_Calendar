@@ -1692,19 +1692,12 @@
                         <Button Content="年视图" Style="{StaticResource SegmentButton}" Click="YearView_Click" />
                         <StackPanel x:Name="ViewControlsPanel" Orientation="Horizontal" VerticalAlignment="Center">
                             <TextBlock x:Name="BackgroundLabel" Text="背景" Style="{StaticResource ToolbarText}" />
+                            <!-- 选项由 ThemeCatalog.All 在代码里生成（EnsureBackgroundModeItems），
+                                 这里不再手写清单，避免和调色板各存一份而漂移。 -->
                             <ComboBox x:Name="BackgroundModeBox"
                                       Width="104"
                                       Style="{StaticResource ToolbarComboBox}"
-                                      SelectionChanged="BackgroundModeBox_SelectionChanged">
-                                <ComboBoxItem Content="无背景" Tag="None" />
-                                <ComboBoxItem Content="白雾玻璃" Tag="FrostedWhite" />
-                                <ComboBoxItem Content="灰雾玻璃" Tag="FrostedGray" />
-                                <ComboBoxItem Content="暗色磨砂" Tag="FrostedDark" />
-                                <ComboBoxItem Content="蓝色亚克力" Tag="AcrylicBlue" />
-                                <ComboBoxItem Content="薄荷玻璃" Tag="AcrylicMint" />
-                                <ComboBoxItem Content="纸感浅白" Tag="PaperLight" />
-                                <ComboBoxItem Content="石墨深色" Tag="Graphite" />
-                            </ComboBox>
+                                      SelectionChanged="BackgroundModeBox_SelectionChanged" />
                             <TextBlock x:Name="OpacityLabel" Text="透明度" Style="{StaticResource ToolbarText}" />
                             <Slider x:Name="OpacitySlider"
                                     Width="86"

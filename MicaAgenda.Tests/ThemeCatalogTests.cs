@@ -1,0 +1,267 @@
+using MicaAgenda.App.Models;
+
+namespace MicaAgenda.Tests;
+
+/// <summary>
+/// 主题调色板。这一组测试守的是用户连着报的一串问题：
+/// 「不是白的就是黑的」「暗色磨砂和石墨深色没区别」「蓝色亚克力一点也不蓝」
+/// 「无背景界面还是白的」「透明度强度不高」「背景/透明度标签和星期几看不清」。
+///
+/// 这些问题逐个手调颜色是治不住的 —— 所以规则全部集中在 <see cref="ThemeCatalog"/>，
+/// 并用这里的不变式把它钉住。
+/// </summary>
+public sealed class ThemeCatalogTests
+{
+    /// <summary>背景色差异（RGB 欧氏距离）。</summary>
+    private static double Distance(RgbaColor a, RgbaColor b)
+    {
+        double dr = a.R - b.R, dg = a.G - b.G, db = a.B - b.B;
+        return Math.Sqrt(dr * dr + dg * dg + db * db);
+    }
+
+    /// <summary>不透明的主题（能比较底色、做对比度检查）。</summary>
+    private static IEnumerable<ThemeDefinition> OpaqueThemes
+        => ThemeCatalog.All.Where(d => !ThemeCatalog.IsTransparent(d.Mode));
+
+    [Fact]
+    public void All_ProvidesAtLeastTwelveSelectableThemes()
+    {
+        Assert.True(ThemeCatalog.All.Count >= 12, $"主题只有 {ThemeCatalog.All.Count} 个，用户要求 12 个以上");
+    }
+
+    [Fact]
+    public void All_ExcludesLegacyAndTransparentVariants()
+    {
+        // 历史值不应该出现在下拉列表里（加载时会迁移掉），否则用户能选到一个"半成品"主题。
+        var modes = ThemeCatalog.All.Select(d => d.Mode).ToList();
+        Assert.DoesNotContain(CalendarBackgroundMode.Glass, modes);
+        Assert.DoesNotContain(CalendarBackgroundMode.Transparent, modes);
+        Assert.DoesNotContain(CalendarBackgroundMode.Solid, modes);
+        Assert.DoesNotContain(CalendarBackgroundMode.ClearBorder, modes);
+        Assert.Single(modes, m => m == CalendarBackgroundMode.None);
+    }
+
+    [Fact]
+    public void All_HasUniqueNamesAndModes()
+    {
+        // 下拉列表按名字展示：重名的话用户根本分不清选的是哪个。
+        var names = ThemeCatalog.All.Select(d => d.Name).ToList();
+        Assert.Equal(names.Count, names.Distinct(StringComparer.Ordinal).Count());
+        Assert.All(names, n => Assert.False(string.IsNullOrWhiteSpace(n)));
+    }
+
+    [Fact]
+    public void EveryEnumValue_ResolvesWithoutThrowing()
+    {
+        // 任何枚举值（含历史值）都必须能取到一套完整用色，否则运行时换肤会直接抛异常。
+        foreach (var mode in Enum.GetValues<CalendarBackgroundMode>())
+        {
+            var def = ThemeCatalog.Get(mode);
+            Assert.NotNull(def);
+
+            var colors = ThemeCatalog.Build(mode, 0.86);
+            Assert.NotNull(colors);
+        }
+    }
+
+    [Fact]
+    public void LegacyValues_MapToTheirDocumentedTargets()
+    {
+        Assert.Equal(CalendarBackgroundMode.None, ThemeCatalog.Get(CalendarBackgroundMode.ClearBorder).Mode);
+        Assert.Equal(CalendarBackgroundMode.FrostedWhite, ThemeCatalog.Get(CalendarBackgroundMode.Glass).Mode);
+        Assert.Equal(CalendarBackgroundMode.FrostedWhite, ThemeCatalog.Get(CalendarBackgroundMode.Transparent).Mode);
+        Assert.Equal(CalendarBackgroundMode.FrostedWhite, ThemeCatalog.Get(CalendarBackgroundMode.Solid).Mode);
+    }
+
+    [Fact]
+    public void TransparentTheme_IsActuallyTransparent()
+    {
+        // 「无背景」的整个诉求就是透出桌面。老版本因为 Win10 上仍请求亚克力材质，
+        // 界面看上去是一层白雾（用户反馈"界面还是白色的"）—— 这里锁住"窗口与格子必须全透明"。
+        var c = ThemeCatalog.Build(CalendarBackgroundMode.None, 1.0);
+
+        Assert.True(ThemeCatalog.IsTransparent(CalendarBackgroundMode.None));
+        Assert.Equal(0, c.Shell.A);
+        Assert.Equal(0, c.DayCell.A);
+        Assert.Equal(0, c.DayCellOutMonth.A);
+        Assert.Equal(0, c.YearMonth.A);
+
+        // 面板仍保留一层薄磨砂：否则文字直接压在壁纸上会读不出来。但必须是"薄"的。
+        Assert.InRange(c.Panel.A, 1, 160);
+    }
+
+    [Fact]
+    public void AcrylicBlue_IsActuallyBlue()
+    {
+        // 用户原话："蓝色亚克力的模式，这个主题蓝色也不太蓝"。
+        // 老版本底色是 blue-100 级别（219,234,254），几乎就是白。要求蓝通道明显压过红通道。
+        var c = ThemeCatalog.Build(CalendarBackgroundMode.AcrylicBlue, 1.0);
+
+        Assert.True(c.Shell.B - c.Shell.R >= 40, $"蓝色不足：R={c.Shell.R} B={c.Shell.B}");
+        Assert.True(c.Shell.B > c.Shell.G, "蓝通道应当是主色");
+    }
+
+    [Fact]
+    public void WarmThemes_AreActuallyWarm()
+    {
+        // 用户要求补暖色调。暖 = 红通道压过蓝通道。
+        foreach (var mode in new[]
+                 {
+                     CalendarBackgroundMode.Cream,
+                     CalendarBackgroundMode.PaperLight,
+                     CalendarBackgroundMode.Caramel,
+                     CalendarBackgroundMode.Walnut,
+                     CalendarBackgroundMode.Terracotta
+                 })
+        {
+            var shell = ThemeCatalog.Build(mode, 1.0).Shell;
+            Assert.True(shell.R > shell.B, $"{ThemeCatalog.NameOf(mode)} 不是暖色：R={shell.R} B={shell.B}");
+        }
+    }
+
+    [Fact]
+    public void DarkThemes_AreVisuallyDistinctFromEachOther()
+    {
+        // 用户原话："石墨深色和暗色磨砂这两个主题的区别不大"。
+        // 老版本所有深色主题共用同一套格子色，只在窗口底色上差几个 RGB（28,31,36 vs 17,24,39）。
+        var darks = OpaqueThemes.Where(d => d.IsDark).ToList();
+        Assert.True(darks.Count >= 3, "深色主题应当有多个可选项");
+
+        for (var i = 0; i < darks.Count; i++)
+        {
+            for (var j = i + 1; j < darks.Count; j++)
+            {
+                var a = ThemeCatalog.Build(darks[i].Mode, 1.0).Shell;
+                var b = ThemeCatalog.Build(darks[j].Mode, 1.0).Shell;
+                var distance = Distance(a, b);
+
+                Assert.True(distance >= 30,
+                    $"{darks[i].Name} 与 {darks[j].Name} 的底色太接近（Δ={distance:F1}）：" +
+                    $"{a.R},{a.G},{a.B} vs {b.R},{b.G},{b.B}");
+            }
+        }
+    }
+
+    [Fact]
+    public void AllThemes_AreVisuallyDistinctFromEachOther()
+    {
+        // 用户原话："不是白的，就是黑的"、"每个主题都有它自己的特色"。
+        // 任意两个主题的窗口底色都必须拉得开。
+        var light = OpaqueThemes.Where(d => !d.IsDark).ToList();
+        var dark = OpaqueThemes.Where(d => d.IsDark).ToList();
+
+        // 组内比较（跨明暗组天然差得远，不必比）
+        foreach (var group in new[] { light, dark })
+        {
+            for (var i = 0; i < group.Count; i++)
+            {
+                for (var j = i + 1; j < group.Count; j++)
+                {
+                    var a = ThemeCatalog.Build(group[i].Mode, 1.0).Shell;
+                    var b = ThemeCatalog.Build(group[j].Mode, 1.0).Shell;
+                    var distance = Distance(a, b);
+
+                    Assert.True(distance >= 28,
+                        $"{group[i].Name} 与 {group[j].Name} 的底色太接近（Δ={distance:F1}）");
+                }
+            }
+        }
+    }
+
+    [Fact]
+    public void EveryTheme_HasReadableTextOnItsOwnSurfaces()
+    {
+        // 用户反馈："背景 / 透明度这两个字，以及格子里的星期几，都不太看得清"。
+        // 正文要求 ≥ 7:1、次要文字 ≥ 4.5:1（WCAG AA/AAA 之间），
+        // 在「未知壁纸」的中性灰底上按默认不透明度合成后再比 —— 这是实际使用的场景。
+        const double defaultOpacity = 0.85;
+        var wallpaper = RgbaColor.Rgb(128, 128, 128);
+
+        foreach (var def in OpaqueThemes)
+        {
+            var c = ThemeCatalog.Build(def.Mode, defaultOpacity);
+
+            var windowBackground = ThemeCatalog.Composite(c.Shell, wallpaper);
+            var cellBackground = ThemeCatalog.Composite(c.DayCell, windowBackground);
+
+            var primary = ThemeCatalog.ContrastRatio(c.PrimaryText, cellBackground);
+            var muted = ThemeCatalog.ContrastRatio(c.MutedText, cellBackground);
+
+            Assert.True(primary >= 7.0, $"{def.Name} 正文对比度只有 {primary:F2}:1");
+            Assert.True(muted >= 4.5, $"{def.Name} 次要文字对比度只有 {muted:F2}:1");
+
+            // 表头（顶栏、面板标题）直接压在窗口底色上，而不是格子底色上，这一层也要够。
+            var onShell = ThemeCatalog.ContrastRatio(c.MutedText, windowBackground);
+            Assert.True(onShell >= 4.5, $"{def.Name} 顶栏次要文字对比度只有 {onShell:F2}:1");
+        }
+    }
+
+    [Fact]
+    public void DarkThemes_PanelIsBrighterThanTheWindowBackdrop()
+    {
+        // 另一条踩过的坑：深色下容器比窗口底色更暗，观感是一块黑洞（用户反馈"面板特别黑"）。
+        // 深色主题的面板必须**更亮**；浅色主题同理（浅色下也是往更亮走）。
+        foreach (var def in OpaqueThemes)
+        {
+            var c = ThemeCatalog.Build(def.Mode, 1.0);
+            var shellLuma = ThemeCatalog.RelativeLuminance(c.Shell);
+            var panelLuma = ThemeCatalog.RelativeLuminance(c.Panel);
+
+            Assert.True(panelLuma > shellLuma,
+                $"{def.Name} 的面板比窗口底色更暗（面板 {panelLuma:F3} vs 窗口 {shellLuma:F3}）");
+        }
+    }
+
+    [Fact]
+    public void OpacitySlider_ReachesFullStrength()
+    {
+        // 用户原话："包括这个透明度的样式，我觉得强度不高"。
+        // 老版本对多种模式写了 Math.Min(alpha, 210) / Math.Min(alpha, 150)，
+        // 滑杆拉到头也只有 82% / 58% —— 强度是代码里限死的。现在必须能到满。
+        foreach (var def in OpaqueThemes)
+        {
+            var full = ThemeCatalog.Build(def.Mode, 1.0);
+            Assert.Equal(255, full.Shell.A);
+
+            // 不透明的主题在 0 不透明度下应当几乎全透。
+            var zero = ThemeCatalog.Build(def.Mode, 0.0);
+            Assert.True(zero.Shell.A <= 8, $"{def.Name} 在 0 不透明度下仍有 {zero.Shell.A} 的不透明度");
+        }
+    }
+
+    [Fact]
+    public void OpacitySlider_IsMonotonic()
+    {
+        foreach (var def in OpaqueThemes)
+        {
+            var low = ThemeCatalog.Build(def.Mode, 0.2).Shell.A;
+            var mid = ThemeCatalog.Build(def.Mode, 0.5).Shell.A;
+            var high = ThemeCatalog.Build(def.Mode, 0.9).Shell.A;
+
+            Assert.True(low < mid && mid < high, $"{def.Name} 的不透明度随滑杆不单调：{low}/{mid}/{high}");
+        }
+    }
+
+    [Fact]
+    public void TransparentTheme_IgnoresOpacityForTheShell()
+    {
+        // 「无背景」要的是全透明，滑杆不该把它变成一层白。
+        foreach (var opacity in new[] { 0.0, 0.5, 1.0 })
+        {
+            Assert.Equal(0, ThemeCatalog.Build(CalendarBackgroundMode.None, opacity).Shell.A);
+        }
+    }
+
+    [Fact]
+    public void Composite_And_Contrast_MatchKnownValues()
+    {
+        // 工具函数本身也要是对的，否则上面所有对比度断言都是假绿。
+        Assert.Equal(1.0, ThemeCatalog.ContrastRatio(RgbaColor.White, RgbaColor.White), 3);
+        Assert.Equal(21.0, ThemeCatalog.ContrastRatio(RgbaColor.White, RgbaColor.Black), 1);
+
+        // 50% 中灰叠在白上 = 中灰
+        var half = new RgbaColor(128, 0, 0, 0);
+        var result = ThemeCatalog.Composite(half, RgbaColor.White);
+        Assert.InRange(result.R, 126, 130);
+    }
+}

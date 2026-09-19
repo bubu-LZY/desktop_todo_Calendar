@@ -936,18 +936,11 @@
                 <TextBlock x:Name="BackgroundLabel" Text="背景" FontSize="10.5" Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center" />
                 <!-- Height + MinHeight 同时锁死 24：Fluent 主题下 ComboBox 自然高度约 32，
                      只给 MinHeight 限不住，会比右侧按钮高出一截。Padding 收紧避免文字/箭头被裁。 -->
-                <ComboBox x:Name="BackgroundModeBox" Width="98" Height="24" MinHeight="0" Padding="8,2"
+                <!-- 选项由 ThemeCatalog.All 在代码里生成（EnsureBackgroundModeItems），
+                     这里不再手写清单 —— 老版本 XAML 一份、调色板 switch 一份，加主题时很容易只改一处。 -->
+                <ComboBox x:Name="BackgroundModeBox" Width="104" Height="24" MinHeight="0" Padding="8,2"
                           FontSize="10.5" VerticalContentAlignment="Center" VerticalAlignment="Center"
-                          SelectionChanged="BackgroundMode_Changed">
-                  <ComboBoxItem Content="无背景" Tag="None" />
-                  <ComboBoxItem Content="白雾玻璃" Tag="FrostedWhite" />
-                  <ComboBoxItem Content="灰雾玻璃" Tag="FrostedGray" />
-                  <ComboBoxItem Content="暗色磨砂" Tag="FrostedDark" />
-                  <ComboBoxItem Content="蓝色亚克力" Tag="AcrylicBlue" />
-                  <ComboBoxItem Content="薄荷玻璃" Tag="AcrylicMint" />
-                  <ComboBoxItem Content="纸感浅白" Tag="PaperLight" />
-                  <ComboBoxItem Content="石墨深色" Tag="Graphite" />
-                </ComboBox>
+                          SelectionChanged="BackgroundMode_Changed" />
                 <TextBlock x:Name="OpacityLabel" Text="透明度" FontSize="10.5" Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center" Margin="4,0,0,0" />
                 <!-- 不能强压 Height：Fluent 滑块拇指是 18px 圆形且模板带触摸边距，
                      高度锁 24 会把圆形拇指垂直裁成「半圆穹顶」。保持自然高度，

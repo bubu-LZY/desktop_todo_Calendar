@@ -2251,16 +2251,35 @@ public partial class MainWindow : Window
         }
     }
 
-    private void SelectBackgroundMode(CalendarBackgroundMode mode)
+    /// <summary>
+    /// 用 <see cref="ThemeCatalog.All"/> 填充主题下拉框。
+    ///
+    /// <para>以前这份清单是手写在 XAML 里的 ComboBoxItem，和调色板里的 switch 各存一份 ——
+    /// 加主题时很容易只改一处。现在改成从 Core 的清单生成，两边不可能再不一致
+    /// （枚举里没有任何一个主题会"漏在下拉列表外"）。</para>
+    /// </summary>
+    private void EnsureBackgroundModeItems()
     {
-        if (mode == CalendarBackgroundMode.ClearBorder)
+        if (BackgroundModeBox.ItemCount > 0)
         {
-            mode = CalendarBackgroundMode.None;
+            return;
         }
 
+        foreach (var def in ThemeCatalog.All)
+        {
+            BackgroundModeBox.Items.Add(new ComboBoxItem { Content = def.Name, Tag = def.Mode });
+        }
+    }
+
+    private void SelectBackgroundMode(CalendarBackgroundMode mode)
+    {
+        EnsureBackgroundModeItems();
+
+        // ClearBorder 等历史值由 ThemeCatalog 归一到 None，所以按"归一后的枚举"匹配即可。
+        var target = ThemeCatalog.Get(mode).Mode;
         foreach (var item in BackgroundModeBox.Items.OfType<ComboBoxItem>())
         {
-            if (item.Tag?.ToString() == mode.ToString())
+            if (item.Tag is CalendarBackgroundMode m && m == target)
             {
                 BackgroundModeBox.SelectedItem = item;
                 return;
@@ -2277,8 +2296,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        if (BackgroundModeBox.SelectedItem is not ComboBoxItem item
-            || !Enum.TryParse<CalendarBackgroundMode>(item.Tag?.ToString(), out var mode))
+        if (BackgroundModeBox.SelectedItem is not ComboBoxItem { Tag: CalendarBackgroundMode mode })
         {
             return;
         }
@@ -2304,7 +2322,7 @@ public partial class MainWindow : Window
         // 再做一层 leading + trailing 节流：首帧立即跟手，之后每 30ms 最多重绘一次。
         if (!_opacityTintPending)
         {
-            ApplyShellTint();
+            ApplyShellTint(CurrentBackgroundMode);
             _opacityTintPending = true;
         }
 
@@ -2326,7 +2344,7 @@ public partial class MainWindow : Window
     {
         _opacityTintTimer.Stop();
         _opacityTintPending = false;
-        ApplyShellTint();
+        ApplyShellTint(CurrentBackgroundMode);
     }
 
     /// <summary>
@@ -2360,53 +2378,42 @@ public partial class MainWindow : Window
             return;
         }
 
+        var mode = _viewModel.Settings.BackgroundMode;
+
         // 先定窗口底层的系统材质（Win10 走亚克力，其余平台/系统走逐像素透明），
         // 再把颜色画到外壳 Shell 上。
-        ApplyWindowBackdrop();
+        ApplyWindowBackdrop(mode);
 
-        ApplyShellTint();
+        ApplyShellTint(mode);
 
-        ApplyBackgroundResources(EffectiveBackgroundMode());
+        ApplyBackgroundResources(mode);
     }
 
     /// <summary>
-    /// 只把当前模式 + 不透明度换算成一层底色刷到外壳 Shell 上 —— 不碰系统材质、不重建调色板。
+    /// 只把当前主题 + 不透明度换算成一层底色刷到外壳 Shell 上 —— 不碰系统材质、不重建调色板。
     /// 拖透明度滑块时只调这一个：一次赋值只让 DWM 重新合成一层底色，开销远小于整窗换肤。
     /// </summary>
-    private void ApplyShellTint()
+    private void ApplyShellTint(CalendarBackgroundMode mode)
     {
         if (_viewModel is null)
         {
             return;
         }
 
-        var s = _viewModel.Settings;
-        var mode = EffectiveBackgroundMode();
-        var alpha = (byte)Math.Clamp(s.Opacity * 255, 6, 255);
-
-        // 底色画在外壳 Border 上而不是窗口上：窗口本身不带底色，圆角外沿才能透出桌面
-        // （亚克力模式下透出的是被裁掉的窗口区域，效果一样）。各模式的不透明度仍然生效 ——
-        // 亚克力只是垫在更下面的一层材质，这层刷子照旧叠在它上面。
-        Shell.Background = mode switch
-        {
-            CalendarBackgroundMode.None => Brushes.Transparent,
-            CalendarBackgroundMode.Transparent => Argb((byte)Math.Min((int)alpha, 150), 255, 255, 255),
-            CalendarBackgroundMode.FrostedWhite => Argb(alpha, 248, 250, 252),
-            CalendarBackgroundMode.FrostedGray => Argb(alpha, 225, 229, 235),
-            CalendarBackgroundMode.FrostedDark => Argb((byte)Math.Min((int)alpha, 210), 28, 31, 36),
-            CalendarBackgroundMode.AcrylicBlue => Argb((byte)Math.Min((int)alpha, 210), 219, 234, 254),
-            CalendarBackgroundMode.AcrylicMint => Argb((byte)Math.Min((int)alpha, 210), 209, 250, 229),
-            CalendarBackgroundMode.PaperLight => Argb(alpha, 250, 248, 242),
-            CalendarBackgroundMode.Graphite => Argb(alpha, 17, 24, 39),
-            _ => Argb(alpha, 255, 255, 255),
-        };
+        // 底色画在外壳 Border 上而不是窗口上：窗口本身不带底色，圆角外沿才能透出桌面。
+        //
+        // ⚠️ 这里**不再对 alpha 做逐模式截断**。老版本写着 Math.Min(alpha, 210) / Math.Min(alpha, 150)，
+        // 于是透明度滑杆拉到头也只有 82% 甚至 58%，用户反馈"透明度的强度不高"—— 是代码里限死的。
+        // 现在滑杆 1:1 映射到 alpha，强度完全由用户决定。
+        Shell.Background = ToBrush(ThemeCatalog.Build(mode, _viewModel.Settings.Opacity).Shell);
     }
 
-    /// <summary>ClearBorder 只是「无背景 + 描边」的外观变体，着色 / 调色板一律按 None 处理。</summary>
-    private CalendarBackgroundMode EffectiveBackgroundMode()
-        => _viewModel?.Settings.BackgroundMode == CalendarBackgroundMode.ClearBorder
-            ? CalendarBackgroundMode.None
-            : _viewModel?.Settings.BackgroundMode ?? CalendarBackgroundMode.None;
+    /// <summary>当前主题。透明度滑杆那一类"只重上色、不换主题"的路径用它取模式。</summary>
+    private CalendarBackgroundMode CurrentBackgroundMode
+        => _viewModel?.Settings.BackgroundMode ?? CalendarBackgroundMode.None;
+
+    // 「ClearBorder 一律按 None 处理」这件事已经由 ThemeCatalog 在 Core 里统一负责
+    // （Get(ClearBorder) 返回 None 的定义），宿主不再需要自己判一次。
 
     /// <summary>
     /// 决定窗口底层的系统材质，并同步窗口外形。
@@ -2425,9 +2432,12 @@ public partial class MainWindow : Window
     /// 幂等：材质没变就直接返回。本方法会被透明度滑杆、背景模式按钮高频调到，
     /// 反复重新协商窗口材质本身就是一种闪烁源。
     /// </summary>
-    private void ApplyWindowBackdrop()
+    private void ApplyWindowBackdrop(CalendarBackgroundMode mode)
     {
-        var useAcrylic = WindowBackdropService.ShouldUseAcrylic;
+        // 「无背景」的整个诉求就是**整窗透明、透出桌面**，而亚克力是 DWM 铺在整块窗口矩形上的材质，
+        // 正好相反 —— Win10 上会看到一层白雾，用户反馈的「无背景的主题界面还是白色的」就是这么来的。
+        // 所以这个模式下不请求亚克力，回到逐像素透明（圆角由外壳自己表达，不需要 SetWindowRgn 裁剪）。
+        var useAcrylic = WindowBackdropService.ShouldUseAcrylic && !ThemeCatalog.IsTransparent(mode);
         if (_acrylicBackdrop == useAcrylic)
         {
             return;
@@ -2518,126 +2528,53 @@ public partial class MainWindow : Window
     /// </summary>
     private void ApplyBackgroundResources(CalendarBackgroundMode mode)
     {
-        var noBackground = mode is CalendarBackgroundMode.None or CalendarBackgroundMode.ClearBorder;
-        var dark = IsDarkMode(mode);
+        var dark = ThemeCatalog.IsDark(mode);
+        var c = ThemeCatalog.Build(mode, _viewModel?.Settings.Opacity ?? 1.0);
 
         // 深色模式同时把 FluentTheme 的控件主题切到 Dark：否则下拉框 / 滑杆 / 输入框 / 勾选框
         // 会在深色底上露出一排浅色控件。浅色模式显式钉死 Light，不再跟随系统主题。
         RequestedThemeVariant = dark ? ThemeVariant.Dark : ThemeVariant.Light;
 
-        SetBrush("PrimaryTextBrush", dark ? Argb(255, 243, 244, 246) : Argb(255, 17, 24, 39));
-        SetBrush("MutedTextBrush", dark ? Argb(255, 209, 213, 219) : Argb(255, 107, 114, 128));
-        SetBrush("CellBorderBrush", dark ? Argb(70, 255, 255, 255) : Argb(24, 0, 0, 0));
-        SetBrush("TaskBorderBrush", dark ? Argb(90, 255, 255, 255) : Argb(51, 0, 0, 0));
-        SetBrush("TodayCellBackgroundBrush", dark ? Argb(125, 30, 64, 175) : Argb(191, 220, 235, 254));
-        SetBrush("TodayCellBorderBrush", dark ? Argb(190, 147, 197, 253) : Argb(153, 59, 130, 246));
-        SetBrush("ImportantTaskBackgroundBrush", dark ? Argb(150, 127, 29, 29) : Argb(255, 254, 202, 202));
-        SetBrush("ImportantTaskBorderBrush", dark ? Argb(210, 248, 113, 113) : Argb(255, 239, 68, 68));
-        SetBrush("ImportantTaskTextBrush", dark ? Argb(255, 252, 165, 165) : Argb(255, 185, 28, 28));
-        SetBrush("HolidayBreakBrush", dark ? Argb(130, 127, 29, 29) : Argb(255, 254, 226, 226));
-        SetBrush("HolidayWorkBrush", dark ? Argb(130, 30, 64, 175) : Argb(255, 219, 234, 254));
-        SetBrush("HolidayTextBrush", dark ? Argb(255, 254, 202, 202) : Argb(255, 153, 27, 27));
-        SetBrush("HolidayWorkTextBrush", dark ? Argb(255, 191, 219, 254) : Argb(255, 29, 78, 216));
-        SetBrush("WeekDoneCheckBrush", dark ? Argb(255, 134, 239, 172) : Argb(255, 21, 115, 71));
-        SetBrush("WeekTaskRowHoverBrush", dark ? Argb(60, 255, 255, 255) : Argb(20, 0, 0, 0));
-        SetBrush("WeekGroupBackgroundBrush", dark ? Argb(110, 31, 41, 55) : Argb(143, 255, 255, 255));
-        SetBrush("WeekGroupHoverBrush", dark ? Argb(150, 55, 65, 81) : Argb(191, 255, 255, 255));
-        SetBrush("TodayPanelBorderBrush", dark ? Argb(140, 255, 255, 255) : Argb(34, 0, 0, 0));
-        SetBrush("WindowEdgeBrush", mode switch
-        {
-            // 无背景模式下窗口整体全透明，必须给一圈看得见的描边，
-            // 否则挂件和壁纸糊成一片、看不出边界在哪。
-            // 取中性灰（明暗壁纸上都看得见），而不是之前那种 13% 白（等于没有）。
-            CalendarBackgroundMode.None or CalendarBackgroundMode.ClearBorder => Argb(130, 100, 116, 139),
-            CalendarBackgroundMode.FrostedDark or CalendarBackgroundMode.Graphite => Argb(42, 255, 255, 255),
-            _ => Argb(30, 17, 24, 39)
-        });
-        SetBrush("ToolbarControlBackgroundBrush", mode switch
-        {
-            CalendarBackgroundMode.None or CalendarBackgroundMode.ClearBorder => Argb(34, 255, 255, 255),
-            CalendarBackgroundMode.FrostedDark or CalendarBackgroundMode.Graphite => Argb(95, 17, 24, 39),
-            CalendarBackgroundMode.AcrylicBlue => Argb(125, 219, 234, 254),
-            CalendarBackgroundMode.AcrylicMint => Argb(125, 209, 250, 229),
-            CalendarBackgroundMode.PaperLight => Argb(155, 255, 251, 235),
-            _ => Argb(125, 255, 255, 255)
-        });
-        SetBrush("ToolbarControlBorderBrush", dark ? Argb(70, 255, 255, 255) : Argb(42, 17, 24, 39));
-        SetBrush("ToolbarControlHoverBrush", dark ? Argb(130, 31, 41, 55) : Argb(170, 255, 255, 255));
-        SetBrush("ToolbarControlPressedBrush", dark ? Argb(160, 55, 65, 81) : Argb(185, 229, 231, 235));
-
-        if (noBackground)
-        {
-            // 无背景：格子整块透明，只留文字与任务胶囊（与 WPF 宿主一致）
-            SetBrush("DayCellBackgroundBrush", Brushes.Transparent);
-            SetBrush("DayCellOutMonthBackgroundBrush", Brushes.Transparent);
-            SetBrush("YearMonthBackgroundBrush", Brushes.Transparent);
-            SetBrush("TaskBackgroundBrush", dark ? Argb(120, 31, 41, 55) : Argb(130, 236, 253, 245));
-            // 右侧任务面板也跟着透明：原先固定 Argb(225,255,255,255)（近乎不透明的白），
-            // 在「无背景」下会留下一块突兀的白方块。改成薄磨砂 —— 透出桌面，
-            // 同时靠这层薄底 + 稍明显的边框兜住任务文字的对比度。
-            SetBrush("TodayPanelBackgroundBrush", dark ? Argb(110, 17, 24, 39) : Argb(90, 255, 255, 255));
-            SetBrush("TodayPanelBorderBrush", dark ? Argb(150, 255, 255, 255) : Argb(100, 17, 24, 39));
-            SetBrush("SelectedCellBackgroundBrush", dark ? Argb(120, 59, 130, 246) : Argb(102, 37, 99, 235));
-            return;
-        }
-
-        if (dark)
-        {
-            SetBrush("DayCellBackgroundBrush", Argb(95, 31, 41, 55));
-            SetBrush("DayCellOutMonthBackgroundBrush", Argb(45, 31, 41, 55));
-            SetBrush("YearMonthBackgroundBrush", Argb(105, 31, 41, 55));
-            SetBrush("TaskBackgroundBrush", Argb(135, 55, 65, 81));
-            // 深色下右侧面板（今日任务 / 本周完成）的底色必须**融进主题**，而不是另起一块黑。
-            //
-            // 原先写死 Argb(225, 30, 36, 46)：225 的不透明度几乎完全盖住窗口底层，
-            // 而它的亮度又低于窗口那层磨砂底色 —— 磨砂会把壁纸变亮，所以面板叠上去等于又压黑一层。
-            // 用户看到的就是"暗色磨砂主题下这块面板特别黑"，跟整体主题对不上号。
-            //
-            // 现在改用主题里既有的那档深色面色 (31,41,55)——与日期格子、周视图分组、工具栏悬停同色，
-            // 只把不透明度提到 150（比格子实一点，保证文字清晰），于是面板会像窗口其它部分一样
-            // 透出壁纸、跟着主题走，色调统一。
-            SetBrush("TodayPanelBackgroundBrush", Argb(150, 31, 41, 55));
-            SetBrush("SelectedCellBackgroundBrush", Argb(150, 59, 130, 246));
-            return;
-        }
-
-        SetBrush("DayCellBackgroundBrush", mode switch
-        {
-            CalendarBackgroundMode.AcrylicBlue => Argb(165, 239, 246, 255),
-            CalendarBackgroundMode.AcrylicMint => Argb(165, 236, 253, 245),
-            CalendarBackgroundMode.FrostedGray => Argb(155, 243, 244, 246),
-            CalendarBackgroundMode.PaperLight => Argb(180, 255, 251, 235),
-            _ => Argb(175, 255, 255, 255)
-        });
-        SetBrush("DayCellOutMonthBackgroundBrush", Argb(111, 255, 255, 255));
-        SetBrush("YearMonthBackgroundBrush", Argb(175, 255, 255, 255));
-        SetBrush("TaskBackgroundBrush", mode switch
-        {
-            CalendarBackgroundMode.AcrylicBlue => Argb(190, 219, 234, 254),
-            CalendarBackgroundMode.AcrylicMint => Argb(190, 209, 250, 229),
-            CalendarBackgroundMode.PaperLight => Argb(190, 254, 243, 199),
-            _ => Argb(186, 233, 247, 239)
-        });
-        // 浅色下右侧面板的规则与深色一致：**比窗口底色更亮一档**，且取该模式自己的色系
-        // （外壳是 100 号色，面板就升到 50 号色，同色相、更亮），这样面板看起来是"浮在主题上的卡片"
-        // 而不是一块跟主题无关的白。深色分支同理 —— 两个方向的"浮起"都朝更亮走。
-        SetBrush("TodayPanelBackgroundBrush", mode switch
-        {
-            CalendarBackgroundMode.AcrylicBlue => Argb(190, 239, 246, 255),
-            CalendarBackgroundMode.AcrylicMint => Argb(190, 236, 253, 245),
-            CalendarBackgroundMode.FrostedGray => Argb(180, 243, 244, 246),
-            CalendarBackgroundMode.PaperLight => Argb(200, 255, 251, 235),
-            _ => Argb(175, 255, 255, 255)
-        });
-        SetBrush("SelectedCellBackgroundBrush", Argb(102, 37, 99, 235));
+        // 全部颜色来自 ThemeCatalog —— 这里只做「角色 → XAML 资源键」的搬运，不再有任何手调数值。
+        // 好处：① 两个宿主不可能再各调各的；② 加主题只需在 Core 里加一行定义；
+        //       ③ 对比度 / 主题区分度可以被单测锁住。
+        SetBrush("PrimaryTextBrush", ToBrush(c.PrimaryText));
+        SetBrush("MutedTextBrush", ToBrush(c.MutedText));
+        SetBrush("CellBorderBrush", ToBrush(c.CellBorder));
+        SetBrush("TaskBorderBrush", ToBrush(c.TaskBorder));
+        SetBrush("DayCellBackgroundBrush", ToBrush(c.DayCell));
+        SetBrush("DayCellOutMonthBackgroundBrush", ToBrush(c.DayCellOutMonth));
+        SetBrush("YearMonthBackgroundBrush", ToBrush(c.YearMonth));
+        SetBrush("TodayCellBackgroundBrush", ToBrush(c.TodayCell));
+        SetBrush("TodayCellBorderBrush", ToBrush(c.TodayCellBorder));
+        SetBrush("SelectedCellBackgroundBrush", ToBrush(c.SelectedCell));
+        SetBrush("SelectedCellBorderBrush", ToBrush(c.SelectedCellBorder));
+        SetBrush("TaskBackgroundBrush", ToBrush(c.TaskPill));
+        SetBrush("TodayPanelBackgroundBrush", ToBrush(c.Panel));
+        SetBrush("TodayPanelBorderBrush", ToBrush(c.PanelBorder));
+        SetBrush("WeekGroupBackgroundBrush", ToBrush(c.WeekGroup));
+        SetBrush("WeekGroupHoverBrush", ToBrush(c.WeekGroupHover));
+        SetBrush("WeekTaskRowHoverBrush", ToBrush(c.WeekRowHover));
+        SetBrush("ImportantTaskBackgroundBrush", ToBrush(c.ImportantBg));
+        SetBrush("ImportantTaskBorderBrush", ToBrush(c.ImportantBorder));
+        SetBrush("ImportantTaskTextBrush", ToBrush(c.ImportantText));
+        SetBrush("HolidayBreakBrush", ToBrush(c.HolidayBreak));
+        SetBrush("HolidayWorkBrush", ToBrush(c.HolidayWork));
+        SetBrush("HolidayTextBrush", ToBrush(c.HolidayText));
+        SetBrush("HolidayWorkTextBrush", ToBrush(c.HolidayWorkText));
+        SetBrush("WeekDoneCheckBrush", ToBrush(c.DoneCheck));
+        SetBrush("WindowEdgeBrush", ToBrush(c.WindowEdge));
+        SetBrush("ToolbarControlBackgroundBrush", ToBrush(c.ToolbarBackground));
+        SetBrush("ToolbarControlBorderBrush", ToBrush(c.ToolbarBorder));
+        SetBrush("ToolbarControlHoverBrush", ToBrush(c.ToolbarHover));
+        SetBrush("ToolbarControlPressedBrush", ToBrush(c.ToolbarPressed));
     }
 
     private void SetBrush(string key, IBrush brush) => Resources[key] = brush;
 
-    private static bool IsDarkMode(CalendarBackgroundMode mode)
-        => mode is CalendarBackgroundMode.FrostedDark or CalendarBackgroundMode.Graphite;
-
-    private static IBrush Argb(byte a, byte r, byte g, byte b) => new SolidColorBrush(Color.FromArgb(a, r, g, b));
+    /// <summary>把 Core 的颜色转成 Avalonia 画刷。全透明直接复用静态实例，省一次分配。</summary>
+    private static IBrush ToBrush(RgbaColor c)
+        => c.A == 0 ? Brushes.Transparent : new SolidColorBrush(Color.FromArgb(c.A, c.R, c.G, c.B));
 
     /// <summary>
     /// 周视图窗口的高度下限。

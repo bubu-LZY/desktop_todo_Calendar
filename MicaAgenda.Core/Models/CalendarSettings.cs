@@ -27,7 +27,16 @@ public enum CalendarBackgroundMode
     AcrylicBlue,
     AcrylicMint,
     PaperLight,
-    Graphite
+    Graphite,
+
+    // ===== v5.2.6 新增：让每个主题有其自己的色调个性 =====
+    // 一律**追加在末尾**，保证已有枚举值不位移（老配置里存的是名字，但位移仍是不必要的风险）。
+    AcrylicRose,
+    AcrylicViolet,
+    Cream,
+    Caramel,
+    Walnut,
+    Terracotta
 }
 
 public static class CalendarBackgroundModeExtensions
