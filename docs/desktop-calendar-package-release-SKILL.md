@@ -555,6 +555,19 @@ git -c http.proxy=http://127.0.0.1:<port> -c https.proxy=http://127.0.0.1:<port>
 ```
 **不要**用空值强制直连（`-c http.proxy=`）——那通常会失败。
 
+**代理"能连"还会"偶发 502"**：同一端口、同一地址，`git push` 可能连续报
+`CONNECT tunnel failed, response 502`，而此时 `gh api` 依然正常（`gh` 走的是自己的通道）。
+**解法**：加 `-c http.version=HTTP/1.1` + 短重试（3~5 次、间隔 5~8s），实测首次即成功：
+```powershell
+$tok = gh auth token
+$url = "https://x-access-token:$tok@github.com/<owner>/<repo>.git"
+for ($i=1; $i -le 5; $i++) {
+  git -c credential.helper= -c http.version=HTTP/1.1 push $url main:main
+  if ($LASTEXITCODE -eq 0) { break }
+  Start-Sleep -Seconds 6
+}
+```
+
 ### 坑 R：本地 `git status` 误报 `ahead N`
 **根因**：用"URL 内嵌 token"等非 origin 地址推送时，本地 remote-tracking ref 不会更新。
 **解法**：**以 API 为准**：`gh api repos/<owner>/<repo>/commits/main --jq .sha` 对比 `git rev-parse HEAD`。
@@ -625,6 +638,57 @@ git -c http.proxy=http://127.0.0.1:<port> -c https.proxy=http://127.0.0.1:<port>
 （`Screen.FromPoint` 收 `System.Drawing.Point`，与 WPF `Point` 冲突）；
 `WorkingArea` 是 `System.Drawing.Rectangle`，与 WPF `Rect` 不能直接运算，需转换。
 
+### 坑 V：窗口缩小时工具栏按钮之间裂开大空白
+
+**现象**：把窗口拖窄、工具栏按钮被迫换到第二行后，按钮**同时缩小**、**中间却出现几块很大的空白**。
+用户描述通常是"看起来非常奇怪"。
+
+**根因**：工具栏容器用了 `ColumnDefinitions="Auto,*,Auto,*,Auto,..."` 这种**交替弹性列**，
+本意是"换行后让按钮均匀铺满整行、右边缘与下方内容区对齐"。
+但弹性列吸收的是**全部剩余宽度** —— 窗口越窄、按钮越小，剩余宽度反而被均摊成越夸张的空洞。
+这类"均摊"布局只在窗口足够宽时好看。
+
+**自检**：搜工具栏容器的 `Grid.ColumnDefinitions`，只要出现 `Auto` 与 `*` 交替，且按钮数量 ≥ 4，
+就基本会中招。
+
+**修法**：改成**水平 `StackPanel` + 固定 `Spacing`**，去掉按钮的 `Grid.Column` 归属，整组明确对齐
+（左 / 右 / 居中，按设计意图定）。间距可随"紧凑档"一起收紧（如 6 → 4 → 3），
+既铺不满也不会裂开。**不要**再用"按像素反算间隙"那套 —— 手算在 `SizeChanged` 那一轮里量不准，会偶发对不齐。
+
+**⚠️ 别把两件事混为一谈**。"按钮随窗口缩小"（防遮挡）和"按钮等距铺开"（对齐美观）是两个独立需求。
+用户当初要求缩小，是为了窄窗下按钮**不被遮挡**；改布局时必须把防遮挡这条保住：
+仍按「正常 → 紧凑 → 超紧凑」逐级收紧优先挤进一行，实在放不下才换行，且窗口要有硬性 `MinWidth`。
+改动后**不要**动测量逻辑 —— 若适配判定基于 `MeasurePanelWidth`（真量 `DesiredSize`），
+它换成 `StackPanel` 后依然成立（`StackPanel` 的自然宽度已含 `Spacing`），无需修改。
+
+### 坑 W：`macos-15` 上 `hdiutil: create failed - Resource busy`（平台瞬时故障，优先重跑）
+
+**现象**：CI 四平台里**只有 `macos-15`（arm64）** 挂在"打包（macOS / .app + dmg + zip）"步骤，
+日志仅两行：`hdiutil: create failed - Resource busy` + `##[error]Process completed with exit code 1`。
+同一脚本、同一 `-format UDZO` 参数在 `macos-15-intel` 上**完全正常**。
+
+**极易误判的点**：
+- 报错是 `Resource busy`，看着像"磁盘/镜像被占用"，于是去查 `mount` / `diskutil` / 上一次 `hdiutil attach` 没卸载。
+- 实际 `package-macos.sh` 里这一步之前只有 `cp` / `sips` / `iconutil` / `cat > Info.plist`，**没有任何 mount 操作**，
+  且 `-verbose` 日志显示 `hdiutil create` 是本步骤**第一条**命令 —— 不存在"前一条命令污染设备"。
+- 真因：**runner 可用磁盘空间不足**。`hdiutil create` 会先在**同一个数据卷**（`/System/Volumes/Data`）展开一份
+  **未压缩的临时镜像**（约等于 `.app` 体积）。空间不够时 hdiutil 抛出的就是 `Resource busy` 这种**字面无关**的错误。
+  `macos-15` 与 `macos-15-intel` 是不同镜像/不同租户，磁盘余量各自漂移，所以"同一提交一个平台挂一个平台过"。
+
+**定位套路（真要用探针时）**：临时加一个 `workflow_dispatch` 探针 workflow，逐层排除：
+1. 探针开头必打环境：`sw_vers`、`df -h`、`hdiutil info | head -60`、`diskutil list`、`mount | grep disk`。
+   **`df -h` 里 `/System/Volumes/Data` 的 Avail 就是判据**（健康时 ~40Gi+，紧张时显著变小）。
+2. 分级试：空目录 → 小文件（4MB）→ `-format UDIF` 不压缩 → 伪 `.app`（~100MB 二进制 + 数百个 dll 共 ~174MB）。
+   任一失败就能确认是内容/体积相关，全过则基本锁定平台侧。
+3. 探针跑完**必须删掉**，别把诊断 workflow 留在仓库。
+
+**处置（按优先级）**：
+1. **直接 `gh run rerun --failed <run-id>`** —— 复用同一 commit / tag，不重新打 tag、不改代码。
+   平台瞬时故障重跑一次通常就过（本次 job 重跑 53s 绿）。**这是首选，别急着改脚本。**
+2. 若重跑仍挂：在打包步骤前加一步清空间（`sudo rm -rf ~/Library/Developer/Xcode/DerivedData`、
+   清 `~/Library/Caches`、`docker system prune -af` 等），或把 `-srcfolder` 换成先 `hdiutil create -size` 定量 + `attach` + `cp` + `detach` 的两段式（可指定更小的镜像尺寸，但更复杂）。
+3. 不要为了绕过它把 macOS 产物从 `.dmg` 降级成只有 `.zip` —— dmg 是用户预期的安装形态。
+
 ---
 
 ## 关键约束清单
@@ -638,6 +702,7 @@ git -c http.proxy=http://127.0.0.1:<port> -c https.proxy=http://127.0.0.1:<port>
 - 安装包整目录打包（含原生 DLL / `libSkiaSharp`）
 - 推送前本地跑测试；核对 `dotnet test` 的**用例总数**
 - 汇报给出各平台安装方式 + 未签名提示
+- CI 单平台失败先 `gh run rerun --failed`（平台瞬时故障优先重跑，别急着改代码）
 
 ❌ **绝对不能**：
 - WPF / WinForms 工程直接往 macOS / Linux 发
@@ -648,6 +713,7 @@ git -c http.proxy=http://127.0.0.1:<port> -c https.proxy=http://127.0.0.1:<port>
 - 把本机绝对路径、Token、个人邮箱写进任何交付文件
 - 让安装脚本清理逻辑可能触及 `%APPDATA%` / `%LOCALAPPDATA%`
 - 在测试里用「固定日期 + 挂钟时刻」或对中文串 `OrderBy` 后断言整体序列
+- 把临时诊断 / 探针 workflow 留在仓库里
 
 ---
 
