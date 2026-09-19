@@ -43,18 +43,19 @@ public sealed class McpServerTests
         Assert.Equal("2026-09-20T14:30:00", task.GetProperty("scheduledAt").GetString());
         Assert.False(task.GetProperty("isOverdue").GetBoolean());
 
-        // 档位按下拉顺序回传：到时提醒(0) / 提前30分钟(30) / 提前一天(1440)
+        // 顺序与传入一致：提前一天(1440) / 提前30分钟(30) / 到时提醒(0)
         Assert.Equal(
-            [0, 30, 1440],
+            [1440, 30, 0],
             task.GetProperty("reminderLeadMinutes").EnumerateArray().Select(el => el.GetInt32()).ToArray());
         Assert.Equal(
-            ["到时提醒", "提前30分钟", "提前一天"],
+            ["提前一天", "提前30分钟", "到时提醒"],
             task.GetProperty("reminders").EnumerateArray().Select(el => el.GetString()!).ToArray());
 
         var stored = Assert.Single(_data.Tasks);
         Assert.Equal(new TimeOnly(14, 30), stored.Time);
-        Assert.Equal(0, stored.ReminderLeadMinutes);
-        Assert.Equal([30, 1440], stored.AdditionalReminderLeadMinutes);
+        // 存储布局：第一个为「主提醒」，其余进 Additional
+        Assert.Equal(1440, stored.ReminderLeadMinutes);
+        Assert.Equal([30, 0], stored.AdditionalReminderLeadMinutes);
         Assert.Equal(1, _dataChangedCount);
     }
 
@@ -103,7 +104,7 @@ public sealed class McpServerTests
     }
 
     [Fact]
-    public void AddTask_RemindersDeduplicateAndSortByCatalogOrder()
+    public void AddTask_RemindersDeduplicateAndPreserveCallerOrder()
     {
         var task = Call("add_task", """
         {
@@ -113,8 +114,9 @@ public sealed class McpServerTests
         }
         """);
 
+        // 去重 + 保留传入顺序（30 在 0 之前），不再按档位表排序
         Assert.Equal(
-            [0, 30],
+            [30, 0],
             task.GetProperty("reminderLeadMinutes").EnumerateArray().Select(el => el.GetInt32()).ToArray());
     }
 
@@ -145,10 +147,17 @@ public sealed class McpServerTests
         """);
 
         Assert.Equal("16:00", updated.GetProperty("time").GetString());
-        Assert.Equal([0, 1440], updated.GetProperty("reminderLeadMinutes")
+        // 顺序与传入一致（提前一天 → 到时提醒），不再被档位表重排
+        Assert.Equal([1440, 0], updated.GetProperty("reminderLeadMinutes")
             .EnumerateArray().Select(el => el.GetInt32()).ToArray());
+
+        // 改时间后旧的「30 已推」标记必须作废（30 已不在档位里，读它天然为 false）
+        Assert.False(stored.IsReminderFired(30));
+        // 1440 现在是第一个档位（主提醒），且已过补发窗口，会被直接记成已推
+        // —— 这是刻意的防「改完立刻蹦陈旧提醒」行为，不是漏推。
+        Assert.True(stored.IsReminderFired(1440));
+        // 「到时提醒」(0) 尚未到点，保持可推
         Assert.False(stored.IsReminderFired(0));
-        Assert.False(stored.IsReminderFired(1440));
     }
 
     [Fact]
@@ -269,5 +278,197 @@ public sealed class McpServerTests
         Assert.Equal(
             ["早", "默认九点", "晚"],
             tasks.GetProperty("tasks").EnumerateArray().Select(t => t.GetProperty("title").GetString()!).ToArray());
+    }
+
+    // ===== 本次新增：写后校验 / 提醒来源标注 / 日期口径 =====
+
+    [Fact]
+    public void AddTask_ReturnsOkAndVerifiedSoCallerCanTellRealSuccess()
+    {
+        var task = Call("add_task", """{"title":"真写入了","date":"2026-09-20"}""");
+
+        // 历史坑：工具报 success 但任务并不存在，调用方后续 delete 才报 task not found。
+        // 现在以 verified 为判据，且 id 与集合里的实体必须一致。
+        Assert.True(task.GetProperty("ok").GetBoolean());
+        Assert.True(task.GetProperty("verified").GetBoolean());
+        Assert.Equal(_data.Tasks.Single().Id, task.GetProperty("id").GetGuid());
+    }
+
+    [Fact]
+    public void AddTask_WithoutReminders_MarksSourceAsDefault()
+    {
+        var task = Call("add_task", """{"title":"没传提醒","date":"2026-09-20"}""");
+
+        // 省略 reminders 会被服务端补上默认「提前15分钟」——必须让调用方看得出来，
+        // 否则"我本意不提醒"会被静默改写。
+        Assert.Equal("default", task.GetProperty("reminderSource").GetString());
+        Assert.Equal([15], task.GetProperty("reminderLeadMinutes")
+            .EnumerateArray().Select(e => e.GetInt32()).ToArray());
+    }
+
+    [Fact]
+    public void AddTask_WithExplicitReminders_MarksSourceAsExplicit()
+    {
+        var empty = Call("add_task", """{"title":"明确不提醒","date":"2026-09-20","reminders":[]}""");
+        Assert.Equal("explicit", empty.GetProperty("reminderSource").GetString());
+        Assert.Empty(empty.GetProperty("reminderLeadMinutes").EnumerateArray());
+
+        var given = Call("add_task", """{"title":"指定档位","date":"2026-09-20","reminders":["提前一天"]}""");
+        Assert.Equal("explicit", given.GetProperty("reminderSource").GetString());
+    }
+
+    [Fact]
+    public void UpdateTask_ReturnsVerified()
+    {
+        var added = Call("add_task", """{"title":"改我","date":"2026-09-20"}""");
+        var id = added.GetProperty("id").GetString()!;
+
+        var updated = Call("update_task", $$"""{"id":"{{id}}","title":"改过了"}""");
+
+        Assert.True(updated.GetProperty("verified").GetBoolean());
+        Assert.Equal("改过了", updated.GetProperty("title").GetString());
+    }
+
+    [Fact]
+    public void Reminders_ReturnedInCallerSuppliedOrder_NotCatalogOrder()
+    {
+        // 传入「一天 → 30分钟」（临近时刻排序），返回必须保持这个顺序。
+        // 历史坑：服务端按档位表重排成「提前30分钟, 提前一天」，调用方以为数据被改写。
+        var task = Call("add_task", """
+        {
+          "title": "顺序",
+          "date": "2026-09-20",
+          "reminders": ["提前一天", "提前30分钟"]
+        }
+        """);
+
+        Assert.Equal(
+            ["提前一天", "提前30分钟"],
+            task.GetProperty("reminders").EnumerateArray().Select(e => e.GetString()!).ToArray());
+    }
+
+    [Fact]
+    public void QueryTasks_WeekIsMondayToSunday_AndEchoesResolvedWindow()
+    {
+        // 构造一个一定落在"本周"里的日期，避免测试依赖运行当天的星期。
+        var today = DateOnly.FromDateTime(DateTime.Now);
+        var monday = today.AddDays(-(((int)today.DayOfWeek + 6) % 7));
+
+        Call("add_task", $$"""{"title":"周一","date":"{{monday:yyyy-MM-dd}}"}""");
+        Call("add_task", $$"""{"title":"周日","date":"{{monday.AddDays(6):yyyy-MM-dd}}"}""");
+        // 边界外：上周日 / 下周一 都不该被 range=week 捞到
+        Call("add_task", $$"""{"title":"上周日","date":"{{monday.AddDays(-1):yyyy-MM-dd}}"}""");
+        Call("add_task", $$"""{"title":"下周一","date":"{{monday.AddDays(7):yyyy-MM-dd}}"}""");
+
+        var week = Call("query_tasks", """{"range":"week"}""");
+
+        // 自然周口径：周一为界，周日仍属本周
+        Assert.Equal(monday.ToString("yyyy-MM-dd"), week.GetProperty("resolvedStart").GetString());
+        Assert.Equal(monday.AddDays(6).ToString("yyyy-MM-dd"), week.GetProperty("resolvedEnd").GetString());
+        Assert.Equal("monday", week.GetProperty("weekStartsOn").GetString());
+
+        var titles = week.GetProperty("tasks").EnumerateArray()
+            .Select(t => t.GetProperty("title").GetString()!).OrderBy(t => t).ToArray();
+        Assert.Equal(["周日", "周一"], titles);
+    }
+
+    [Fact]
+    public void QueryTasks_MonthAndYearAlsoEchoResolvedWindow()
+    {
+        var today = DateOnly.FromDateTime(DateTime.Now);
+        var month = Call("query_tasks", """{"range":"month"}""");
+        Assert.Equal(new DateOnly(today.Year, today.Month, 1).ToString("yyyy-MM-dd"),
+            month.GetProperty("resolvedStart").GetString());
+        Assert.Equal(new DateOnly(today.Year, today.Month, DateTime.DaysInMonth(today.Year, today.Month)).ToString("yyyy-MM-dd"),
+            month.GetProperty("resolvedEnd").GetString());
+
+        // range=all 不设边界，两侧都应是 null
+        var all = Call("query_tasks", """{"range":"all"}""");
+        Assert.Equal(JsonValueKind.Null, all.GetProperty("resolvedStart").ValueKind);
+        Assert.Equal(JsonValueKind.Null, all.GetProperty("resolvedEnd").ValueKind);
+    }
+
+    [Fact]
+    public void QueryTasks_ExplicitStartEnd_EchoesWhatServerActuallyUsed()
+    {
+        var range = Call("query_tasks", """{"start":"2026-09-15","end":"2026-09-17"}""");
+
+        Assert.Equal("2026-09-15", range.GetProperty("resolvedStart").GetString());
+        Assert.Equal("2026-09-17", range.GetProperty("resolvedEnd").GetString());
+        // 原样回显调用方传入的单边开口，与 resolved* 区分开
+        var from = Call("query_tasks", """{"start":"2026-09-17"}""");
+        Assert.Equal("2026-09-17", from.GetProperty("start").GetString());
+        Assert.Equal(JsonValueKind.Null, from.GetProperty("end").ValueKind);
+    }
+
+    // ===== compute_date：相对日期换算（Issue 1 的根治手段）=====
+
+    [Fact]
+    public void ComputeDate_NextTuesday_FromSaturday_IsTheFollowingTuesdayNotTheOneAfter()
+    {
+        // 复刻真实翻车现场：今天 2026-09-19（周六）说「下周二」。
+        // 正确 = 9/22；当时被心算成 9/29。自然周口径下，9/19 所在周是 9/14~9/20，
+        // 下周是 9/21~9/27，故「下周二」= 9/22。
+        var result = Call("compute_date", """{"baseline":"2026-09-19","weekday":"tuesday","weekAnchor":"next"}""");
+
+        Assert.Equal("2026-09-22", result.GetProperty("date").GetString());
+        Assert.Equal("周二", result.GetProperty("weekday").GetString());
+    }
+
+    [Fact]
+    public void ComputeDate_ThisWeekday_StaysInsideCurrentNaturalWeek()
+    {
+        // 2026-09-19 是周六；「本周三」= 9/16（已过也仍返回本周那天）
+        var result = Call("compute_date", """{"baseline":"2026-09-19","weekday":"wednesday","weekAnchor":"this"}""");
+
+        Assert.Equal("2026-09-16", result.GetProperty("date").GetString());
+    }
+
+    [Fact]
+    public void ComputeDate_NextWeekday_FromSunday_UsesComingWeekNotTheOneAfter()
+    {
+        // 2026-09-20 是周日，属 9/14~9/20 这一周；「下周一」应是 9/21（次日起算那周），不是 9/28
+        var result = Call("compute_date", """{"baseline":"2026-09-20","weekday":"monday","weekAnchor":"next"}""");
+
+        Assert.Equal("2026-09-21", result.GetProperty("date").GetString());
+    }
+
+    [Theory]
+    [InlineData(3, "2026-09-22")]
+    [InlineData(-3, "2026-09-16")]
+    [InlineData(0, "2026-09-19")]
+    public void ComputeDate_OffsetDays(int offset, string expected)
+    {
+        var result = Call("compute_date", $$"""{"baseline":"2026-09-19","offsetDays":{{offset}}}""");
+        Assert.Equal(expected, result.GetProperty("date").GetString());
+    }
+
+    [Fact]
+    public void ComputeDate_OffsetMonthsAndWeeks()
+    {
+        var month = Call("compute_date", """{"baseline":"2026-09-19","offsetMonths":1}""");
+        Assert.Equal("2026-10-19", month.GetProperty("date").GetString());
+
+        var week = Call("compute_date", """{"baseline":"2026-09-19","offsetWeeks":2}""");
+        Assert.Equal("2026-10-03", week.GetProperty("date").GetString());
+    }
+
+    [Fact]
+    public void ComputeDate_SupportsChineseWeekdayNames_AndExplains()
+    {
+        var result = Call("compute_date", """{"baseline":"2026-09-19","weekday":"周五","weekAnchor":"next"}""");
+
+        Assert.Equal("2026-09-25", result.GetProperty("date").GetString());
+        // 算法过程要能核对，不能只给个数字让人猜
+        Assert.Contains("2026-09-19", result.GetProperty("explanation").GetString());
+        Assert.Contains("2026-09-25", result.GetProperty("explanation").GetString());
+    }
+
+    [Fact]
+    public void ComputeDate_UnknownWeekday_ThrowsWithGuidance()
+    {
+        var ex = Assert.Throws<ArgumentException>(() =>
+            _mcp.InvokeToolForTest("compute_date", """{"weekday":"礼拜八"}"""));
+        Assert.Contains("unknown weekday", ex.Message);
     }
 }

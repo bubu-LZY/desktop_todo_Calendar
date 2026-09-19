@@ -4,6 +4,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using MicaAgenda.App.Helpers;
 using MicaAgenda.App.Models;
 using MicaAgenda.App.Services;
 
@@ -138,7 +139,10 @@ public partial class AiChatPanel : UserControl
     {
         var textBlock = new TextBlock
         {
-            Text = text,
+            // 模型回复常带 Markdown 记号，而 TextBlock 不会渲染它 —— 不转换的话
+            // 用户看到的就是「**重点**」「## 标题」这种原样记号。这里统一清成可读文本。
+            // 用户自己输入的内容不动：那是他自己写的，改了反而奇怪。
+            Text = isUser ? text : MarkdownText.ToPlainText(text),
             TextWrapping = TextWrapping.Wrap,
             FontSize = 12,
             MaxWidth = 230

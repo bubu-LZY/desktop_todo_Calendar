@@ -151,6 +151,14 @@ public partial class MainWindow : Window
     private bool _updateFlowRunning;
     private TaskApiServer? _apiServer;
 
+    /// <summary>
+    /// 当前开着的设置面板（同一时刻最多一个）。
+    /// 「检查更新」的结果窗与下载浮窗都从设置面板里触发，若把它们挂到主窗体名下，
+    /// 在「嵌入桌面」模式下主窗体被压到最底层，这些窗就会**被设置面板挡住点不到**
+    /// （用户上报过）。所以它们统一挂到设置面板名下，见 <see cref="ResolveDialogOwner"/>。
+    /// </summary>
+    private Window? _settingsWindow;
+
     // API/MCP/同步在后台线程改数据后，合并刷新（防高频重建 UI 与重复落盘）。
     private bool _apiRefreshPending;
     private readonly object _apiRefreshLock = new();
@@ -793,6 +801,16 @@ public partial class MainWindow : Window
             ApplyRequested = OnConfigApplied
         };
 
+        // 记录「现在开着的设置面板」：更新流程弹的窗要挂到它名下，否则会被它挡住。
+        _settingsWindow = dialog;
+        dialog.Closed += (_, _) =>
+        {
+            if (ReferenceEquals(_settingsWindow, dialog))
+            {
+                _settingsWindow = null;
+            }
+        };
+
         // 嵌入桌面模式下主窗体置底且不激活，设置框用非模态显示，避免被一起压底/无法激活。
         if (_config.EmbedDesktop)
         {
@@ -803,6 +821,17 @@ public partial class MainWindow : Window
             await dialog.ShowDialog(this);
         }
     }
+
+    /// <summary>
+    /// 更新流程里各提示窗的属主：设置面板开着就用设置面板，否则用主窗体。
+    ///
+    /// 设置面板在「嵌入桌面」模式下是非模态浮窗、且会盖在置底的主窗体之上；
+    /// 从设置面板里点「检查更新」时，若把结果窗挂到主窗体名下，
+    /// 窗口层级就落在设置面板**下面**——用户只看到设置面板，结果窗被挡得点不到。
+    /// （下载进度窗自带 Topmost 不受影响，但结果窗/询问窗是模态，必须换属主。）
+    /// </summary>
+    private Window ResolveDialogOwner() =>
+        _settingsWindow is { IsVisible: true } settings ? settings : this;
 
     private void OnConfigApplied(AppConfig config)
     {
@@ -1445,7 +1474,9 @@ public partial class MainWindow : Window
         _modalDialogOpen = true;
         try
         {
-            await win.ShowDialog(this);
+            // 属主取当前最上层的那个窗（设置面板开着时就是它）：
+            // 挂主窗体名下会被非模态的设置面板挡住，用户看到的就是"点了检查更新没反应"。
+            await win.ShowDialog(ResolveDialogOwner());
         }
         finally
         {
@@ -1489,7 +1520,8 @@ public partial class MainWindow : Window
         _modalDialogOpen = true;
         try
         {
-            await win.ShowDialog(this);
+            // 同 AskUpdateAsync：属主随当前最上层窗口走，避免被设置面板挡住
+            await win.ShowDialog(ResolveDialogOwner());
         }
         finally
         {
@@ -3745,7 +3777,9 @@ public partial class MainWindow : Window
         yes.Click += (_, _) => { result = true; win.Close(); };
         no.Click += (_, _) => { result = false; win.Close(); };
 
-        await win.ShowDialog(this);
+        // 属主随当前最上层窗口走：设置面板开着就挂它名下，否则「下载完成」这类确认框
+        // 会以主窗体为属主，居中到置底主窗体、又被设置面板挡住。
+        await win.ShowDialog(ResolveDialogOwner());
         return result;
     }
 

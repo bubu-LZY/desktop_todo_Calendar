@@ -307,7 +307,10 @@ public static class TaskReportBuilder
             sb.AppendLine($"## 🚨 逾期未完成（{report.OverdueCount}）");
             foreach (var line in report.Overdue)
             {
-                sb.AppendLine($"- <font color=\"warning\">{Escape(line.Title)}</font> — 计划 {line.Date:MM/dd}，逾期 {line.OverdueDays} 天");
+                // 这里原来用 <font color="warning"> 想标红，但飞书卡片的 lark_md 并不支持
+                // <font> 标签 —— 原样发出去用户看到的就是一串标签文本。改用纯 Markdown 加粗，
+                // 两种渠道（企微 markdown / 飞书 lark_md）都能正确渲染。
+                sb.AppendLine($"- **{Escape(line.Title)}** — 计划 {line.Date:MM/dd}，逾期 {line.OverdueDays} 天");
             }
         }
 

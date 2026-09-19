@@ -43,17 +43,11 @@ public sealed class DayCellViewModel : ViewModelBase
     /// 周视图左栏竖排日期用的星期短名（周一 / 周二 …）。
     /// 周视图改成「左侧竖排日期」后，每行靠它说明这是星期几 ——
     /// 横向布局时代的顶部「日一二三四五六」表头已经没有位置放了。
+    ///
+    /// 走 <see cref="Helpers.WeekdayText"/> 的唯一一份映射：周视图格子是「周日开头」铺的，
+    /// 所以首行必然是周日，不要按直觉在这里改成周一。
     /// </summary>
-    public string WeekdayLabel => Date.DayOfWeek switch
-    {
-        DayOfWeek.Monday => "周一",
-        DayOfWeek.Tuesday => "周二",
-        DayOfWeek.Wednesday => "周三",
-        DayOfWeek.Thursday => "周四",
-        DayOfWeek.Friday => "周五",
-        DayOfWeek.Saturday => "周六",
-        _ => "周日",
-    };
+    public string WeekdayLabel => Helpers.WeekdayText.Of(Date);
 
     public string Header => $"{Date:MM月dd日}";
     public int CompletedCount => Tasks.Count(task => task.IsCompleted);

@@ -273,18 +273,7 @@ public sealed class MainViewModel : ViewModelBase
         get
         {
             var now = _nowProvider().LocalDateTime;
-            var dayOfWeek = now.DayOfWeek switch
-            {
-                DayOfWeek.Sunday => "周日",
-                DayOfWeek.Monday => "周一",
-                DayOfWeek.Tuesday => "周二",
-                DayOfWeek.Wednesday => "周三",
-                DayOfWeek.Thursday => "周四",
-                DayOfWeek.Friday => "周五",
-                DayOfWeek.Saturday => "周六",
-                _ => ""
-            };
-            return $"{now:M月d日} {dayOfWeek}";
+            return $"{now:M月d日} {Helpers.WeekdayText.Of(now.DayOfWeek)}";
         }
     }
 
@@ -419,6 +408,13 @@ public sealed class MainViewModel : ViewModelBase
     /// <summary>多选下拉里可勾选的提醒档位（不含「不提醒」；与日期格子内快速添加共用同一份）。</summary>
     public IReadOnlyList<string> ReminderLeadOptions { get; } = Helpers.ReminderLeadCatalog.SelectableLabels;
 
+    /// <summary>
+    /// 月视图表头的星期单字（日/一/二 … 六），顺序为「周日 → 周六」，与日期网格的铺法一致。
+    /// 走 <see cref="Helpers.WeekdayText.HeaderChars"/> 的唯一一份：
+    /// 原先 XAML 里手写了这七个字符，一旦网格起点改成周一就会静默错位（表头与格子差一列）。
+    /// </summary>
+    public IReadOnlyList<string> WeekHeaderChars { get; } = Helpers.WeekdayText.HeaderChars;
+
     /// <summary>今日面板快速添加时勾选的提醒档位标签集合（多选；空集合 = 不提醒）。</summary>
     public ObservableCollection<string> TodayTaskLeadLabels { get; }
 
@@ -477,6 +473,11 @@ public sealed class MainViewModel : ViewModelBase
     /// <summary>
     /// 提交今日任务的快速输入，返回新建的任务（草稿为空则返回 null）。
     /// 任务的时刻由表单里选（默认当天 9:00），提前提醒量相对它往前推。
+    ///
+    /// 提交后<b>整套草稿状态都要复位</b>：标题清空、提醒不勾、时刻回 9:00，
+    /// 并且<b>面板日期回到今天</b>——否则在某个日期格子里加完一条，下一次快速添加
+    /// 还会静默落到同一个日期，用户以为加到了今天。
+    /// （历史现象：输入框空了，但日期/时刻还留着上一次的值。）
     /// </summary>
     public CalendarTask? CommitTodayTask()
     {
@@ -484,17 +485,41 @@ public sealed class MainViewModel : ViewModelBase
         // 含「不提醒」→ 空列表；空（未指定）→ null（默认提前15分钟）；否则档位列表。
         var leads = Helpers.ReminderLeadCatalog.ToCommitLeads(TodayTaskLeadLabels);
         var time = TodayTaskTimeOnly;
+        // 面板日期要在复位之前取：它是本条任务实际归属的日期。
+        var date = _panelDate;
 
-        TodayTaskDraft = string.Empty;
-        ResetLeadLabel();
+        ResetQuickAddDraft();
         IsAddingTodayTask = false;
 
         return string.IsNullOrWhiteSpace(title)
             ? null
-            : AddTask(_panelDate, title, leads, time);
+            : AddTask(date, title, leads, time);
     }
 
-    /// <summary>草稿恢复成"刚展开"的样子：提醒一个都不勾、任务时刻回到当天 9:00。</summary>
+    /// <summary>
+    /// 把快速添加的整套草稿状态复位成"刚展开"的样子：
+    /// 标题清空、提醒一个都不勾、任务时刻回到当天 9:00。
+    ///
+    /// 单列一个方法是为了让「展开时」与「提交后」共用同一份复位逻辑，
+    /// 避免两处各写一半、日后再加字段时漏掉其中一边。
+    /// </summary>
+    private void ResetQuickAddDraft()
+    {
+        TodayTaskDraft = string.Empty;
+        ResetLeadLabel();
+
+        // 面板日期也要复位 —— 否则在某个日期格子里加完一条后，下一次快速添加会静默落到
+        // 同一个旧日期，用户以为加到了今天。
+        //
+        // 但「用户明确选中了某个日期格子」是刻意动作，不能夺走：那种情况下任务本就该记到
+        // 那一天，面板也应继续停在那一天，方便连着加好几条。所以只有没选中格子时才回今天。
+        if (_selectedCellDate is null)
+        {
+            SetPanelDate(_today);
+        }
+    }
+
+    /// <summary>提示档位与时刻复位：提醒一个都不勾、任务时刻回到当天 9:00。</summary>
     private void ResetLeadLabel()
     {
         TodayTaskLeadLabels.Clear();

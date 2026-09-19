@@ -127,20 +127,66 @@ public sealed class AiAgentService : IDisposable
     /// <summary>
     /// 构建系统提示。关键：必须注入当前日期 —— 模型的训练数据截止之后它不知道「今天」，
     /// 用户说「明天下午3点」时它只能瞎编一个日期（实测被解析成 121 天前）。
+    ///
+    /// 第二版（本次）：不再只给「今天/明天/后天/本周一」四个锚点就完事。
+    /// 实测翻车案例：用户说「下周二下午一点」，模型自己心算成了再下个周二（9/29），
+    /// 正确是 9/22 —— 四个锚点不足以让模型可靠地推「下周X / 下个月X号 / N 天后」。
+    ///
+    /// 所以这里做三件事：
+    /// 1) 把相对日期的**定义**写清楚（「下周X」= 下一个自然周的周X，不是「再下一周」）；
+    /// 2) 把常用锚点全部列出（明天/后天/本周一~周日/下周一~周日），让模型有表可查；
+    /// 3) 明确要求「拿不准就用 compute_date 工具算」，别心算。
     /// </summary>
     public static string BuildSystemPrompt()
     {
         var now = DateTime.Now;
         var today = now.Date;
-        // 本周一：周日 DayOfWeek=0 时回退 6 天，否则回退 (dow-1) 天
-        var dow = (int)today.DayOfWeek;
-        var monday = today.AddDays(dow == 0 ? -6 : 1 - dow);
+        var dow = (int)today.DayOfWeek;                    // 0=周日 … 6=周六
 
-        return "你是日历任务助手。用户用自然语言描述需求，你通过工具完成任务的查询、新增、编辑、删除、标记完成以及周期任务等操作，并用简洁的中文回复结果。\n" +
-               $"当前时间：{now:yyyy-MM-dd HH:mm dddd}。\n" +
-               $"今天：{today:yyyy-MM-dd}；明天：{today.AddDays(1):yyyy-MM-dd}；后天：{today.AddDays(2):yyyy-MM-dd}；本周一：{monday:yyyy-MM-dd}。\n" +
-               "用户说「今天 / 明天 / 后天 / 下周X」等相对日期时，必须先换算成上面给出的绝对日期（YYYY-MM-DD）再调用工具，绝不要自己猜测年份或月份。";
+        // 自然周口径：周一为一周起点。周日的 dow=0 要回退 6 天。
+        var thisMonday = today.AddDays(dow == 0 ? -6 : 1 - dow);
+
+        var sb = new System.Text.StringBuilder();
+        sb.Append("你是日历任务助手。用户用自然语言描述需求，你通过工具完成任务的查询、新增、编辑、删除、标记完成以及周期任务等操作，并用简洁的中文回复结果。\n");
+        sb.Append($"当前时间：{now:yyyy-MM-dd HH:mm dddd}。\n");
+
+        // 逐日列出本周与下周的每一天，让模型查表而不是心算。
+        sb.Append("本周（周一→周日）：");
+        sb.Append(string.Join("、", Enumerable.Range(0, 7)
+            .Select(i => $"{WeekdayLabel(i)}{thisMonday.AddDays(i):yyyy-MM-dd}")));
+        sb.Append('\n');
+
+        var nextMonday = thisMonday.AddDays(7);
+        sb.Append("下周（周一→周日）：");
+        sb.Append(string.Join("、", Enumerable.Range(0, 7)
+            .Select(i => $"{WeekdayLabel(i)}{nextMonday.AddDays(i):yyyy-MM-dd}")));
+        sb.Append('\n');
+
+        sb.Append($"今天={today:yyyy-MM-dd}；明天={today.AddDays(1):yyyy-MM-dd}；后天={today.AddDays(2):yyyy-MM-dd}；");
+        sb.Append($"本月底={new DateTime(today.Year, today.Month, DateTime.DaysInMonth(today.Year, today.Month)):yyyy-MM-dd}；");
+        sb.Append($"下月同日={today.AddMonths(1):yyyy-MM-dd}。\n");
+
+        sb.Append(
+            "相对日期换算规则（必须严格遵守）：\n" +
+            "1) 「本周X」= 本周的星期X；「下周X」= 下一个自然周的星期X（注意：若今天是周六/周日，说「下周X」指的是从下周一算起那一周，而不是「今天之后再往后一周」）；\n" +
+            "2) 「X天后 / 下周 / 下个月」一律基于上面的锚点表推算，不要凭记忆猜年份或月份；\n" +
+            "3) 任何相对时间都必须先换算成绝对日期（YYYY-MM-DD）再调用工具；\n" +
+            "4) 拿不准就调用 compute_date 工具来算，禁止心算；换算结果如有歧义，在回复里说明你算出的日期。\n");
+        sb.Append("改完/新增后请以工具返回的 verified 字段为准确认是否真的写入成功。\n");
+        return sb.ToString();
     }
+
+    private static string WeekdayLabel(int mondayBasedIndex)
+        => mondayBasedIndex switch
+        {
+            0 => "周一",
+            1 => "周二",
+            2 => "周三",
+            3 => "周四",
+            4 => "周五",
+            5 => "周六",
+            _ => "周日",
+        };
 
     private string ExecuteTool(AiToolCall call)
     {

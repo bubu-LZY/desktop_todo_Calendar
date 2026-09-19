@@ -144,7 +144,16 @@ public static class ReminderLeadCatalog
         return best;
     }
 
-    /// <summary>多个提前量 → 对应的勾选项标签（去重、按下拉顺序）。</summary>
+    /// <summary>
+    /// 多个提前量 → 对应的勾选项标签。
+    ///
+    /// 顺序沿用<b>传入顺序</b>，只做去重：调用方报回来时就是它自己给的顺序，
+    /// 不会因为档位表排布而被重排（历史坑：传入「提前一天,提前30分钟」，
+    /// 返回变成「提前30分钟,提前一天」，调用方以为服务端改写了数据）。
+    ///
+    /// 界面侧不需要关心传入顺序 —— <see cref="Summarize"/> 会按下拉表顺序重新连缀，
+    /// 所以勾选框的顺序仍然稳定。
+    /// </summary>
     public static IReadOnlyList<string> ToLabels(IEnumerable<int>? minutes)
     {
         if (minutes is null)
@@ -152,17 +161,24 @@ public static class ReminderLeadCatalog
             return [];
         }
 
-        var labels = minutes.Select(lead => ToLabel(lead))
-            .Where(label => label != NoneLabel)
-            .Distinct(StringComparer.Ordinal)
-            .ToList();
+        var labels = new List<string>();
+        foreach (var lead in minutes)
+        {
+            var label = ToLabel(lead);
+            if (label != NoneLabel && !labels.Contains(label, StringComparer.Ordinal))
+            {
+                labels.Add(label);
+            }
+        }
 
-        // 按下拉表顺序排，避免界面勾选项顺序乱跳。
-        return SelectableLabels.Where(labels.Contains).ToList();
+        return labels;
     }
 
     /// <summary>
-    /// 多选摘要：空 = 「不提醒」，否则把勾选项用顿号连起来（如「提前30分钟、到时提醒」）。</summary>
+    /// 多选摘要：空 = 「不提醒」，否则把勾选项用顿号连起来（如「提前30分钟、到时提醒」）。
+    /// 这里按下拉表顺序重排 —— <see cref="ToLabels"/> 现在保留传入顺序，
+    /// 界面文案若跟着传入顺序走会随数据来路而变，所以在这一层固定住展示顺序。
+    /// </summary>
     public static string Summarize(IEnumerable<string>? labels)
     {
         var selected = labels?
@@ -170,7 +186,15 @@ public static class ReminderLeadCatalog
             .Distinct(StringComparer.Ordinal)
             .ToList();
 
-        return selected is null || selected.Count == 0 ? NoneLabel : string.Join("、", selected);
+        if (selected is null || selected.Count == 0)
+        {
+            return NoneLabel;
+        }
+
+        var ordered = SelectableLabels.Where(selected.Contains).ToList();
+        // 表外的陌生标签（老数据）不能丢，补在末尾保持可见
+        ordered.AddRange(selected.Where(label => !ordered.Contains(label, StringComparer.Ordinal)));
+        return string.Join("、", ordered);
     }
 
     /// <summary>

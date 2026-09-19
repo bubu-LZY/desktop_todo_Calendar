@@ -117,7 +117,7 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
-        Title = "MicaAgenda v5.2.1";
+        Title = "MicaAgenda v5.2.2";
 
         // 窗口初始化前同步加载配置，确保桌面嵌入/锁定在首帧即生效
         _config = _configStore.Load();

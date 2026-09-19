@@ -158,6 +158,52 @@ public sealed class TaskScheduleTests
         Assert.Equal(CalendarTask.DefaultTime, viewModel.TodayTaskTimeOnly);
     }
 
+    [Fact]
+    public void CommitTodayTask_ResetsPanelDateBackToToday_AfterCellSelectionCleared()
+    {
+        // 复刻真实反馈：输入框清空了，但日期/时刻还留着上一次的值，
+        // 导致下一次快速添加静默落到旧日期。
+        var data = new CalendarData();
+        var viewModel = new MainViewModel(data, () => new DateTimeOffset(2026, 5, 10, 9, 0, 0, TimeSpan.Zero));
+
+        // 先把面板带到别的日期（选中格子），再清除选中 —— 面板属于"已回到今天"的路径。
+        viewModel.SelectCell(new DateOnly(2026, 5, 20));
+        viewModel.ClearCellSelection();
+        Assert.Equal(new DateOnly(2026, 5, 10), viewModel.PanelDate);
+
+        viewModel.BeginAddTodayTask();
+        viewModel.TodayTaskDraft = "第一条";
+        var first = viewModel.CommitTodayTask();
+
+        Assert.NotNull(first);
+        // 没有选中格子时，任务应落在今天
+        Assert.Equal(new DateOnly(2026, 5, 10), first!.Date);
+        Assert.Equal(new DateOnly(2026, 5, 10), viewModel.PanelDate);
+    }
+
+    [Fact]
+    public void CommitTodayTask_KeepsExplicitlySelectedDate_SoUserCanAddSeveralInARow()
+    {
+        // 用户主动选中某天是刻意动作：任务要记到那天，面板也该留在那天。
+        var data = new CalendarData();
+        var viewModel = new MainViewModel(data, () => new DateTimeOffset(2026, 5, 10, 9, 0, 0, TimeSpan.Zero));
+
+        var target = new DateOnly(2026, 5, 18);
+        viewModel.SelectCell(target);
+
+        viewModel.BeginAddTodayTask();
+        viewModel.TodayTaskDraft = "第一条";
+        viewModel.CommitTodayTask();
+        viewModel.BeginAddTodayTask();
+        viewModel.TodayTaskDraft = "第二条";
+        var second = viewModel.CommitTodayTask();
+
+        Assert.NotNull(second);
+        Assert.Equal(target, second!.Date);
+        Assert.Equal(target, viewModel.PanelDate);
+        Assert.Equal(2, data.Tasks.Count(task => task.Date == target));
+    }
+
     [Theory]
     [InlineData("不提醒", null)]
     [InlineData("到时提醒", 0)]

@@ -309,15 +309,21 @@
       <StackPanel Margin="0,0,0,12">
         <TextBlock Text="{Binding Title}" FontSize="16" FontWeight="Bold" Foreground="{DynamicResource PrimaryTextBrush}"
                    Margin="6,4,0,6" />
-        <UniformGrid Columns="7" Margin="4,0,4,2">
-          <TextBlock Text="日" HorizontalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" />
-          <TextBlock Text="一" HorizontalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" />
-          <TextBlock Text="二" HorizontalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" />
-          <TextBlock Text="三" HorizontalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" />
-          <TextBlock Text="四" HorizontalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" />
-          <TextBlock Text="五" HorizontalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" />
-          <TextBlock Text="六" HorizontalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" />
-        </UniformGrid>
+        <!-- 星期表头：走 VM 的 WeekHeaderChars（唯一来源），别再手写这七个字。
+             手写时一旦日期网格换成周一开头，表头就会与格子差一列 —— 不报错，只是全歪。 -->
+        <ItemsControl ItemsSource="{Binding WeekHeaderChars}" Margin="4,0,4,2">
+          <ItemsControl.ItemsPanel>
+            <ItemsPanelTemplate>
+              <UniformGrid Columns="7" />
+            </ItemsPanelTemplate>
+          </ItemsControl.ItemsPanel>
+          <ItemsControl.ItemTemplate>
+            <DataTemplate>
+              <TextBlock Text="{Binding}" HorizontalAlignment="Center"
+                         Foreground="{DynamicResource MutedTextBrush}" />
+            </DataTemplate>
+          </ItemsControl.ItemTemplate>
+        </ItemsControl>
         <ItemsControl ItemsSource="{Binding Days}" ItemTemplate="{StaticResource DayCellTemplate}" Margin="4,0,4,2">
           <ItemsControl.ItemsPanel>
             <ItemsPanelTemplate>

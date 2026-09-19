@@ -243,14 +243,27 @@
             </StackPanel>
             <TextBlock Text="报告内容：完成率、耗时最长 / 完成最快 / 超时完成 / 至今未完成 / 逾期未完成。"
                        Classes="hint" Margin="0,0,0,10" />
-            <TextBlock Text="推送渠道" Classes="fieldLabel" Margin="0,0,0,4" />
-            <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
-              <CheckBox x:Name="ReportSendFeishuBox" Content="飞书" VerticalAlignment="Center" Margin="0,0,16,0" />
-              <CheckBox x:Name="ReportSendWeComBox" Content="企业微信" VerticalAlignment="Center" />
+            <TextBlock Text="推送渠道（可多选，勾几个就各发一条）" Classes="fieldLabel" Margin="0,0,0,4" />
+
+            <!-- 每个渠道独立成「勾选 + 输入框」一行：原来两个裸复选框 + 下面一个网址框，
+                 会被读成「飞书/企微二选一，再把网址填到下面」，实际是多选且各发一次。
+                 现在把网址贴在各自渠道名下，并标明复用提醒的 webhook，语义就没有歧义了。 -->
+            <StackPanel Margin="0,0,0,8">
+              <CheckBox x:Name="ReportSendFeishuBox" Content="推送到飞书" />
+              <TextBlock x:Name="ReportFeishuHint" Classes="hint" Margin="24,2,0,0"
+                         Text="复用「提醒推送」里的飞书 webhook；未填则不会发送。" TextWrapping="Wrap" />
             </StackPanel>
-            <TextBlock Text="自定义 webhook（可选；自动识别飞书并用卡片推送，其他地址按企微 text 格式推送）"
+            <StackPanel Margin="0,0,0,10">
+              <CheckBox x:Name="ReportSendWeComBox" Content="推送到企业微信" />
+              <TextBlock x:Name="ReportWeComHint" Classes="hint" Margin="24,2,0,0"
+                         Text="复用「提醒推送」里的企业微信 webhook；未填则不会发送。" TextWrapping="Wrap" />
+            </StackPanel>
+
+            <TextBlock Text="自定义 webhook（可选，与上面两个渠道相互独立，勾了就会额外多发一条）"
                        Classes="fieldLabel" Margin="0,0,0,4" />
-            <TextBox x:Name="ReportCustomWebhookBox" Classes="inputBox" Margin="0,0,0,10" />
+            <TextBox x:Name="ReportCustomWebhookBox" Classes="inputBox" Margin="0,0,0,6" />
+            <TextBlock Classes="hint" Margin="0,0,0,10" TextWrapping="Wrap"
+                       Text="留空则不发。自动识别飞书地址并用卡片推送，其他地址按企微 text 格式推送。" />
             <StackPanel Orientation="Horizontal">
               <Button x:Name="ReportPreviewButton" Content="预览报告" Classes="actionButton" Click="ReportPreview_Click" />
               <Button x:Name="ReportSendNowButton" Content="立即发送" Classes="actionButton" Margin="8,0,0,0" Click="ReportSendNow_Click" />

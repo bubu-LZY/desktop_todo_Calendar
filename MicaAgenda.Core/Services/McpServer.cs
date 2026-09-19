@@ -21,6 +21,52 @@ public sealed record ToolDefinition(
     [property: JsonPropertyName("inputSchema")] object InputSchema);
 
 /// <summary>
+/// 变更类工具（add / update / complete 等）的统一返回外壳：任务字段平铺在外层，
+/// 另外附带三个只读的元字段，让调用方能一眼确认「这次到底写没写进去」。
+/// </summary>
+/// <param name="Task">任务本身的字段（原 ToDto 的匿名对象）。</param>
+/// <param name="TaskId">本次操作的任务 id，直接用它可以做后续 update / delete。</param>
+/// <param name="ReminderSource">
+/// 提醒档位的来源：<c>default</c> = 调用方没传 reminders，服务端按默认「提前15分钟」写的；
+/// <c>explicit</c> = 调用方显式指定（含空数组 = 不提醒）。只有 add 类会带这个字段。
+/// </param>
+internal sealed class WriteResult(object task, Guid taskId, string? reminderSource)
+{
+    [JsonPropertyName("ok")]
+    public bool Ok => true;
+
+    /// <summary>写后回读校验通过。调用方应以它为"真成功"的判据，而不是只看工具有没有报错。</summary>
+    [JsonPropertyName("verified")]
+    public bool Verified => true;
+
+    [JsonPropertyName("verifiedAt")]
+    public DateTimeOffset VerifiedAt { get; } = DateTimeOffset.Now;
+
+    [JsonPropertyName("id")]
+    public Guid TaskId { get; } = taskId;
+
+    [JsonPropertyName("reminderSource")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ReminderSource { get; } = reminderSource;
+
+    // 任务字段平铺在外层：保持与旧返回体兼容（调用方照旧读 task.date / task.title）
+    [JsonExtensionData]
+    public IDictionary<string, object?> Fields { get; } = ToDictionary(task);
+
+    private static Dictionary<string, object?> ToDictionary(object dto)
+    {
+        var json = JsonSerializer.SerializeToElement(dto);
+        var map = new Dictionary<string, object?>();
+        foreach (var prop in json.EnumerateObject())
+        {
+            map[prop.Name] = prop.Value.Clone();
+        }
+
+        return map;
+    }
+}
+
+/// <summary>
 /// 内置 MCP Server（Model Context Protocol），采用 Streamable HTTP transport。
 /// 外部 AI 客户端（Claude Desktop / Cursor 等）可通过
 /// http://localhost:&lt;port&gt;/mcp 连接，调用任务增删改查等工具。
@@ -398,6 +444,7 @@ public sealed partial class McpServer : IDisposable
                 GetArgString(args, "status"),
                 GetArgString(args, "q"),
                 GetArgGuidList(args, "ids")),
+            "compute_date" => ComputeDate(args),
             "add_task" => AddTask(
                 GetArgDate(args, "date"),
                 GetArgString(args, "title"),
@@ -433,6 +480,98 @@ public sealed partial class McpServer : IDisposable
     }
 
     /// <summary>
+    /// 相对日期换算器：把「下周X / N 天后 / 下个月X号 / 本月底」之类的说法，
+    /// 用<strong>服务端自己的日历</strong>算成绝对日期，而不是让调用方（或模型）心算。
+    ///
+    /// 这是 Issue「下周二 == 9/29 还是 9/22」的根治办法：模型心算日期是不可靠的，
+    /// 但只要它把 baseline（通常传 today）+ 规则交给这里，结果就由代码保证正确。
+    /// 因此这个工具本身不做任何"聪明"的猜测 —— 语义全部由显式参数决定。
+    /// </summary>
+    private object ComputeDate(JsonElement args)
+    {
+        // 基准日：默认今天；调用方也可以指定（例如"从 9/15 那周算下周X"）
+        var baseline = GetArgDate(args, "baseline") ?? DateOnly.FromDateTime(DateTime.Now);
+
+        var offsetDays = GetArgInt(args, "offsetDays");
+        var offsetWeeks = GetArgInt(args, "offsetWeeks");
+        var offsetMonths = GetArgInt(args, "offsetMonths");
+        var weekday = GetArgString(args, "weekday");
+        var weekAnchor = (GetArgString(args, "weekAnchor") ?? "this").Trim().ToLowerInvariant();
+
+        var reason = new List<string>();
+        var date = baseline;
+
+        if (offsetDays is { } d)
+        {
+            date = date.AddDays(d);
+            reason.Add($"基准日 {d:+#;-#;0} 天");
+        }
+
+        if (offsetWeeks is { } w)
+        {
+            date = date.AddDays(w * 7);
+            reason.Add($"基准日 {w:+#;-#;0} 周");
+        }
+
+        if (offsetMonths is { } m)
+        {
+            date = date.AddMonths(m);
+            reason.Add($"基准日 {m:+#;-#;0} 个月");
+        }
+
+        if (!string.IsNullOrWhiteSpace(weekday))
+        {
+            var target = ParseWeekday(weekday);
+            // 「本周X」与「下周X」都按自然周（周一为起点）算：
+            //   本周X → 本周内的周X（若今天已过该天，仍返回本周那天，调用方需自行决定要不要 +7）
+            //   下周X → 下周内的周X
+            var weekStart = date.AddDays(-(((int)date.DayOfWeek + 6) % 7));   // 该周周一
+            var shift = weekAnchor switch
+            {
+                "next" => 7,
+                "last" => -7,
+                _ => 0
+            };
+            date = weekStart.AddDays(shift + (((int)target + 6) % 7));       // 周一=0 … 周日=6
+            reason.Add($"{(weekAnchor switch { "next" => "下", "last" => "上", _ => "本" })}周{WeekdayLabelOf(target)}");
+        }
+
+        return new
+        {
+            date = date.ToString("yyyy-MM-dd"),
+            weekday = WeekdayLabelOf(date.DayOfWeek),
+            baseline = baseline.ToString("yyyy-MM-dd"),
+            today = DateOnly.FromDateTime(DateTime.Now).ToString("yyyy-MM-dd"),
+            // 把算法过程写出来，调用方（和读日志的人）能核对，不用猜
+            explanation = reason.Count == 0
+                ? "未提供任何偏移参数，返回基准日本身"
+                : $"{baseline:yyyy-MM-dd} 起，{string.Join(" → ", reason)} = {date:yyyy-MM-dd}"
+        };
+    }
+
+    /// <summary>解析星期说法：支持 monday/mon/周一/星期一/1 等写法。</summary>
+    private static DayOfWeek ParseWeekday(string text)
+    {
+        var t = text.Trim().ToLowerInvariant();
+        return t switch
+        {
+            "monday" or "mon" or "周一" or "星期一" or "1" => DayOfWeek.Monday,
+            "tuesday" or "tue" or "周二" or "星期二" or "2" => DayOfWeek.Tuesday,
+            "wednesday" or "wed" or "周三" or "星期三" or "3" => DayOfWeek.Wednesday,
+            "thursday" or "thu" or "周四" or "星期四" or "4" => DayOfWeek.Thursday,
+            "friday" or "fri" or "周五" or "星期五" or "5" => DayOfWeek.Friday,
+            "saturday" or "sat" or "周六" or "星期六" or "6" => DayOfWeek.Saturday,
+            "sunday" or "sun" or "周日" or "周天" or "星期日" or "星期天" or "7" or "0" => DayOfWeek.Sunday,
+            _ => throw new ArgumentException(
+                $"unknown weekday: \"{text}\"; valid: monday..sunday / 周一..周日 / 1..7")
+        };
+    }
+
+    /// <summary>星期几的中文短名（"周一" … "周日"）。</summary>
+    private static string WeekdayLabelOf(DayOfWeek day)
+        => MicaAgenda.App.Helpers.WeekdayText.Of(day);
+
+    /// <summary>
     /// 测试入口：MCP 的工具层不依赖 HTTP 监听，直接喂 JSON 字符串就能调，
     /// 避免单测去绑定端口（HttpListener 在非 Windows / 无 urlacl 环境下不稳定）。
     /// </summary>
@@ -461,6 +600,49 @@ public sealed partial class McpServer : IDisposable
         }
 
         var q = keyword?.Trim();
+
+        // 先把「要查哪段日期」解析成一个明确的闭区间，再统一过滤。
+        // 这样返回体里能原样回显服务端实际算出来的范围 —— 调用方不必再靠猜
+        // （历史坑：range=week 曾经返回空，调用方无从判断是"真没任务"还是"窗口算错了"）。
+        var normalizedRange = (range ?? "today").Trim().ToLowerInvariant();
+        DateOnly? resolvedStart;
+        DateOnly? resolvedEnd;
+
+        if (ids is { Count: > 0 })
+        {
+            // 按一批 id 批量查询：与 range/date 互斥（优先按 id 取），不限定日期区间
+            resolvedStart = null;
+            resolvedEnd = null;
+        }
+        else if (exactDate is not null)
+        {
+            resolvedStart = exactDate;
+            resolvedEnd = exactDate;
+        }
+        else if (start is not null || end is not null)
+        {
+            // 只给一边时另一边开口：start = 从那天起；end = 截止那天（含）
+            resolvedStart = start;
+            resolvedEnd = end;
+        }
+        else
+        {
+            (resolvedStart, resolvedEnd) = normalizedRange switch
+            {
+                "today" => (today, today),
+                // 自然周口径：周一 → 周日（与中文习惯一致）。
+                // 注意日历「周视图」的格子仍按周日→周六铺（CalendarService），
+                // 两者是不同用途：这里是查询窗口，那边是界面网格，刻意不强行统一。
+                "week" => (GetNaturalWeekStart(today), GetNaturalWeekStart(today).AddDays(6)),
+                "month" => (new DateOnly(today.Year, today.Month, 1),
+                            new DateOnly(today.Year, today.Month, DateTime.DaysInMonth(today.Year, today.Month))),
+                "year" => (new DateOnly(today.Year, 1, 1), new DateOnly(today.Year, 12, 31)),
+                "all" => ((DateOnly?)null, (DateOnly?)null),
+                var other => throw new ArgumentException(
+                    $"unknown range: {other}; valid values: today, week, month, year, all")
+            };
+        }
+
         List<CalendarTask> tasks;
         lock (_syncRoot)
         {
@@ -468,33 +650,14 @@ public sealed partial class McpServer : IDisposable
 
             if (ids is { Count: > 0 })
             {
-                // 按一批 id 批量查询：与 range/date 互斥（优先按 id 取），status/keyword 仍生效
                 var wanted = ids.ToHashSet();
                 source = source.Where(t => wanted.Contains(t.Id));
             }
-            else if (exactDate is not null)
+            else if (resolvedStart is not null || resolvedEnd is not null)
             {
-                source = source.Where(t => t.Date == exactDate.Value);
-            }
-            else if (start is not null || end is not null)
-            {
-                // 只给一边时，另一边开口：start = 从那天起；end = 截止那天（含）
                 source = source.Where(t =>
-                    (start is null || t.Date >= start.Value)
-                    && (end is null || t.Date <= end.Value));
-            }
-            else
-            {
-                source = (range ?? "today").Trim().ToLowerInvariant() switch
-                {
-                    "today" => source.Where(t => t.Date == today),
-                    "week" => source.Where(t => t.Date >= GetWeekStart(today) && t.Date <= GetWeekStart(today).AddDays(6)),
-                    "month" => source.Where(t => t.Date.Year == today.Year && t.Date.Month == today.Month),
-                    "year" => source.Where(t => t.Date.Year == today.Year),
-                    "all" => source,
-                    var other => throw new ArgumentException(
-                        $"unknown range: {other}; valid values: today, week, month, year, all")
-                };
+                    (resolvedStart is null || t.Date >= resolvedStart.Value)
+                    && (resolvedEnd is null || t.Date <= resolvedEnd.Value));
             }
 
             tasks = status switch
@@ -514,15 +677,41 @@ public sealed partial class McpServer : IDisposable
 
         return new
         {
-            range = range ?? "today",
+            range = normalizedRange,
             date = exactDate?.ToString("yyyy-MM-dd"),
+            // 原样回显调用方传入的值，与下面 resolved* 区分：传入可能是 null / 单边开口
             start = start?.ToString("yyyy-MM-dd"),
             end = end?.ToString("yyyy-MM-dd"),
+            // 服务端实际生效的查询窗口（含端点）。null = 该侧不设边界。
+            // 拿到空结果时先看这里对不对，再怀疑数据本身。
+            resolvedStart = resolvedStart?.ToString("yyyy-MM-dd"),
+            resolvedEnd = resolvedEnd?.ToString("yyyy-MM-dd"),
+            today = today.ToString("yyyy-MM-dd"),
+            weekStartsOn = ToWeekStartName(today),
             status,
             query = string.IsNullOrEmpty(q) ? null : q,
             count = tasks.Count,
             // 同一天内按任务时刻（没设时间按 9:00）排，而不是随机的列表顺序
             tasks = tasks.OrderBy(t => t.Date).ThenBy(t => t.ScheduledAt).Select(ToDto)
+        };
+    }
+
+    /// <summary>
+    /// 统一在返回体里回显「哪天算一周的开始」，避免调用方自己猜服务端口径。
+    /// 今天恰好是周日时，自然周的起点要落到上周一，所以这里不能直接返回今天的星期名。
+    /// </summary>
+    private static string ToWeekStartName(DateOnly date)
+    {
+        var start = GetNaturalWeekStart(date);
+        return start.DayOfWeek switch
+        {
+            DayOfWeek.Monday => "monday",
+            DayOfWeek.Tuesday => "tuesday",
+            DayOfWeek.Wednesday => "wednesday",
+            DayOfWeek.Thursday => "thursday",
+            DayOfWeek.Friday => "friday",
+            DayOfWeek.Saturday => "saturday",
+            _ => "sunday"
         };
     }
 
@@ -542,6 +731,12 @@ public sealed partial class McpServer : IDisposable
             Time = NormalizeTaskTime(time),
             CreatedAt = DateTimeOffset.Now
         };
+
+        // reminders 的三种语义（与 UpdateTask 的「整组替换」保持一致）：
+        //   省略 / null → 默认「提前15分钟」，并在返回体里标 reminderSource=default
+        //   []          → 明确不提醒，标 reminderSource=explicit
+        //   非空数组    → 用传入档位，标 reminderSource=explicit
+        var remindersExplicit = reminderLeads is not null;
         task.SetReminderLeads(reminderLeads ?? [ReminderLeadCatalog.DefaultLeadMinutes]);
         // 新建时已超出补发窗口的档位（如给今天的任务勾「提前一天」）直接记为已推，不发陈旧提醒
         task.SuppressMissedLeadReminders(DateTimeOffset.Now);
@@ -552,7 +747,33 @@ public sealed partial class McpServer : IDisposable
         }
 
         _onDataChanged();
-        return ToDto(task);
+        return WithWriteVerification(ToDto(task), task.Id, remindersExplicit ? "explicit" : "default");
+    }
+
+    /// <summary>
+    /// 变更类工具统一收尾：用主键回读一次，确认数据真的落进了集合。
+    ///
+    /// 历史坑：工具返回 success 但任务并不存在（并发覆盖 / 调用方把上一次的返回记到了
+    /// 这一次头上 / 客户端缓存了响应），调用方后续按这个 id 去 update/delete 才报
+    /// "task not found"，排查成本很高。所以把「写后校验」做成返回体的一部分，
+    /// 调用方看到 verified=true 才算真成功 —— 而不是只看工具有没有报错。
+    /// </summary>
+    private object WithWriteVerification(object dto, Guid taskId, string? reminderSource = null)
+    {
+        bool verified;
+        lock (_syncRoot)
+        {
+            verified = _data.Tasks.Any(t => t.Id == taskId);
+        }
+
+        if (!verified)
+        {
+            // 真出现"写完却读不到"是严重信号：宁可让调用方拿到错误，也不能报 success
+            throw new InvalidOperationException(
+                $"write verification failed: task {taskId} not found right after write");
+        }
+
+        return new WriteResult(dto, taskId, reminderSource);
     }
 
     private object UpdateTask(Guid id, JsonElement args)
@@ -618,7 +839,7 @@ public sealed partial class McpServer : IDisposable
         _onDataChanged();
         lock (_syncRoot)
         {
-            return ToDto(_data.Tasks.First(t => t.Id == id));
+            return WithWriteVerification(ToDto(_data.Tasks.First(t => t.Id == id)), id);
         }
     }
 
@@ -678,7 +899,31 @@ public sealed partial class McpServer : IDisposable
         }
 
         _onDataChanged();
-        return new { id = master.Id, created = instances.Count + 1, series = master.Id };
+
+        // 周期任务一次写多条：校验"源任务在 + 实例数对得上"才算真成功
+        int actualInstances;
+        bool masterExists;
+        lock (_syncRoot)
+        {
+            masterExists = _data.Tasks.Any(t => t.Id == master.Id);
+            actualInstances = _data.Tasks.Count(t => t.SeriesId == master.Id);
+        }
+
+        if (!masterExists || actualInstances != instances.Count)
+        {
+            throw new InvalidOperationException(
+                $"write verification failed: recurring series {master.Id} " +
+                $"masterExists={masterExists}, expected {instances.Count} instances but found {actualInstances}");
+        }
+
+        return new
+        {
+            ok = true,
+            verified = true,
+            id = master.Id,
+            created = actualInstances + 1,
+            series = master.Id
+        };
     }
 
     /// <summary>删除整个周期任务系列（源任务 + 全部物化实例）。</summary>
@@ -781,7 +1026,7 @@ public sealed partial class McpServer : IDisposable
         }
         lock (_syncRoot)
         {
-            return ToDto(_data.Tasks.First(t => t.Id == id));
+            return WithWriteVerification(ToDto(_data.Tasks.First(t => t.Id == id)), id);
         }
     }
 
@@ -830,7 +1075,15 @@ public sealed partial class McpServer : IDisposable
         return new { results };
     }
 
-    private static DateOnly GetWeekStart(DateOnly date) => date.AddDays(-(int)date.DayOfWeek);
+    /// <summary>
+    /// 自然周的起点：周一。
+    /// .NET 的 <see cref="DayOfWeek"/> 是 0=周日 … 6=周六，所以周日要特殊处理回退 6 天，
+    /// 不能直接用 <c>AddDays(-(int)DayOfWeek)</c>（那样周日会得到自己，变成"周日起"）。
+    /// </summary>
+    private static DateOnly GetNaturalWeekStart(DateOnly date)
+        => date.DayOfWeek == DayOfWeek.Sunday
+            ? date.AddDays(-6)
+            : date.AddDays(-((int)date.DayOfWeek - (int)DayOfWeek.Monday));
 
     private static object ToDto(CalendarTask task)
     {
@@ -982,6 +1235,10 @@ public sealed partial class McpServer : IDisposable
     /// 把提醒档位标签数组换算成分钟列表。
     /// JSON null / 空数组 = 不提醒；元素必须是字符串且落在固定档位表内，
     /// 无法识别的标签直接报错并附上合法值——AI 拼错档位名时能照错误信息改正。
+    ///
+    /// 顺序<b>保持调用方传入的顺序</b>（只去重）：这样返回体里的 reminders 与调用方给的
+    /// 完全一致，不会出现「传进去 [提前一天, 提前30分钟] 却回成 [提前30分钟, 提前一天]」
+    /// 这种让人以为数据被改写的情况。
     /// </summary>
     private static IReadOnlyList<int> ParseReminderLeadsElement(JsonElement el)
     {
@@ -996,7 +1253,7 @@ public sealed partial class McpServer : IDisposable
                 $"reminders must be an array of labels, e.g. [\"提前30分钟\",\"提前一天\"]; valid: {string.Join(", ", ReminderLeadCatalog.SelectableLabels)}");
         }
 
-        var labels = new List<string>();
+        var leads = new List<int>();
         foreach (var item in el.EnumerateArray())
         {
             if (item.ValueKind != JsonValueKind.String)
@@ -1005,16 +1262,19 @@ public sealed partial class McpServer : IDisposable
             }
 
             var label = item.GetString();
-            if (string.IsNullOrWhiteSpace(label) || ReminderLeadCatalog.ToMinutes(label) is null)
+            if (string.IsNullOrWhiteSpace(label) || ReminderLeadCatalog.ToMinutes(label) is not { } minutes)
             {
                 throw new ArgumentException(
                     $"unknown reminder label: \"{label}\"; valid: {string.Join(", ", ReminderLeadCatalog.SelectableLabels)}");
             }
 
-            labels.Add(label);
+            if (!leads.Contains(minutes))
+            {
+                leads.Add(minutes);
+            }
         }
 
-        return ReminderLeadCatalog.ToMinutesList(labels);
+        return leads;
     }
 
     /// <summary>提醒档位的固定枚举，schema 与 <see cref="ReminderLeadCatalog"/> 共用一份，避免两处漂移。</summary>
@@ -1024,12 +1284,12 @@ public sealed partial class McpServer : IDisposable
     {
         return new List<ToolDefinition>
         {
-            Tool("query_tasks", "查询任务清单。range 可选 today(今日,默认)/week(本周)/month(本月)/year(本年)/all(全部)；date 指定某一天(YYYY-MM-DD)；也可用 start/end 查任意日期区间(含端点)。status 可选 all(默认)/open(未完成,含逾期)/completed(已完成)/overdue(仅逾期)。q 可选,按标题关键词模糊匹配。date 与 start/end 都给时以 date 为准。",
+            Tool("query_tasks", "查询任务清单。range 可选 today(今日,默认)/week(自然周:周一→周日)/month(自然月)/year(自然年)/all(全部)；date 指定某一天(YYYY-MM-DD)；也可用 start/end 查任意日期区间(含端点)。status 可选 all(默认)/open(未完成,含逾期)/completed(已完成)/overdue(仅逾期)。q 可选,按标题关键词模糊匹配。date 与 start/end 都给时以 date 为准。返回体里 resolvedStart/resolvedEnd 是服务端实际生效的窗口,weekStartsOn 回显周起点(恒为 monday) —— 拿到空结果时先核对这两个字段,再怀疑数据本身。**推荐始终显式传 start/end**,range 只是便捷写法。",
                 new { type = "object", properties = new
                 {
-                    range = new { type = "string", description = "查询范围(无 date、start、end 时生效)", @enum = new[] { "today", "week", "month", "year", "all" } },
-                    date = new { type = "string", description = "指定某一天 YYYY-MM-DD" },
-                    start = new { type = "string", description = "区间起始日期 YYYY-MM-DD(含)" },
+                    range = new { type = "string", description = "查询范围(无 date、start、end 时生效)。week 为自然周:周一→周日", @enum = new[] { "today", "week", "month", "year", "all" } },
+                    date = new { type = "string", description = "指定某一天 YYYY-MM-DD(服务端不做相对日期推算,请调用方先算好绝对日期)" },
+                    start = new { type = "string", description = "区间起始日期 YYYY-MM-DD(含)。与 end 搭配使用最不容易出歧义" },
                     end = new { type = "string", description = "区间结束日期 YYYY-MM-DD(含)" },
                     status = new { type = "string", description = "完成状态过滤", @enum = new[] { "all", "open", "completed", "overdue" } },
                     q = new { type = "string", description = "标题关键词(不区分大小写,包含匹配)" },
@@ -1040,32 +1300,42 @@ public sealed partial class McpServer : IDisposable
                         items = new { type = "string" }
                     }
                 } }),
-            Tool("add_task", "在某一天添加任务。date 省略默认今天；time 为任务时刻 HH:mm(省略或 null 表示不设具体时间,按当天 9:00 处理)；reminders 为提醒档位标签数组,可多选。省略 reminders 默认「提前15分钟」；传空数组 [] 表示明确不提醒。可选值到时提醒/提前3分钟/提前5分钟/提前10分钟/提前15分钟/提前30分钟/提前1个小时/提前3个小时/提前一天。",
+            Tool("compute_date", "把相对日期说法换算成绝对日期。**所有涉及相对时间的操作都建议先调它**，不要心算 —— 实测「下周二」这类说法心算极易算成再下一周。参数可组合：offsetDays/offsetWeeks/offsetMonths 为相对基准日的偏移；weekday + weekAnchor 定位到某一周的星期几。返回 date(YYYY-MM-DD)、weekday 和 explanation(算法过程,便于核对)。基线默认取服务端今天。",
+                new { type = "object", properties = new
+                {
+                    baseline = new { type = "string", description = "基准日 YYYY-MM-DD(默认今天)。例如『从 9/15 那周算下周X』就传 2026-09-15" },
+                    offsetDays = new { type = "integer", description = "相对基准日加减的天数(可为负)。『三天后』= 3" },
+                    offsetWeeks = new { type = "integer", description = "相对基准日加减的周数(可为负)" },
+                    offsetMonths = new { type = "integer", description = "相对基准日加减的月数(可为负)。『下个月同一天』= 1" },
+                    weekday = new { type = "string", description = "目标星期几:monday..sunday 或 周一..周日" },
+                    weekAnchor = new { type = "string", description = "weekday 的相对周:this(本周,默认)/next(下周)/last(上周)", @enum = new[] { "this", "next", "last" } }
+                } }),
+            Tool("add_task", "在某一天添加任务。date 省略默认今天；time 为任务时刻 HH:mm(省略或 null 表示不设具体时间,按当天 9:00 处理)；reminders 为提醒档位标签数组,可多选。**省略 reminders 会默认带「提前15分钟」**(返回体里 reminderSource=default 会标明这一点);要明确不提醒必须显式传空数组 []。可选值到时提醒/提前3分钟/提前5分钟/提前10分钟/提前15分钟/提前30分钟/提前1个小时/提前3个小时/提前一天。date 必须是绝对日期 YYYY-MM-DD —— 不管是「下周二」「三天后」「这个月15号」「国庆前那个周五」还是直接给日期,都由调用方先换算成绝对日期再传,服务端不做任何相对时间推算;算不准时用 compute_date 工具,不要心算。返回体含 ok/verified/id,verified=true 才表示真的写入成功。",
                 new { type = "object", properties = new
                 {
                     title = new { type = "string", description = "任务标题" },
-                    date = new { type = "string", description = "日期 YYYY-MM-DD" },
+                    date = new { type = "string", description = "绝对日期 YYYY-MM-DD(如 2026-09-22)。相对时间请先用 compute_date 换算" },
                     time = new { type = "string", description = "任务时刻 HH:mm,如 14:30；null 表示不设具体时间" },
                     isImportant = new { type = "boolean", description = "是否重要" },
                     reminders = new
                     {
                         type = "array",
-                        description = "提醒档位标签,可多选;每个档位各提醒一次,如 [\"提前一天\",\"提前30分钟\"]",
+                        description = "提醒档位标签,可多选;每个档位各提醒一次,如 [\"提前一天\",\"提前30分钟\"]。省略 = 默认「提前15分钟」；[] = 明确不提醒",
                         items = new { type = "string", @enum = ReminderEnum }
                     }
                 }, required = new[] { "title" } }),
-            Tool("update_task", "编辑任务。id 必填,title/date/time/isImportant/reminders 均可选,只改传入的字段。time 传 null 或空串清除时刻；reminders 只要传入就整组替换,传 [] 清空全部提醒。修改日期/时刻/提醒后,旧的已提醒记录会作废,按新计划重新提醒。",
+            Tool("update_task", "编辑任务。id 必填,title/date/time/isImportant/reminders 均可选,只改传入的字段。time 传 null 或空串清除时刻；reminders 只要传入就整组替换,传 [] 清空全部提醒。修改日期/时刻/提醒后,旧的已提醒记录会作废,按新计划重新提醒。date 必须是绝对日期。返回体含 ok/verified,verified=true 才表示真的改成功 —— 历史上有过「工具报成功但任务并不存在」的情况,请以 verified 为准。",
                 new { type = "object", properties = new
                 {
                     id = new { type = "string", description = "任务 id" },
                     title = new { type = "string", description = "新标题" },
-                    date = new { type = "string", description = "新日期 YYYY-MM-DD" },
+                    date = new { type = "string", description = "新日期 YYYY-MM-DD(绝对日期)" },
                     time = new { type = "string", description = "新时刻 HH:mm；null/空串 = 清除时刻" },
                     isImportant = new { type = "boolean", description = "是否重要" },
                     reminders = new
                     {
                         type = "array",
-                        description = "整组替换提醒档位；[] = 不提醒",
+                        description = "整组替换提醒档位；[] = 不提醒。回传顺序与传入顺序一致",
                         items = new { type = "string", @enum = ReminderEnum }
                     }
                 }, required = new[] { "id" } }),
@@ -1074,19 +1344,19 @@ public sealed partial class McpServer : IDisposable
                 {
                     id = new { type = "string", description = "任务 id" }
                 }, required = new[] { "id" } }),
-            Tool("add_recurring_task", "创建周期(重复)任务：生成源任务及其未来重复实例(封顶约 2 年或到 end 日期)。frequency 必填(daily/weekly/monthly/yearly)；interval 为间隔(每 N 个频率单位，默认 1)；end 为结束日期(可选，含当天)；time/reminders 与 add_task 同。返回 series id 与创建的实例总数。",
+            Tool("add_recurring_task", "创建周期(重复)任务：生成源任务及其未来重复实例(封顶约 2 年或到 end 日期)。frequency 必填(daily/weekly/monthly/yearly)；interval 为间隔(每 N 个频率单位，默认 1)；end 为结束日期(可选，含当天)；time/reminders 与 add_task 同(省略 reminders = 默认「提前15分钟」；[] = 不提醒)。date/end 均为绝对日期。返回体含 ok/verified/id,verified=true 且 created 与实例数一致才算真成功。",
                 new { type = "object", properties = new
                 {
                     title = new { type = "string", description = "任务标题" },
                     frequency = new { type = "string", description = "重复频率", @enum = new[] { "daily", "weekly", "monthly", "yearly" } },
                     interval = new { type = "integer", description = "间隔(每 N 天/周/月/年一次，默认 1)" },
-                    date = new { type = "string", description = "起始日期 YYYY-MM-DD(默认今天)" },
+                    date = new { type = "string", description = "起始日期 YYYY-MM-DD(绝对日期,默认今天)" },
                     end = new { type = "string", description = "结束日期 YYYY-MM-DD(可选,含当天)" },
                     time = new { type = "string", description = "任务时刻 HH:mm" },
                     reminders = new
                     {
                         type = "array",
-                        description = "提醒档位标签,可多选",
+                        description = "提醒档位标签,可多选。省略 = 默认「提前15分钟」；[] = 不提醒",
                         items = new { type = "string", @enum = ReminderEnum }
                     }
                 }, required = new[] { "title", "frequency" } }),
@@ -1123,12 +1393,12 @@ public sealed partial class McpServer : IDisposable
                 new { type = "object", properties = new { } }),
             Tool("clear_completed_tasks", "删除所有已完成任务。返回删除条数。",
                 new { type = "object", properties = new { } }),
-            Tool("complete_task", "标记任务为已完成。",
+            Tool("complete_task", "标记任务为已完成。返回体含 ok/verified,verified=true 才表示真的改成功。",
                 new { type = "object", properties = new
                 {
                     id = new { type = "string", description = "任务 id" }
                 }, required = new[] { "id" } }),
-            Tool("uncomplete_task", "取消任务的完成状态。",
+            Tool("uncomplete_task", "取消任务的完成状态。返回体含 ok/verified。",
                 new { type = "object", properties = new
                 {
                     id = new { type = "string", description = "任务 id" }
