@@ -120,7 +120,7 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
-        Title = "MicaAgenda v5.2.4";
+        Title = "MicaAgenda v5.2.5";
 
         // 窗口初始化前同步加载配置，确保桌面嵌入/锁定在首帧即生效
         _config = _configStore.Load();
@@ -3559,6 +3559,13 @@ public partial class MainWindow : Window
         }
     }
 
+    /// <summary>
+    /// 把当前窗口几何记进设置：通用记忆 + 当前视图的记忆。
+    ///
+    /// <para>⚠️ <b>必须存真实坐标</b>。早先版本在这里把 Left/Top 抹成 0，
+    /// 而启动恢复是把整条记录当完整边界读回去的 —— 于是每次开机窗口都落在屏幕左上角。
+    /// 详见 <see cref="WindowBoundsResolver.ForStartup"/> 的说明。</para>
+    /// </summary>
     private void SaveCurrentViewBounds()
     {
         if (_viewModel is null)
@@ -3574,17 +3581,15 @@ public partial class MainWindow : Window
         switch (_viewModel.Settings.ViewMode)
         {
             case CalendarViewMode.Month:
-                _viewModel.Settings.MonthWindowBounds = bounds with { Left = 0, Top = 0 };
+                _viewModel.Settings.MonthWindowBounds = bounds;
                 break;
             case CalendarViewMode.Week:
-                _viewModel.Settings.WeekWindowBounds = bounds with { Left = 0, Top = 0 };
+                _viewModel.Settings.WeekWindowBounds = bounds;
                 break;
             case CalendarViewMode.Year:
                 // 按实际高度保存：若在这里再钳一次，用户拉大年视图后会被压回理想高度
                 _viewModel.Settings.YearWindowBounds = bounds with
                 {
-                    Left = 0,
-                    Top = 0,
                     Height = Math.Min(bounds.Height, GetYearResizeLimit())
                 };
                 break;
@@ -3619,8 +3624,7 @@ public partial class MainWindow : Window
     /// 与 <see cref="GetBoundsForView"/>（切视图用，位置不动）的区别就在这里 ——
     /// 启动时必须连位置一起恢复，否则每次开机都回到默认坐标。
     ///
-    /// 取值优先级：当前视图的记忆 → 通用记忆 <see cref="CalendarSettings.WindowBounds"/>
-    /// → 完全没存过时才退回 <see cref="GetBoundsForView"/> 的默认值。
+    /// 取值规则在 <see cref="WindowBoundsResolver.ForStartup"/>（与 Avalonia 宿主共用、有单测覆盖）。
     /// </summary>
     private WindowBounds GetStartupBounds(CalendarViewMode viewMode)
     {
@@ -3629,19 +3633,8 @@ public partial class MainWindow : Window
             return new WindowBounds(Left, Top, Width, Height);
         }
 
-        var settings = _viewModel.Settings;
-        var saved = viewMode switch
-        {
-            CalendarViewMode.Month => settings.MonthWindowBounds,
-            CalendarViewMode.Week => settings.WeekWindowBounds,
-            CalendarViewMode.Year => settings.YearWindowBounds,
-            _ => null
-        };
-
-        // 按视图的记忆可能还没写过（老数据 / 从没切过该视图）→ 退回通用记忆。
-        saved ??= settings.WindowBounds;
-
-        return saved is { Width: > 0, Height: > 0 } ? saved : GetBoundsForView(viewMode);
+        return WindowBoundsResolver.ForStartup(
+            _viewModel.Settings, viewMode, GetBoundsForView(viewMode));
     }
 
     private void ApplyWindowBounds(WindowBounds bounds)
@@ -3855,8 +3848,11 @@ public partial class MainWindow : Window
             Resources["YearMonthBackgroundBrush"] = BrushFromArgb(105, 31, 41, 55);
             Resources["YearCellBackgroundBrush"] = BrushFromArgb(70, 31, 41, 55);
             Resources["TaskBackgroundBrush"] = BrushFromArgb(135, 55, 65, 81);
-            // 右上面板在深色背景下需要更高的不透明度，避免和深色壁纸/卡片融在一起看不清
-            Resources["TodayPanelBackgroundBrush"] = BrushFromArgb(225, 30, 36, 46);
+            // 面板底色要融进主题，不能是另一块黑：原先 225 不透明度的 Argb(30,36,46) 几乎盖住窗口底层，
+            // 亮度又低于窗口那层磨砂底色（磨砂会把壁纸变亮），叠上去等于再压黑一层 ——
+            // 用户反馈"暗色磨砂主题下面板特别黑"。改用主题既有的深色面色 (31,41,55)，
+            // 与日期格子/周分组同色，只把不透明度提到 150 保证文字清晰。
+            Resources["TodayPanelBackgroundBrush"] = BrushFromArgb(150, 31, 41, 55);
             Resources["TodayPanelBorderBrush"] = BrushFromArgb(140, 255, 255, 255);
             // 选中态在深色背景下需要更高的不透明度才能从深灰卡片里凸显出来
             Resources["SelectedCellBackgroundBrush"] = BrushFromArgb(150, 59, 130, 246);

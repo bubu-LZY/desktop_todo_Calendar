@@ -2587,8 +2587,16 @@ public partial class MainWindow : Window
             SetBrush("DayCellOutMonthBackgroundBrush", Argb(45, 31, 41, 55));
             SetBrush("YearMonthBackgroundBrush", Argb(105, 31, 41, 55));
             SetBrush("TaskBackgroundBrush", Argb(135, 55, 65, 81));
-            // 深色下右侧面板要更实一点，否则和深色壁纸糊在一起看不清
-            SetBrush("TodayPanelBackgroundBrush", Argb(225, 30, 36, 46));
+            // 深色下右侧面板（今日任务 / 本周完成）的底色必须**融进主题**，而不是另起一块黑。
+            //
+            // 原先写死 Argb(225, 30, 36, 46)：225 的不透明度几乎完全盖住窗口底层，
+            // 而它的亮度又低于窗口那层磨砂底色 —— 磨砂会把壁纸变亮，所以面板叠上去等于又压黑一层。
+            // 用户看到的就是"暗色磨砂主题下这块面板特别黑"，跟整体主题对不上号。
+            //
+            // 现在改用主题里既有的那档深色面色 (31,41,55)——与日期格子、周视图分组、工具栏悬停同色，
+            // 只把不透明度提到 150（比格子实一点，保证文字清晰），于是面板会像窗口其它部分一样
+            // 透出壁纸、跟着主题走，色调统一。
+            SetBrush("TodayPanelBackgroundBrush", Argb(150, 31, 41, 55));
             SetBrush("SelectedCellBackgroundBrush", Argb(150, 59, 130, 246));
             return;
         }
@@ -2610,6 +2618,9 @@ public partial class MainWindow : Window
             CalendarBackgroundMode.PaperLight => Argb(190, 254, 243, 199),
             _ => Argb(186, 233, 247, 239)
         });
+        // 浅色下右侧面板的规则与深色一致：**比窗口底色更亮一档**，且取该模式自己的色系
+        // （外壳是 100 号色，面板就升到 50 号色，同色相、更亮），这样面板看起来是"浮在主题上的卡片"
+        // 而不是一块跟主题无关的白。深色分支同理 —— 两个方向的"浮起"都朝更亮走。
         SetBrush("TodayPanelBackgroundBrush", mode switch
         {
             CalendarBackgroundMode.AcrylicBlue => Argb(190, 239, 246, 255),
@@ -2668,8 +2679,8 @@ public partial class MainWindow : Window
     /// 启动时必须连位置一起恢复，否则每次开机都回到默认坐标，用户反馈的
     /// 「重启后记不住之前所在的位置」就是这么来的。
     ///
-    /// 取值优先级：当前视图的记忆 → 通用记忆 <see cref="CalendarSettings.WindowBounds"/>
-    /// → 完全没存过时才退回 <see cref="GetBoundsForView"/> 的默认值。
+    /// 取值规则本身在 <see cref="WindowBoundsResolver.ForStartup"/>（与 WPF 宿主共用、有单测覆盖），
+    /// 这里只负责提供"兜底边界"：当前位置 + 该视图的默认尺寸。
     /// </summary>
     private WindowBounds GetStartupBounds(CalendarViewMode mode)
     {
@@ -2678,21 +2689,7 @@ public partial class MainWindow : Window
             return new WindowBounds(Position.X, Position.Y, Width, Height);
         }
 
-        var s = _viewModel.Settings;
-        var saved = mode switch
-        {
-            CalendarViewMode.Month => s.MonthWindowBounds,
-            CalendarViewMode.Week => s.WeekWindowBounds,
-            CalendarViewMode.Year => s.YearWindowBounds,
-            _ => null
-        };
-
-        // 按视图的记忆可能还没写过（老数据 / 从没切过该视图）→ 退回通用记忆。
-        saved ??= s.WindowBounds;
-
-        return saved is { Width: > 0, Height: > 0 }
-            ? saved
-            : GetBoundsForView(mode);
+        return WindowBoundsResolver.ForStartup(_viewModel.Settings, mode, GetBoundsForView(mode));
     }
 
     private void Window_SizeChanged(object? sender, SizeChangedEventArgs e)
@@ -3226,6 +3223,16 @@ public partial class MainWindow : Window
         return visible < (long)pixelWidth * pixelHeight / 2;
     }
 
+    /// <summary>
+    /// 把当前窗口几何记进设置：通用记忆（<see cref="CalendarSettings.WindowBounds"/>）+ 当前视图的记忆。
+    ///
+    /// <para>⚠️ <b>必须存真实坐标</b>。早先版本在这里把 Left/Top 抹成 0（想用"没有位置"来表达
+    /// "分视图只记尺寸"），可启动恢复是把整条记录当完整边界读回去的 —— 于是每次开机窗口都精准
+    /// 落在屏幕左上角。用户反馈的「重启后记不住之前的位置，打开在左上角」根因就在这里。</para>
+    ///
+    /// <para>"位置不按视图分记"应该由读取侧表达（见 <see cref="WindowBoundsResolver.ForStartup"/>），
+    /// 不要在写入侧靠抹掉坐标来暗示 —— 那样两份数据会打架。</para>
+    /// </summary>
     private void SaveCurrentViewBounds()
     {
         if (_viewModel is null || _applyingBounds)
@@ -3239,13 +3246,13 @@ public partial class MainWindow : Window
         switch (s.ViewMode)
         {
             case CalendarViewMode.Month:
-                s.MonthWindowBounds = b with { Left = 0, Top = 0 };
+                s.MonthWindowBounds = b;
                 break;
             case CalendarViewMode.Week:
-                s.WeekWindowBounds = b with { Left = 0, Top = 0 };
+                s.WeekWindowBounds = b;
                 break;
             case CalendarViewMode.Year:
-                s.YearWindowBounds = b with { Left = 0, Top = 0 };
+                s.YearWindowBounds = b;
                 break;
         }
 
