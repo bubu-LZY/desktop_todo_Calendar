@@ -548,29 +548,110 @@ foreach ($p in 10808,7892,7890,10809) {
 ```
 > 实战：某端口能建 CONNECT 隧道（返回 200）但 **TLS 握手稳定失败**（`schannel: failed to receive handshake`，重试全 `000`）；真正可用的是另一个。**"端口能连" ≠ "端口能用"，必须用 https 请求验证。**
 
-⚠️ **环境变量 `HTTP_PROXY`/`HTTPS_PROXY` 会覆盖 git 配置**，且可能指向早失效的端口。推送前清空或显式 `-c` 覆盖：
-```powershell
-$env:HTTP_PROXY=""; $env:HTTPS_PROXY=""      # 或
-git -c http.proxy=http://127.0.0.1:<port> -c https.proxy=http://127.0.0.1:<port> push origin main
-```
-**不要**用空值强制直连（`-c http.proxy=`）——那通常会失败。
+⚠️ **环境变量 `HTTP_PROXY`/`HTTPS_PROXY` 会覆盖 git 配置**，且可能指向早失效的端口。
 
-**代理"能连"还会"偶发 502"**：同一端口、同一地址，`git push` 可能连续报
-`CONNECT tunnel failed, response 502`，而此时 `gh api` 依然正常（`gh` 走的是自己的通道）。
-**解法**：加 `-c http.version=HTTP/1.1` + 短重试（3~5 次、间隔 5~8s），实测首次即成功：
+**🔥 关键发现（先做这一步，能省掉后面 90% 的折腾）**：
+这个环境的 shell **每次新起会话都会重新注入一对代理环境变量**，而端口往往是**早已失效**的
+（实测被注入 `http://127.0.0.1:59776`，而真正能用的代理在 `10808`）。
+于是 git 一直在往一个死端口发 CONNECT → 报的却是 `CONNECT tunnel failed, response 502` 或
+`schannel: failed to receive handshake` —— **看起来像"墙/网络问题"，其实只是环境变量错了**。
+
+更要紧的是：**把这两个变量清空后，直连是通的**。
+```powershell
+# 先看清楚当前被注入的是什么
+"HTTP_PROXY=$env:HTTP_PROXY  HTTPS_PROXY=$env:HTTPS_PROXY"
+# 清空（注意：要显式赋空串，"Remove-Item Env:XXX"在该环境里不一定生效）
+$env:HTTP_PROXY=""; $env:HTTPS_PROXY=""; $env:ALL_PROXY=""
+git -c http.version=HTTP/1.1 ls-remote origin main    # 实测 exit=0，直连可用
+```
+> 本次 `git push` / `fetch` / `ls-remote` **在清空环境变量后直连全部成功**，
+> 一次都不用代理。之前"必须走代理"的结论，其实是被那对陈旧环境变量误导的。
+> **所以顺序是：① 看清并清空代理环境变量 → ② 试直连 → ③ 直连不行才去找可用代理。**
+
+⚠️ **清空操作必须在与 git 命令同一条命令里执行** —— 环境变量由 shell 每次重新注入，
+上一条命令清了，下一条命令又会回来。**别指望跨命令生效。**
+
+**直连确实不通时**，再去逐个端口实测（能连 ≠ 能用）：
+```powershell
+$env:HTTP_PROXY=""; $env:HTTPS_PROXY=""
+foreach ($p in 10808,7892,7890,10809) {
+  foreach ($s in "http","socks5h") {
+    curl.exe -s -o NUL -w "$p/$s -> %{http_code}`n" --max-time 12 -x "$s://127.0.0.1:$p" "https://api.github.com"
+  }
+}
+```
+用代理推送时加 HTTP/1.1 + 短重试（代理偶发 502，重试即可）：
 ```powershell
 $tok = gh auth token
 $url = "https://x-access-token:$tok@github.com/<owner>/<repo>.git"
-for ($i=1; $i -le 5; $i++) {
+for ($i=1; $i -le 6; $i++) {
   git -c credential.helper= -c http.version=HTTP/1.1 push $url main:main
   if ($LASTEXITCODE -eq 0) { break }
   Start-Sleep -Seconds 6
 }
 ```
 
-### 坑 R：本地 `git status` 误报 `ahead N`
-**根因**：用"URL 内嵌 token"等非 origin 地址推送时，本地 remote-tracking ref 不会更新。
+**兜底方案：`gh api` 可以直接改远端文件**（当 git 完全推不动、但 `gh` 通时）。
+往 `contents` 端点 PUT 即可，无需 git 传输：
+```powershell
+$b64  = [Convert]::ToBase64String([IO.File]::ReadAllBytes($localPath))
+$sha  = (gh api "repos/$repo/contents/$apiPath?ref=main" --jq .sha).Trim()
+$body = @{ message="..."; content=$b64; sha=$sha; branch="main" } | ConvertTo-Json -Compress
+[IO.File]::WriteAllText($bf, $body, (New-Object System.Text.UTF8Encoding $false))  # 别写 BOM
+gh api -X PUT "repos/$repo/contents/$apiPath" --input $bf
+```
+⚠️ 用这条路改完文件后，**本地会和远端分叉**（同一内容两个不同 commit），
+下次操作前务必按坑 R 的流程用 API 的 SHA 同步本地，**不要**直接 `reset --hard origin/main`。
+
+⚠️ **别再尝试** `-c http.proxy=`（空值强制直连）——那不会让 git 忽略环境变量，通常还是失败。
+要绕开环境变量就**显式清空变量**。
+
+### 坑 R：本地 `git status` 误报 `ahead N` —— **且 `reset --hard origin/main` 会毁掉工作树**
+
+**根因**：用"URL 内嵌 token"等非 origin 地址推送时，本地 remote-tracking ref（`origin/main`）不会更新，
+会**长期停留在很久以前的提交**（实测停在 `v5.2.0`，而远端已经是 `v5.2.5`）。
+
+**浅层症状**：`git status` 误报 `ahead N`。
 **解法**：**以 API 为准**：`gh api repos/<owner>/<repo>/commits/main --jq .sha` 对比 `git rev-parse HEAD`。
+
+**⚠️⚠️ 真正的危险（本条是本 skill 里最危险的一个坑）**：
+用 URL-token 推过几次之后，如果习惯性地执行
+```
+git reset --hard origin/main      # ☠️ 会回退到几周前的旧提交
+```
+就会把 HEAD 拉回那个**陈旧**的 remote-tracking ref，**工作树里新版本的文件被成批删除**
+（实测一次删掉 53 个文件，刚发布的源码全没了）。而且该命令**不会**报错，看起来很正常。
+
+**铁律：任何 `git reset --hard origin/...` 之前，先核对 ref 与 API 是否一致。**
+```powershell
+$api = (gh api repos/<owner>/<repo>/commits/main --jq .sha).Trim()
+$ref = (git rev-parse refs/remotes/origin/main).Trim()
+"api=$api ref=$ref"          # 不一致 → 绝对不要 reset
+```
+不一致时，正确做法是**按 API 给出的 SHA 操作**，而不是按 ref：
+```powershell
+git fetch origin $api            # 需要时按 SHA 取
+git reset --hard $api            # 目标明确，不会踩到陈旧 ref
+git update-ref refs/remotes/origin/main $api   # 顺手修好陈旧的 remote-tracking ref
+```
+
+**为什么 `git fetch` 之后 ref 还是旧的**：实测 `git fetch origin main` 打印了
+`f41e3c9..6aa996e  main -> origin/main`，但随后 `git rev-parse refs/remotes/origin/main`
+**依然是 `f41e3c9`**（packed-refs 与 loose ref 不一致时会出现这种"消息说更新了、实际没更新"）。
+**所以：不要相信 fetch 的那行输出，只相信 `git rev-parse`。**
+
+**误踩之后的恢复**（本次 100% 无损恢复，因为提交对象都还在本地 object DB）：
+```powershell
+git reflog -8                     # 确认是被 reset 拉到哪一步，找到丢失的提交
+git reset --hard <正确的提交SHA>   # 例：6aa996e
+git update-ref refs/remotes/origin/main <SHA>
+git status --short                # 必须干净
+```
+**恢复后一定要重新 build + 跑全量测试**，确认文件真的齐了（本次 268/268 通过即证明无损）。
+另外：**已推送的提交/标签/Release 不受本地误操作影响**，先在远端确认发布完好再决定怎么修本地。
+
+**预防**：不要在同一个仓库里混用两种推送方式。要么全程用 `origin`（先 `gh auth setup-git`），
+要么全程 URL-token 并在**每次**操作后用 API 核对，绝不依赖 `origin/*` 来判断"本地和远端谁新"。
 
 ### 坑 S：CI 测试"本地绿、CI 红"（**时区 / 文化差异，必读**）
 **现象**：本地 `dotnet test` 全过，推上去 CI 四平台全挂。CI runner 是 **UTC + 英文/invariant culture**，本机常是 **UTC+8 + 中文 culture**。
@@ -775,6 +856,7 @@ for ($i=1; $i -le 5; $i++) {
 - 「状态记不住」类问题：**先读磁盘上的状态文件**，再读代码
 - 修状态类 bug 时优先让**旧脏数据自愈**（读取端忽略脏字段），别要求用户清配置
 - 多处实现的同一规则（多宿主 / 多入口）**收敛成一个带单测的纯函数**
+- push 前先看清并**清空代理环境变量**（`$env:HTTP_PROXY=""`），**优先试直连**
 
 ❌ **绝对不能**：
 - WPF / WinForms 工程直接往 macOS / Linux 发
@@ -788,6 +870,9 @@ for ($i=1; $i -le 5; $i++) {
 - 把临时诊断 / 探针 workflow 留在仓库里
 - 用「抹掉字段值」表达语义（如把坐标写成 0 表示"不记位置"）—— 请在读取端忽略
 - 深色主题里让容器面板比窗口底色更暗（会变成黑洞）
+- **`git reset --hard origin/main`**（remote-tracking ref 可能是陈旧的 → 回退并成批删文件）；
+  先用 API 的 SHA 核对，再 `git reset --hard <SHA>`
+- 相信 `git fetch` 打印的 "main -> origin/main" 就当 ref 已更新（只信 `git rev-parse`）
 
 ---
 
