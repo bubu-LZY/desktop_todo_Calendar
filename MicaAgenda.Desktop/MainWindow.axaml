@@ -964,18 +964,19 @@
                  所以这里两组内容按需在「同一行右侧」和「第二行」之间搬家 —— 见 UpdateResponsiveLayout。
                  Grid.Row/Column 走的是附加属性，代码里用 Grid.SetRow / Grid.SetColumn 即可搬。 -->
             <!-- 「今天 / 视图下拉 / 统计 / 周期 / AI / 设置 / 锁定」这一组常驻按钮。
-                 用「Auto 列 + * 弹性列」交替排布（不在中间塞普通间隔）：
-                 - 窗口够宽、按钮与日期同处一行时，本面板宽度就是内容宽，弹性列归零 → 按钮紧凑；
-                 - 换行到第二行、面板被拉满整行时，弹性列吸收全部余量 → 按钮均匀铺开，
-                   首尾边框始终与下方内容区（今日任务面板）对齐。
-                 这是布局机制保证的，不需要宿主按像素反算间距 —— 那样在缩放过程中会来回跳。
+                 用**水平 StackPanel + 固定间距**，按钮彼此紧挨，中间不留人为空白。
+                 （早期版本用「Auto 列 + * 弹性列」交替排布，想让换行后按钮铺满整行、
+                   右边缘与下方内容区对齐；但窗口一窄，那些 * 列会吸收大量余量，
+                   变成按钮之间几个大空洞 —— 用户明确反馈"看起来非常奇怪"，故改回紧凑排列。）
+                 整组靠右：与日期信息同处一行时本来就在右侧；换行到第二行时也靠右，
+                 这样"锁定"仍贴着窗口右边，视觉锚点不乱。
                  Grid.Row/Column 走附加属性，代码里用 Grid.SetRow / Grid.SetColumn 搬行。 -->
-            <Grid x:Name="TopActionPanel" Grid.Row="0" Grid.Column="1"
-                  ColumnDefinitions="Auto,*,Auto,*,Auto,*,Auto,*,Auto,*,Auto,*,Auto"
-                  HorizontalAlignment="Right" VerticalAlignment="Center">
+            <StackPanel x:Name="TopActionPanel" Grid.Row="0" Grid.Column="1"
+                        Orientation="Horizontal" Spacing="6"
+                        HorizontalAlignment="Right" VerticalAlignment="Center">
               <Button Grid.Column="0" Classes="toolbar" Content="今天" VerticalAlignment="Center" Click="Today_Click" />
               <!-- 视图切换下拉：月 / 周 / 年 / 任务视图都收在这里，顶栏不再一字排开 -->
-              <Button x:Name="ViewMenuButton" Grid.Column="2" Classes="toolbar" VerticalAlignment="Center">
+              <Button x:Name="ViewMenuButton" Classes="toolbar" VerticalAlignment="Center">
                 <Button.Flyout>
                   <MenuFlyout Opening="ViewMenu_Opening">
                     <MenuItem x:Name="ViewMonthItem" Header="月视图" Click="MonthView_Click" />
@@ -990,21 +991,21 @@
                   <TextBlock Text="▾" FontSize="9" Opacity="0.55" VerticalAlignment="Center" />
                 </StackPanel>
               </Button>
-              <Button Grid.Column="4" Classes="toolbar" Content="统计" VerticalAlignment="Center" Click="Statistics_Click"
+              <Button Classes="toolbar" Content="统计" VerticalAlignment="Center" Click="Statistics_Click"
                       ToolTip.Tip="查看本周 / 本月的任务完成情况统计" />
-              <Button Grid.Column="6" Classes="toolbar" Content="周期" VerticalAlignment="Center" Click="RecurringTask_Click"
+              <Button Classes="toolbar" Content="周期" VerticalAlignment="Center" Click="RecurringTask_Click"
                       ToolTip.Tip="管理周期任务（每天 / 每周 / 每月 / 每年自动重复）" />
-              <Button x:Name="AiButton" Grid.Column="8" Classes="toolbar" Content="AI" VerticalAlignment="Center" Click="AiChat_Click"
+              <Button x:Name="AiButton" Classes="toolbar" Content="AI" VerticalAlignment="Center" Click="AiChat_Click"
                       ToolTip.Tip="AI 对话（自然语言增删改查任务）" />
-              <Button Grid.Column="10" Classes="toolbar" Content="设置" VerticalAlignment="Center" Click="Settings_Click" />
+              <Button Classes="toolbar" Content="设置" VerticalAlignment="Center" Click="Settings_Click" />
               <!-- 锁定：只留锁形图标，不显示文字；锁住后随 .locked 态变红，含义靠 ToolTip 说明。
                    用 Shapes.Path 而非 PathIcon：PathIcon 不支持 Stretch、按几何原始尺寸绘制会溢出。 -->
-              <Button x:Name="LockButton" Grid.Column="12" Classes="toolbar" Width="28" Padding="0" VerticalAlignment="Center" Click="LockPosition_Click">
+              <Button x:Name="LockButton" Classes="toolbar" Width="28" Padding="0" VerticalAlignment="Center" Click="LockPosition_Click">
                 <Path x:Name="LockIcon" Width="13" Height="13" Stretch="Uniform"
                       Fill="{Binding $parent[Button].Foreground}"
                       HorizontalAlignment="Center" VerticalAlignment="Center" />
               </Button>
-            </Grid>
+            </StackPanel>
           </Grid>
         </Border>
 

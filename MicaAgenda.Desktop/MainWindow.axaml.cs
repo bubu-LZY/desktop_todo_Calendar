@@ -2758,10 +2758,10 @@ public partial class MainWindow : Window
     private static readonly string?[] TopBarDensitySteps = [null, "compact", "ultra"];
 
     /// <summary>
-    /// 按密度档给顶栏所有常驻按钮加 / 去样式类（null = 恢复默认档）。
+    /// 按密度档给顶栏所有常驻按钮加 / 去样式类（null = 恢复默认档），并同步收紧按钮间距。
     ///
     /// 这些按钮在窄窗下不隐藏 —— 窄屏恰恰就是任务视图：藏掉「设置」用户就没法改配置、
-    /// 藏掉「AI」就调不出对话、藏掉「周期」就加不了周期任务。所以只能缩字号与内边距。
+    /// 藏掉「AI」就调不出对话、藏掉「周期」就加不了周期任务。所以只能缩字号、内边距与间距。
     /// 改完类后 DesiredSize 会自动失效，紧接着的 MeasurePanelWidth 量到的就是新档位的真实宽度。
     /// </summary>
     private void SetTopBarDensity(string? densityClass)
@@ -2780,6 +2780,14 @@ public partial class MainWindow : Window
                 button.Classes.Add(densityClass);
             }
         }
+
+        // 间距跟着密度一起收：按钮变小了、间距还留着原样，既白占宽度又显得松散。
+        TopActionPanel.Spacing = densityClass switch
+        {
+            "compact" => 4,
+            "ultra" => 3,
+            _ => 6
+        };
     }
 
     private void UpdateResponsiveLayout()
@@ -2839,11 +2847,15 @@ public partial class MainWindow : Window
         var wrap = needsWrap;
         if (wrap)
         {
-            // 常驻按钮搬到第二行（Grid.Row=1 跨满所有列），独占一行就不再和日期信息抢宽度
+            // 常驻按钮搬到第二行（Grid.Row=1 跨满所有列），独占一行就不再和日期信息抢宽度。
+            // 对齐仍然靠右：按钮组紧挨着排在第二行右端，「锁定」贴着窗口右边 ——
+            // 与第一行的日期信息形成左右呼应，视觉锚点不乱。
+            // （早期这里用 Stretch + 弹性列把按钮均匀铺满整行，窄窗时会出现几个大空洞，
+            //   用户明确反馈过，故改为紧凑靠右。）
             Grid.SetRow(TopActionPanel, 1);
             Grid.SetColumn(TopActionPanel, 0);
             Grid.SetColumnSpan(TopActionPanel, 3);
-            TopActionPanel.HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Stretch;
+            TopActionPanel.HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right;
         }
         else
         {
@@ -2857,14 +2869,9 @@ public partial class MainWindow : Window
         // 换行档下第二行会多出一段高度，外壳高度是外部算好的，这里只负责上下留白不贴边。
         TopActionPanel.Margin = wrap ? new Avalonia.Thickness(0, 3, 0, 0) : default;
 
-        // 换行后按钮行独占整行，但水平 StackPanel 是从左往右排的、末尾会剩一段空白，
-        // 最右的「锁定」就比下方内容区的右边框短一截。
-        // 这里把余量**均摊到按钮之间的间隙**上（按钮尺寸保持不变）：
-        // 只拉某一个按钮会把它撑成长条（第一版就是那样错的），而改间隙既铺满整行、
-        // 又不会让任何按钮变形，缩放过程中也是平滑过渡、不会来回跳。
-        // 只在换行档做：不换行时按钮跟在日期右侧，右边缘本来就贴着内容区。
-        // 第二行的铺满交给 XAML 里 TopActionPanel 的弹性列自动完成（Auto 列放按钮、* 列吸收余量），
-        // 这里不再按像素反算间距 —— 手算的做法在 SizeChanged 这一轮里量不准，会偶发对不齐。
+        // 第二行的排布完全交给布局系统：TopActionPanel 是水平 StackPanel + 固定间距，
+        // 按钮彼此紧挨、整组靠右，任何宽度下都不会出现人为的大空白。
+        // 这里**不做**按像素反算间距那套 —— 手算在 SizeChanged 这一轮里量不准，会偶发对不齐。
 
         // ===== 第 ① / ② 档：背景 + 透明度是否还放得下 =====
         // 换行之后第一行的宽度需求降到「只有日期信息」，所以先按换行后的实际情况再量一次：
