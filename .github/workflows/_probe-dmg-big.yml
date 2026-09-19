@@ -1,0 +1,38 @@
+name: Probe macos-15 dmg big
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: macos-15
+    steps:
+      - name: 造一个像 .app 的大目录（100MB 二进制 + 800 文件）
+        run: |
+          rm -rf /tmp/fake.app
+          mkdir -p /tmp/fake.app/Contents/MacOS /tmp/fake.app/Contents/Resources
+          dd if=/dev/urandom of=/tmp/fake.app/Contents/MacOS/MicaAgenda.Desktop bs=1m count=95
+          chmod +x /tmp/fake.app/Contents/MacOS/MicaAgenda.Desktop
+          for i in $(seq 1 800); do
+            dd if=/dev/urandom of="/tmp/fake.app/Contents/MacOS/lib$(printf %04d $i).dll" bs=1k count=$((RANDOM % 200 + 1)) 2>/dev/null
+          done
+          dd if=/dev/urandom of=/tmp/fake.app/Contents/Resources/LICENSE bs=1k count=35
+          du -sh /tmp/fake.app; find /tmp/fake.app -type f | wc -l
+
+      - name: 试 dmg（全量，带 -verbose）
+        run: |
+          hdiutil create -volname "desktop_todo_Calendar" -srcfolder /tmp/fake.app -ov -format UDZO /tmp/fake.dmg -verbose 2>&1 | tail -30
+          echo "BIG_EXIT=$?"
+
+      - name: 试 dmg（压缩前先估大小，看是不是 compress 阶段）
+        run: |
+          hdiutil create -volname "desktop_todo_Calendar" -srcfolder /tmp/fake.app -ov -format UDRW /tmp/fake-rw.dmg -verbose 2>&1 | tail -20
+
+      - name: 试 hdiutil 完全静默模式
+        run: |
+          hdiutil create -volname "desktop_todo_Calendar" -srcfolder /tmp/fake.app -ov -format UDZO /tmp/fake-quiet.dmg
+          echo "QUIET_EXIT=$?"
+
+      - name: 结果
+        if: always()
+        run: ls -la /tmp/fake*.dmg || true
