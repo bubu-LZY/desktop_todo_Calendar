@@ -596,6 +596,75 @@ public static class DesktopEmbedService
     private const int ScRestore = 0xF120;
     private const int SizeMinimized = 1;
 
+    /// <summary><c>WM_QUERYENDSESSION</c>：系统在注销 / 关机 / 重启前询问"能不能关"。</summary>
+    private const uint WmQueryendsession = 0x0011;
+
+    /// <summary><c>WM_ENDSESSION</c>：系统确认要结束了（wParam != 0 表示真的在结束）。</summary>
+    private const uint WmEndsession = 0x0016;
+
+    /// <summary><c>ENDSESSION_CLOSEAPP</c>：这次结束是为了装更新而需要关闭应用（Win10+）。</summary>
+    private const uint EndsessionCloseapp = 0x00000001;
+
+    /// <summary>
+    /// 会话即将结束（关机 / 重启 / 注销）时的回调。参数是"这次结束是否真的会发生"。
+    ///
+    /// 之所以要单独一条通道：这条路径 <b>不经过</b> 托盘「退出」的 <c>ExitApplication</c>，
+    /// 而窗口的 Closing 又是被主动阻断的（桌面小部件不允许点 ×），所以位置只在正常退出时
+    /// 存的话，重启一次就全丢了。回调里必须<b>同步</b>把位置写盘 —— 这里没有"等一下"的余地。
+    /// </summary>
+    private static Action? _sessionEnding;
+
+    /// <summary>会话结束回调是否已经执行过（WM_QUERYENDSESSION 和 WM_ENDSESSION 会各来一次）。</summary>
+    private static bool _sessionEndingNotified;
+
+    /// <summary>
+    /// 登记"关机 / 重启前要做的落盘"。同一时刻只保留一个回调（就是主窗）。
+    /// </summary>
+    public static void InstallSessionEndWatch(Action onSessionEnding)
+    {
+        if (!IsWindows)
+        {
+            return;
+        }
+
+        _sessionEnding = onSessionEnding;
+    }
+
+    /// <summary>
+    /// 这条消息是不是"会话要结束了"。命中就调一次回调，返回值不做拦截 ——
+    /// 不能因为落盘失败就把用户的关机拦下来。
+    /// </summary>
+    private static bool HandleSessionEndMessage(uint msg, IntPtr wParam)
+    {
+        if (msg == WmEndsession && wParam == IntPtr.Zero)
+        {
+            // WM_ENDSESSION 带 wParam=0 表示"又不结束了"（别的程序拦下来了），不触发。
+            return false;
+        }
+
+        if (msg != WmQueryendsession && msg != WmEndsession)
+        {
+            return false;
+        }
+
+        if (_sessionEndingNotified)
+        {
+            return true;
+        }
+
+        _sessionEndingNotified = true;
+        try
+        {
+            _sessionEnding?.Invoke();
+        }
+        catch
+        {
+            // 落盘失败也不能挡关机：用户按的是电源键，不是我们的保存按钮。
+        }
+
+        return true;
+    }
+
     /// <summary>
     /// 给窗口装一个「最小化免疫」钩子：把 <c>SC_MINIMIZE</c> 和 <c>SIZE_MINIMIZED</c> 直接吃掉，
     /// 让窗口<b>根本不会进入</b>最小化态。
@@ -659,6 +728,10 @@ public static class DesktopEmbedService
     {
         try
         {
+            // 关机 / 重启 / 注销：先把窗口位置同步落盘，再放行消息。
+            // 这条路径不走 ExitApplication，不在这里存就等于没存（重启后位置回到默认）。
+            HandleSessionEndMessage(msg, wParam);
+
             if (ShouldSwallowMessage(msg, wParam, lParam))
             {
                 // 返回 0 = "处理完了"，窗口不会真的最小化。
@@ -787,6 +860,130 @@ public static class DesktopEmbedService
             // 回调跑在 UI 线程消息循环里，绝不能抛异常穿过 native 边界。
         }
     }
+
+    // ===== 窗口移动 / 缩放监听（记住窗口位置用）=====
+
+    /// <summary>
+    /// <c>EVENT_OBJECT_LOCATIONCHANGE</c>：窗口的位置或尺寸变化时由系统发出。
+    ///
+    /// 这是"拖动窗口"最可靠的信号来源 —— Avalonia 的 <c>PositionChanged</c> 在自定义标题栏
+    /// 走 <c>BeginMoveDrag</c>（原生拖拽）时整个拖动过程都不触发，只能靠系统这层。
+    /// 拖动 / 缩放都会连续发这个事件，配合调用方自己的防抖就能攒成"停手才写盘"。
+    /// </summary>
+    private const uint EventObjectLocationchange = 0x800B;
+
+    private static IntPtr _moveHook;
+    private static IntPtr _watchedWindow;
+    private static Action<int, int>? _moved;
+    private static WinEventProc? _moveHookProc;
+
+    [DllImport("user32.dll", EntryPoint = "GetWindowRect", SetLastError = true)]
+    private static extern bool GetWindowRect(IntPtr hWnd, out Rect lpRect);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct Rect
+    {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
+    }
+
+    /// <summary>
+    /// 监听指定窗口的位置变化，每次变化回调 <paramref name="onMoved"/>（参数是新的屏幕坐标）。
+    ///
+    /// 同一时刻只跟一个窗口（本程序就是这一扇主窗），重复对同一句柄调用是幂等的；
+    /// 句柄变了（Avalonia 重建原生窗口）会先摘掉旧的再装新的。
+    ///
+    /// 用 <c>WINEVENT_OUTOFCONTEXT</c> 装：回调投递到安装线程（UI 线程）的消息循环里，
+    /// 和看门狗 tick 同线程，回调里可以直接碰 UI 状态，不需要再 Post。
+    /// 装不上不抛异常 —— 位置记忆还有"退出时兜底保存"这一层。
+    /// </summary>
+    public static void InstallWindowMoveWatch(IntPtr handle, Action<int, int> onMoved)
+    {
+        if (!IsWindows || handle == IntPtr.Zero)
+        {
+            return;
+        }
+
+        _moved = onMoved;
+        if (_moveHook != IntPtr.Zero && _watchedWindow == handle)
+        {
+            return;
+        }
+
+        // 换了句柄：旧钩子对着一个（可能已销毁的）窗口，先摘掉避免回调打到失效窗口上。
+        UninstallWindowMoveWatch();
+
+        _watchedWindow = handle;
+        _moveHookProc = OnWindowLocationChanged;
+        try
+        {
+            _moveHook = SetWinEventHook(
+                EventObjectLocationchange, EventObjectLocationchange,
+                IntPtr.Zero, _moveHookProc, 0, 0, WineventOutofcontext);
+        }
+        catch
+        {
+            _moveHook = IntPtr.Zero;
+        }
+
+        if (_moveHook == IntPtr.Zero)
+        {
+            // 装不上就退化为只记尺寸（Avalonia 的 SizeChanged 仍然有效）。
+            _moveHookProc = null;
+            _watchedWindow = IntPtr.Zero;
+        }
+    }
+
+    private static void UninstallWindowMoveWatch()
+    {
+        if (_moveHook == IntPtr.Zero)
+        {
+            return;
+        }
+
+        try
+        {
+            UnhookWinEvent(_moveHook);
+        }
+        catch
+        {
+            // 摘不掉也不影响：句柄已失效，回调不会再投递。
+        }
+
+        _moveHook = IntPtr.Zero;
+        _watchedWindow = IntPtr.Zero;
+        _moveHookProc = null;
+    }
+
+    private static void OnWindowLocationChanged(
+        IntPtr hook, uint eventType, IntPtr hwnd, int idObject, int idChild,
+        uint thread, uint time)
+    {
+        try
+        {
+            // 只关心"窗口本身"的移动（OBJID_WINDOW = 0）；子对象的移动不关心。
+            if (idObject != 0 || hwnd == IntPtr.Zero || hwnd != _watchedWindow)
+            {
+                return;
+            }
+
+            if (!GetWindowRect(hwnd, out var rect))
+            {
+                return;
+            }
+
+            _moved?.Invoke(rect.Left, rect.Top);
+        }
+        catch
+        {
+            // 同前台钩子：绝不能抛异常穿过 native 边界。
+        }
+    }
+
+    [DllImport("user32.dll", EntryPoint = "UnhookWinEvent", SetLastError = true)]
+    private static extern bool UnhookWinEvent(IntPtr hWinEventHook);
 
     /// <summary>
     /// 把一次真实发生的自动还原写进错误日志，作为「显示桌面带走窗口」的现场证据。

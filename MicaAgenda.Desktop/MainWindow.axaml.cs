@@ -12,6 +12,7 @@ using Avalonia.Interactivity;
 using Avalonia.Layout;
 using Avalonia.LogicalTree;
 using Avalonia.Media;
+using Avalonia.Platform;
 using Avalonia.Styling;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
@@ -131,6 +132,32 @@ public partial class MainWindow : Window
     private System.Threading.Timer? _gcTrimTimer;
     private readonly Services.MouseDismissHook _aiDismissHook = new();
 
+    // ===== 窗口几何（位置 / 尺寸）记忆 =====
+    //
+    // 用户反馈「每次重启都回到默认位置」，根因有两层：
+    //   1) 启动时读的是 GetBoundsForView（位置取当前默认值），存下来的位置从没被用过 —— 已修；
+    //   2) 位置只在「托盘退出」和「切视图」两条路径上写盘，而重启 / 关机走的是 WM_ENDSESSION，
+    //      那条路不经过 ExitApplication —— 位置根本没来得及存。
+    //
+    // 所以记忆要挂在「几何真的稳定下来」这件事上，而不是挂在退出路径上：
+    // 拖动 / 缩放停下 ~1.2s 就落一次盘，进程无论怎么死，磁盘上总有一份不那么旧的位置。
+    private DispatcherTimer? _boundsSaveTimer;
+
+    /// <summary>几何变化计数：每次 Position/Size 变化 +1，用于判断"稳定了没有"。</summary>
+    private long _boundsRevision;
+
+    /// <summary>已落盘的几何版本号；与 <see cref="_boundsRevision"/> 相等说明没有待存的改动。</summary>
+    private long _boundsSavedRevision;
+
+    /// <summary>窗口几何（位置 / 尺寸）稳定多久之后落盘。</summary>
+    private static readonly TimeSpan BoundsSaveQuietPeriod = TimeSpan.FromMilliseconds(1200);
+
+    /// <summary>
+    /// 订阅窗口几何变化（拖 / 缩）的入口装了没有。装钩子的时机是首次 <c>Opened</c> ——
+    /// 此时原生窗口才真正存在，Win32 侧的事件钩子才挂得上。
+    /// </summary>
+    private bool _boundsWatcherHooked;
+
     /// <summary>
     /// 数据文件加载失败时置 true，全程关闭自动保存。
     /// 这是数据安全闸门：加载失败意味着原文件已损坏并被隔离改名，若照常自动保存，
@@ -202,6 +229,66 @@ public partial class MainWindow : Window
                 _ = SaveAsync();
             }
         };
+
+        // 几何稳定定时器：拖动 / 缩放期间被不断顺延，停手 1.2s 才真正落一次盘。
+        // 和上面那个"数据脏了才存"的定时器是两件事，不能共用一个：窗口几何不算 CalendarData 的脏，
+        // 它只在 MarkDirty 之后才会被写出去，因此这里必须自己判断"有没有待存的几何改动"。
+        _boundsSaveTimer = new DispatcherTimer { Interval = BoundsSaveQuietPeriod };
+        _boundsSaveTimer.Tick += (_, _) =>
+        {
+            _boundsSaveTimer.Stop();
+            PersistBoundsIfChanged();
+        };
+    }
+
+    /// <summary>
+    /// 窗口几何变了（拖动或缩放）。只登记"有改动 + 顺延稳定定时器"，真正的写盘交给
+    /// <see cref="PersistBoundsIfChanged"/> —— 拖动过程中每帧都写盘既浪费又可能写到一半状态。
+    /// </summary>
+    private void OnWindowGeometryChanged()
+    {
+        _boundsRevision++;
+
+        // 程序自身在应用记忆位置（启动恢复 / 切视图）时也会走到这里，但那些场景
+        // 不需要"防抖落盘"：切视图路径自己会调 SaveCurrentViewBounds，启动路径刚读完盘。
+        if (_applyingBounds || _boundsSaveTimer is null)
+        {
+            return;
+        }
+
+        // 锁定位置时不记 —— 用户已经把窗口钉住了，此时的位置变化（如果有）不是他的意图。
+        if (_config.LockWindow)
+        {
+            return;
+        }
+
+        _boundsSaveTimer.Stop();
+        _boundsSaveTimer.Start();
+    }
+
+    /// <summary>
+    /// 几何确实变过才写盘。写的是 <see cref="SaveCurrentViewBounds"/> 那套（通用 + 按视图），
+    /// 但多一步：写盘成功后才推进 <see cref="_boundsSavedRevision"/>，失败了下次还会再试。
+    /// </summary>
+    private void PersistBoundsIfChanged()
+    {
+        if (_boundsRevision == _boundsSavedRevision)
+        {
+            return;
+        }
+
+        if (_viewModel is null || _applyingBounds)
+        {
+            return;
+        }
+
+        // SaveCurrentViewBounds 内部只在 _applyingBounds 时早退，这里已经挡掉了。
+        SaveCurrentViewBounds();
+
+        // 记下这次落盘对应的几何版本。注意 SaveCurrentViewBounds 自己会 MarkDirty，
+        // 之后由 _saveTimer 把数据真正写到磁盘上；那一步失败不影响这里的版本推进 ——
+        // 最坏情况是"应用崩了、位置没写进去"，用户下次拖动会再存一次。
+        _boundsSavedRevision = _boundsRevision;
     }
 
     private async System.Threading.Tasks.Task InitializeAsync()
@@ -283,6 +370,12 @@ public partial class MainWindow : Window
             ApplyBackground();
             ApplyDesktopEmbed();
 
+            // 位置 / 尺寸变化的监听：必须在原生窗口就绪之后装（见方法注释）。
+            InstallBoundsWatcher();
+
+            // 关机 / 重启前把窗口位置同步落盘：这条路径不经过 ExitApplication，不在这里存就等于没存。
+            InstallSessionEndHandlers();
+
             // 首帧的 SizeChanged 未必赶在 Opened 之前到（或不触发），这里按当前宽度定一次版式。
             UpdateResponsiveLayout();
 
@@ -293,6 +386,134 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             AppLog.Error(ex, "MainWindow.OnOpened");
+        }
+    }
+
+    /// <summary>
+    /// 监听窗口几何变化，交给防抖定时器落盘。
+    ///
+    /// <para><b>为什么不用 Avalonia 的 <c>PositionChanged</c>。</b>实测（1.11 系列）拖动过程中它
+    /// <b>一次都不触发</b> —— 我们这条拖动路径是自定义标题栏里的 <c>BeginMoveDrag</c>，
+    /// 走的是原生拖拽，Avalonia 侧的位置属性直到拖拽结束后才被同步，事件也就跟着不来。
+    /// 而 <c>SizeChanged</c> 是可靠的（拖右下角缩放时会连续触发），所以两条一起用：
+    /// 尺寸靠 Avalonia 事件，位置靠本类自己装的 Win32 事件钩子。</para>
+    ///
+    /// <para>Win32 钩子失败也不致命：尺寸那条路还能记，位置则退回"退出时兜底保存"。</para>
+    /// </summary>
+    private void InstallBoundsWatcher()
+    {
+        if (_boundsWatcherHooked)
+        {
+            return;
+        }
+
+        _boundsWatcherHooked = true;
+
+        // 尺寸：Avalonia 自己的事件，拖右下角会连续触发。
+        SizeChanged += (_, _) => OnWindowGeometryChanged();
+
+        // 位置：原生窗口的 WM_WINDOWPOSCHANGED 事件钩子（拖动 / 缩放都会发）。
+        // 只装一次；钩子内部会过滤掉「位置其实没变」的消息，避免布局期刷爆防抖定时器。
+        if (OperatingSystem.IsWindows())
+        {
+            var hwnd = NativeHandle();
+            if (hwnd != IntPtr.Zero)
+            {
+                DesktopEmbedService.InstallWindowMoveWatch(hwnd, (x, y) =>
+                {
+                    // 坐标与当前记录的完全一致 = 系统在重发消息，不算一次真实的移动。
+                    if (_lastWatchedPosition is { } last && last.X == x && last.Y == y)
+                    {
+                        return;
+                    }
+
+                    _lastWatchedPosition = new PixelPoint(x, y);
+                    OnWindowGeometryChanged();
+                });
+            }
+        }
+        else
+        {
+            // macOS / Linux：没有原生钩子，用 Avalonia 的事件兜底（这两条平台拖拽时多半也不触发，
+            // 但至少不会漏掉全程 —— 兜底仍在退出路径上）。
+            PositionChanged += (_, _) => OnWindowGeometryChanged();
+        }
+    }
+
+    /// <summary>上一次被 Win32 钩子报告的位置，用来过滤重复的 WM_WINDOWPOSCHANGED。</summary>
+    private PixelPoint? _lastWatchedPosition;
+
+    /// <summary>
+    /// 关机 / 重启 / 注销前把窗口位置（以及当前数据）落盘。
+    ///
+    /// <para><b>为什么要装两层。</b>关机前能给到的落盘机会不止一条，两条都装上才敢说
+    /// "重启后位置还在"：</para>
+    /// <list type="number">
+    /// <item>Win32 <c>WM_QUERYENDSESSION</c> / <c>WM_ENDSESSION</c>：最标准的一条。窗口过程
+    /// 已经被本程序子类化（原本只为吃掉最小化消息，见
+    /// <see cref="DesktopEmbedService.GuardAgainstMinimize"/>），顺路把这两个消息也接出来。</item>
+    /// <item><c>AppDomain.ProcessExit</c>：最后一道防线。进程无论怎么被收走都会走这里，
+    /// 覆盖面最广 —— 包括上面那条钩子因为句柄重建而没挂上的情况。</item>
+    /// </list>
+    ///
+    /// <para>没有用 .NET 的 <c>SystemEvents.SessionEnding</c>：它需要额外的
+    /// <c>Microsoft.Win32.SystemEvents</c> 包，而在这个"关掉一个日历挂件"的场景里，
+    /// 上面两层已经够用，不值得为此多引一个依赖。</para>
+    ///
+    /// <para>两层共享一个「只跑一次」的闸门（见 <see cref="SaveBoundsOnShutdown"/>），
+    /// 不会重复写盘。</para>
+    /// </summary>
+    private void InstallSessionEndHandlers()
+    {
+        // ① Win32 消息钩子（Windows）：由 DesktopEmbedService 的窗口过程子类化转发过来。
+        DesktopEmbedService.InstallSessionEndWatch(SaveBoundsOnShutdown);
+
+        // ② 进程退出兜底：进程被收走的最后时刻一定会走这里。
+        AppDomain.CurrentDomain.ProcessExit += (_, _) => SaveBoundsOnShutdown();
+    }
+
+    /// <summary>关机 / 重启落盘的"只跑一次"闸门（两层通道会各来一次）。</summary>
+    private bool _boundsSavedOnShutdown;
+
+    /// <summary>
+    /// 会话结束路径上的落盘：<b>同步</b>写。
+    ///
+    /// 这里绝不能用 <c>await SaveAsync()</c>：关机时留给进程的时间只有极短的几十毫秒到几百毫秒，
+    /// 异步文件 I/O 很可能还没真正落到磁盘，进程就没了 —— 表现就是"位置存了但重启后没生效"。
+    /// 所以窗口几何 + 当前数据一起走同步写。
+    /// </summary>
+    private void SaveBoundsOnShutdown()
+    {
+        if (_boundsSavedOnShutdown)
+        {
+            return;
+        }
+
+        _boundsSavedOnShutdown = true;
+
+        try
+        {
+            // 几何：把当前视图的位置 + 尺寸记进设置。
+            SaveCurrentViewBounds();
+
+            // 数据：同步落到磁盘。异步的 _saveTimer 很可能已经来不及跑了。
+            if (_viewModel is { IsDirty: true } viewModel && !_suppressAutoSave)
+            {
+                // 落盘失败不致命（下次启动最多是这一次的改动丢了），但还是留个痕迹。
+                if (!_store.Save(viewModel.Data))
+                {
+                    AppLog.Error(null, "会话结束落盘被跳过：上一次保存仍持锁或写入失败");
+                }
+                else
+                {
+                    viewModel.MarkSaved();
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            // 关机路径上绝不能抛异常：抛出去会影响系统结束会话。
+            AppLog.Error(ex, "MainWindow.SaveBoundsOnShutdown");
         }
     }
 
@@ -2009,7 +2230,8 @@ public partial class MainWindow : Window
         }
 
         ApplyBackground();
-        ApplyWindowBounds(GetBoundsForView(s.ViewMode));
+        // 启动路径：连上次存下的位置一起恢复（不是 GetBoundsForView —— 那个位置不动）。
+        ApplyWindowBounds(GetStartupBounds(s.ViewMode));
         UpdateLockButton();
         UpdateAiButton();
     }
@@ -2419,6 +2641,14 @@ public partial class MainWindow : Window
     private const double DefaultWindowWidth = 900;
     private const double DefaultWindowHeight = 620;
 
+    /// <summary>
+    /// 视图切换时用的边界：**位置保持不变、只换尺寸**。
+    ///
+    /// 切视图时统一回到「该视图的默认尺寸」，不再沿用上次自己拖出来的尺寸：
+    /// 记忆的尺寸可能已经小到放不下这个视图（周视图本身就能拖得很窄，最容易中招），
+    /// 切过去会显示不全、甚至被窄窗规则强制成任务面板，表现就是"点了没反应"。
+    /// 位置保持不动、只换尺寸，免得窗口在屏幕上乱跳。
+    /// </summary>
     private WindowBounds GetBoundsForView(CalendarViewMode mode)
     {
         if (_viewModel is null)
@@ -2426,13 +2656,43 @@ public partial class MainWindow : Window
             return new WindowBounds(Position.X, Position.Y, Width, Height);
         }
 
-        // 切视图时统一回到「该视图的默认尺寸」，不再沿用上次自己拖出来的尺寸：
-        // 记忆的尺寸可能已经小到放不下这个视图（周视图本身就能拖得很窄，最容易中招），
-        // 切过去会显示不全、甚至被窄窗规则强制成任务面板，表现就是"点了没反应"。
-        // 位置保持不动、只换尺寸，免得窗口在屏幕上乱跳。
         var height = mode == CalendarViewMode.Week ? WeekMinHeight : DefaultWindowHeight;
 
         return new WindowBounds(Position.X, Position.Y, DefaultWindowWidth, height);
+    }
+
+    /// <summary>
+    /// 「启动恢复」用的边界：把上次退出时存下的**位置 + 尺寸**整套取回来。
+    ///
+    /// 与 <see cref="GetBoundsForView"/>（切视图用，位置不动）的区别就在这里 ——
+    /// 启动时必须连位置一起恢复，否则每次开机都回到默认坐标，用户反馈的
+    /// 「重启后记不住之前所在的位置」就是这么来的。
+    ///
+    /// 取值优先级：当前视图的记忆 → 通用记忆 <see cref="CalendarSettings.WindowBounds"/>
+    /// → 完全没存过时才退回 <see cref="GetBoundsForView"/> 的默认值。
+    /// </summary>
+    private WindowBounds GetStartupBounds(CalendarViewMode mode)
+    {
+        if (_viewModel is null)
+        {
+            return new WindowBounds(Position.X, Position.Y, Width, Height);
+        }
+
+        var s = _viewModel.Settings;
+        var saved = mode switch
+        {
+            CalendarViewMode.Month => s.MonthWindowBounds,
+            CalendarViewMode.Week => s.WeekWindowBounds,
+            CalendarViewMode.Year => s.YearWindowBounds,
+            _ => null
+        };
+
+        // 按视图的记忆可能还没写过（老数据 / 从没切过该视图）→ 退回通用记忆。
+        saved ??= s.WindowBounds;
+
+        return saved is { Width: > 0, Height: > 0 }
+            ? saved
+            : GetBoundsForView(mode);
     }
 
     private void Window_SizeChanged(object? sender, SizeChangedEventArgs e)
@@ -2841,7 +3101,10 @@ public partial class MainWindow : Window
         {
             var w = Math.Max(MinWindowWidth, b.Width);
             var h = Math.Max(MinWindowHeight, b.Height);
-            var screen = Screens.ScreenFromWindow(this) ?? Screens.Primary;
+
+            // 按**目标坐标**找屏幕，而不是 ScreenFromWindow(this) ——
+            // 后者看的是窗口当前位置，启动时那还是默认位置，会选错屏。
+            var screen = FindScreenFor(b.Left, b.Top) ?? Screens.Primary;
             if (screen?.WorkingArea is PixelRect wa)
             {
                 // 关键：WorkingArea 是**物理像素**，而窗口的 Width/Height 是**逻辑像素** ——
@@ -2856,8 +3119,27 @@ public partial class MainWindow : Window
 
                 var pixelWidth = (int)Math.Round(w * scaling);
                 var pixelHeight = (int)Math.Round(h * scaling);
-                var x = Math.Clamp((int)b.Left, wa.X, Math.Max(wa.X, wa.X + wa.Width - pixelWidth));
-                var y = Math.Clamp((int)b.Top, wa.Y, Math.Max(wa.Y, wa.Y + wa.Height - pixelHeight));
+                int x;
+                int y;
+
+                // 屏幕之外 / 只露一点点的窗口会被用户看成"程序没打开"（拔掉外接显示器就中招）。
+                // 判定标准：可见面积小于半个窗口，就认为它回不来了，拉回主屏。
+                if (IsMostlyOffScreen(b, pixelWidth, pixelHeight))
+                {
+                    var primary = Screens.Primary;
+                    var pwa = primary?.WorkingArea ?? wa;
+                    x = pwa.X + Math.Max(0, (pwa.Width - pixelWidth) / 2);
+                    y = pwa.Y + Math.Max(0, (pwa.Height - pixelHeight) / 3);
+                    AppLog.Error(
+                        null,
+                        $"[WindowBounds] 窗口记忆坐标 {b.Left},{b.Top} 已不在任何屏幕可见区，拉回主屏 {x},{y}");
+                }
+                else
+                {
+                    x = Math.Clamp((int)b.Left, wa.X, Math.Max(wa.X, wa.X + wa.Width - pixelWidth));
+                    y = Math.Clamp((int)b.Top, wa.Y, Math.Max(wa.Y, wa.Y + wa.Height - pixelHeight));
+                }
+
                 Position = new PixelPoint(x, y);
             }
             else
@@ -2870,6 +3152,71 @@ public partial class MainWindow : Window
         {
             _applyingBounds = false;
         }
+    }
+
+    /// <summary>
+    /// 按物理坐标找包含该点的屏幕；没有屏幕包含时，退而求其次找**相交面积最大**的那块。
+    /// 找不到任何相交屏幕返回 null。
+    /// </summary>
+    private Screen? FindScreenFor(double left, double top)
+    {
+        if (Screens.All.Count == 0)
+        {
+            return null;
+        }
+
+        var point = new PixelPoint((int)left, (int)top);
+        foreach (var screen in Screens.All)
+        {
+            if (screen.Bounds.Contains(point))
+            {
+                return screen;
+            }
+        }
+
+        // 坐标落在所有屏幕外：选离得最近的一块，后续 IsMostlyOffScreen 会把它拉回来。
+        return Screens.All
+            .OrderBy(s => DistanceSquaredTo(s.Bounds, left, top))
+            .First();
+    }
+
+    private static double DistanceSquaredTo(PixelRect r, double x, double y)
+    {
+        var dx = x < r.X ? r.X - x : x > r.Right ? x - r.Right : 0;
+        var dy = y < r.Y ? r.Y - y : y > r.Bottom ? y - r.Bottom : 0;
+        return dx * dx + dy * dy;
+    }
+
+    /// <summary>
+    /// 窗口是否"基本落在所有屏幕之外"——按各屏可见区域的并集算覆盖面积，
+    /// 覆盖不到窗口面积的一半就判定为回不来。这样"一半挂在屏幕边缘"仍算可见（用户能拖回来），
+    /// 只有真的整块跑到屏外（典型：外接显示器被拔掉）才会触发回拉。
+    /// </summary>
+    private bool IsMostlyOffScreen(WindowBounds b, int pixelWidth, int pixelHeight)
+    {
+        if (pixelWidth <= 0 || pixelHeight <= 0)
+        {
+            return false;
+        }
+
+        var left = (int)b.Left;
+        var top = (int)b.Top;
+        var right = left + pixelWidth;
+        var bottom = top + pixelHeight;
+
+        long visible = 0;
+        foreach (var screen in Screens.All)
+        {
+            var wa = screen.WorkingArea;
+            var overlapW = Math.Min(right, wa.Right) - Math.Max(left, wa.X);
+            var overlapH = Math.Min(bottom, wa.Bottom) - Math.Max(top, wa.Y);
+            if (overlapW > 0 && overlapH > 0)
+            {
+                visible += (long)overlapW * overlapH;
+            }
+        }
+
+        return visible < (long)pixelWidth * pixelHeight / 2;
     }
 
     private void SaveCurrentViewBounds()

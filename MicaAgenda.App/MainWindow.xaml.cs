@@ -7,9 +7,12 @@ using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Threading;
+using Microsoft.Win32;
 using MicaAgenda.App.Models;
 using MicaAgenda.App.Services;
 using MicaAgenda.App.ViewModels;
+using Point = System.Windows.Point;
+using Screen = System.Windows.Forms.Screen;
 
 namespace MicaAgenda.App;
 
@@ -117,7 +120,7 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
-        Title = "MicaAgenda v5.2.2";
+        Title = "MicaAgenda v5.2.3";
 
         // 窗口初始化前同步加载配置，确保桌面嵌入/锁定在首帧即生效
         _config = _configStore.Load();
@@ -128,6 +131,21 @@ public partial class MainWindow : Window
             openSettings: OpenSettings,
             exit: ExitApplication,
             hideWindow: Hide);
+
+        // 窗口几何（位置 / 尺寸）记忆：拖动 / 缩放停下后防抖落盘，
+        // 不依赖"用户从托盘正常退出"这条路径 —— 重启 / 关机不会走那里。
+        LocationChanged += (_, _) => OnWindowGeometryChanged();
+        SizeChanged += (_, _) => OnWindowGeometryChanged();
+        _boundsSaveTimer = new DispatcherTimer { Interval = BoundsSaveQuietPeriod };
+        _boundsSaveTimer.Tick += (_, _) =>
+        {
+            _boundsSaveTimer.Stop();
+            PersistBoundsIfChanged();
+        };
+
+        // 关机 / 重启 / 注销前同步落盘。SessionEnding 是 WPF 自带的事件，
+        // 正好覆盖"重启后位置回到默认"的根因（那条路径不经过 Window_Closing）。
+        SystemEvents.SessionEnding += (_, _) => SaveBoundsOnShutdown();
 
         _clockTimer = new DispatcherTimer
         {
@@ -159,6 +177,96 @@ public partial class MainWindow : Window
                 App.LogError(ex, "ClockTimer");
             }
         };
+    }
+
+    // ===== 窗口几何（位置 / 尺寸）记忆 =====
+
+    /// <summary>几何变化计数：每次 Position/Size 变化 +1，用于判断"稳定了没有"。</summary>
+    private long _boundsRevision;
+
+    /// <summary>已落盘的几何版本号；与 <see cref="_boundsRevision"/> 相等说明没有待存的改动。</summary>
+    private long _boundsSavedRevision;
+
+    private DispatcherTimer? _boundsSaveTimer;
+
+    /// <summary>窗口几何稳定多久之后落盘。</summary>
+    private static readonly TimeSpan BoundsSaveQuietPeriod = TimeSpan.FromMilliseconds(1200);
+
+    /// <summary>关机 / 重启落盘的"只跑一次"闸门。</summary>
+    private bool _boundsSavedOnShutdown;
+
+    /// <summary>
+    /// 窗口几何变了（拖动或缩放）。只登记"有改动 + 顺延稳定定时器"，真正的写盘交给
+    /// <see cref="PersistBoundsIfChanged"/> —— 拖动过程中每帧都写盘既浪费又可能写到一半状态。
+    /// </summary>
+    private void OnWindowGeometryChanged()
+    {
+        _boundsRevision++;
+
+        // 程序自身在应用记忆位置（启动恢复 / 切视图）时也会走到这里，但那些场景不需要防抖落盘。
+        if (_isApplyingSettings || _boundsSaveTimer is null)
+        {
+            return;
+        }
+
+        // 锁定位置时不记 —— 用户已经把窗口钉住了。
+        if (_config.LockWindow)
+        {
+            return;
+        }
+
+        _boundsSaveTimer.Stop();
+        _boundsSaveTimer.Start();
+    }
+
+    /// <summary>几何确实变过才写盘。</summary>
+    private void PersistBoundsIfChanged()
+    {
+        if (_boundsRevision == _boundsSavedRevision || _viewModel is null)
+        {
+            return;
+        }
+
+        RunGuarded(SaveCurrentViewBounds, "Window.BoundsSave");
+        _boundsSavedRevision = _boundsRevision;
+    }
+
+    /// <summary>
+    /// 会话结束（关机 / 重启 / 注销）路径上的落盘：<b>同步</b>写。
+    ///
+    /// 这里绝不能用 <c>await SaveAsync()</c>：关机时留给进程的时间只有几十到几百毫秒，
+    /// 异步 I/O 很可能还没落到磁盘进程就没了 —— 表现就是"位置存了但重启后没生效"。
+    /// </summary>
+    private void SaveBoundsOnShutdown()
+    {
+        if (_boundsSavedOnShutdown)
+        {
+            return;
+        }
+
+        _boundsSavedOnShutdown = true;
+
+        try
+        {
+            SaveCurrentViewBounds();
+
+            if (_viewModel is { IsDirty: true } viewModel && !_suppressAutoSave)
+            {
+                if (_store.Save(viewModel.Data))
+                {
+                    viewModel.MarkSaved();
+                }
+                else
+                {
+                    App.LogError(null, "会话结束落盘被跳过：上一次保存仍持锁或写入失败");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            // 关机路径上绝不能抛异常：抛出去会影响系统结束会话。
+            App.LogError(ex, "SaveBoundsOnShutdown");
+        }
     }
 
     private async void Window_Loaded(object sender, RoutedEventArgs e)
@@ -3377,7 +3485,8 @@ public partial class MainWindow : Window
         try
         {
             var settings = _viewModel.Settings;
-            var bounds = GetBoundsForView(settings.ViewMode);
+            // 启动路径：连上次存下的位置一起恢复（不是 GetBoundsForView —— 那个位置不动）。
+            var bounds = GetStartupBounds(settings.ViewMode);
             ApplyWindowBounds(bounds);
             Topmost = false;
             OpacitySlider.Value = settings.Opacity;
@@ -3504,9 +3613,48 @@ public partial class MainWindow : Window
         return new WindowBounds(Left, Top, 900.0, height);
     }
 
+    /// <summary>
+    /// 「启动恢复」用的边界：把上次退出时存下的<b>位置 + 尺寸</b>整套取回来。
+    ///
+    /// 与 <see cref="GetBoundsForView"/>（切视图用，位置不动）的区别就在这里 ——
+    /// 启动时必须连位置一起恢复，否则每次开机都回到默认坐标。
+    ///
+    /// 取值优先级：当前视图的记忆 → 通用记忆 <see cref="CalendarSettings.WindowBounds"/>
+    /// → 完全没存过时才退回 <see cref="GetBoundsForView"/> 的默认值。
+    /// </summary>
+    private WindowBounds GetStartupBounds(CalendarViewMode viewMode)
+    {
+        if (_viewModel is null)
+        {
+            return new WindowBounds(Left, Top, Width, Height);
+        }
+
+        var settings = _viewModel.Settings;
+        var saved = viewMode switch
+        {
+            CalendarViewMode.Month => settings.MonthWindowBounds,
+            CalendarViewMode.Week => settings.WeekWindowBounds,
+            CalendarViewMode.Year => settings.YearWindowBounds,
+            _ => null
+        };
+
+        // 按视图的记忆可能还没写过（老数据 / 从没切过该视图）→ 退回通用记忆。
+        saved ??= settings.WindowBounds;
+
+        return saved is { Width: > 0, Height: > 0 } ? saved : GetBoundsForView(viewMode);
+    }
+
     private void ApplyWindowBounds(WindowBounds bounds)
     {
-        var workArea = SystemParameters.WorkArea;
+        // 目标坐标落在哪块屏上：多显示器下必须按坐标找，不能只看主屏工作区 ——
+        // 窗口上次在副屏，按主屏夹取会被硬拽回主屏。
+        // WinForms 的 Screen.FromPoint 收的是 System.Drawing.Point（物理像素），
+        // 而 WPF 的 Left/Top 就是设备无关的逻辑像素 —— PerMonitorV2 + 100% 缩放下两者一致，
+        // 高 DPI 下会有偏差，但那只会影响"选哪块屏"，选错的兜底是后面的可见性判断。
+        var target = new System.Drawing.Point((int)bounds.Left, (int)bounds.Top);
+        var screen = Screen.FromPoint(target);
+        var workArea = screen?.WorkingArea ?? ToDrawingRect(SystemParameters.WorkArea);
+
         var rawWidth = Math.Max(MinWidth, bounds.Width);
         var rawHeight = Math.Max(MinHeight, bounds.Height);
 
@@ -3525,9 +3673,59 @@ public partial class MainWindow : Window
 
         Width = width;
         Height = height;
-        Left = Math.Clamp(bounds.Left, workArea.Left, Math.Max(workArea.Left, workArea.Right - width));
-        Top = Math.Clamp(bounds.Top, workArea.Top, Math.Max(workArea.Top, workArea.Bottom - height));
+
+        if (IsMostlyOffScreen(bounds, width, height))
+        {
+            // 保存的坐标已经不在任何屏幕的可见区里（典型：那块外接显示器被拔了）。
+            // 夹取救不了这种情况 —— 夹到一个不存在的坐标系上，窗口照样看不见，
+            // 用户会认为"程序没启动"。直接拉回主屏可见区。
+            var primaryArea = Screen.PrimaryScreen?.WorkingArea ?? workArea;
+            Left = primaryArea.Left + Math.Max(0, (primaryArea.Width - width) / 2);
+            Top = primaryArea.Top + Math.Max(0, (primaryArea.Height - height) / 3);
+            App.LogError(null, $"[WindowBounds] 记忆坐标 {bounds.Left},{bounds.Top} 已不可见，拉回主屏 {Left},{Top}");
+        }
+        else
+        {
+            Left = Math.Clamp(bounds.Left, workArea.Left, Math.Max(workArea.Left, workArea.Right - width));
+            Top = Math.Clamp(bounds.Top, workArea.Top, Math.Max(workArea.Top, workArea.Bottom - height));
+        }
+
         UpdateYearScrollLimit();
+    }
+
+    /// <summary>WPF 的 <see cref="Rect"/> 转 WinForms 的 <see cref="System.Drawing.Rectangle"/>。</summary>
+    private static System.Drawing.Rectangle ToDrawingRect(Rect rect)
+        => new((int)rect.X, (int)rect.Y, (int)rect.Width, (int)rect.Height);
+
+    /// <summary>
+    /// 窗口是否"基本落在所有屏幕之外"——各屏可见区域的并集覆盖不到窗口面积的一半就判定回不来。
+    /// 这样"一半挂在屏幕边缘"仍算可见（用户能拖回来），只有真的整块跑到屏外才会触发回拉。
+    /// </summary>
+    private static bool IsMostlyOffScreen(WindowBounds bounds, double width, double height)
+    {
+        if (width <= 0 || height <= 0)
+        {
+            return false;
+        }
+
+        var left = bounds.Left;
+        var top = bounds.Top;
+        var right = left + width;
+        var bottom = top + height;
+
+        double visible = 0;
+        foreach (var screen in Screen.AllScreens)
+        {
+            var area = screen.WorkingArea;
+            var overlapW = Math.Min(right, area.Right) - Math.Max(left, area.Left);
+            var overlapH = Math.Min(bottom, area.Bottom) - Math.Max(top, area.Top);
+            if (overlapW > 0 && overlapH > 0)
+            {
+                visible += overlapW * overlapH;
+            }
+        }
+
+        return visible < width * height / 2;
     }
 
     private void ApplyBackground()

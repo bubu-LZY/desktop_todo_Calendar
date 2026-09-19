@@ -2,6 +2,7 @@ using System.IO;
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Threading;
 using MicaAgenda.App.Helpers;
 using MicaAgenda.App.Models;
 
@@ -124,6 +125,77 @@ public sealed class CalendarDataStore
     }
 
     /// <summary>
+    /// <b>同步</b>落盘，专供「会话结束（关机 / 重启 / 注销）」路径使用。
+    ///
+    /// <para>那条路径上不能用 <see cref="SaveAsync"/>：系统留给进程的时间只有几十到几百毫秒，
+    /// 异步 I/O 的续体很可能还没被调度到，进程就已经被收走 —— 用户看到的就是"设置了没保存"。</para>
+    ///
+    /// <para>与异步版共用同一把 <see cref="_saveGate"/>，但等待时<b>不阻塞</b>：关机时刻若正好有一次
+    /// 异步保存持锁，硬等会把仅剩的结束时间耗光，所以拿不到锁就返回 false，由调用方记一条日志。
+    /// 实际影响很小 —— 窗口几何的防抖保存（1.2s 无操作才触发）几乎不可能正好压在关机瞬间。</para>
+    ///
+    /// <para>写入期间用 <c>WriteThrough</c> 绕过系统写缓存，确保数据真的落到介质上，
+    /// 而不是停留在"已交给操作系统"的状态。</para>
+    /// </summary>
+    /// <returns>写入成功返回 true；拿不到锁或写失败返回 false。</returns>
+    public bool Save(CalendarData data)
+    {
+        // 等 0 毫秒：拿得到就写，拿不到直接放弃（绝不在关机路径上等待）。
+        if (!_saveGate.Wait(0))
+        {
+            return false;
+        }
+
+        var temporaryPath = $"{_path}.{Guid.NewGuid():N}.tmp";
+
+        try
+        {
+            Normalize(data);
+
+            var directory = Path.GetDirectoryName(_path);
+            if (!string.IsNullOrWhiteSpace(directory))
+            {
+                Directory.CreateDirectory(directory);
+            }
+
+            using (var stream = new FileStream(
+                temporaryPath,
+                FileMode.CreateNew,
+                FileAccess.Write,
+                FileShare.None,
+                bufferSize: 4096,
+                FileOptions.WriteThrough))
+            {
+                JsonSerializer.Serialize(stream, data, JsonOptions);
+            }
+
+            MoveWithRetry(temporaryPath, _path);
+            return true;
+        }
+        catch
+        {
+            // 关机路径上失败就失败：调用方记日志，绝不能让异常冒到系统结束会话的流程里。
+            return false;
+        }
+        finally
+        {
+            if (File.Exists(temporaryPath))
+            {
+                try
+                {
+                    File.Delete(temporaryPath);
+                }
+                catch
+                {
+                    // 临时文件删不掉不影响下一次保存
+                }
+            }
+
+            _saveGate.Release();
+        }
+    }
+
+    /// <summary>
     /// 原子替换目标文件，遇到瞬时文件锁（杀毒 / 索引器 / 并发读短暂占用）时退避重试。
     /// Windows 的 File.Move(overwrite:true) 底层是 MoveFileEx，目标被占用会抛
     /// UnauthorizedAccessException/IOException；不重试会让保存（含自动保存）偶发失败。
@@ -143,6 +215,30 @@ public sealed class CalendarDataStore
             catch (Exception ex) when ((ex is IOException or UnauthorizedAccessException) && attempt < maxAttempts)
             {
                 await Task.Delay(20 * attempt);
+            }
+        }
+    }
+
+    /// <summary>
+    /// <see cref="MoveWithRetryAsync"/> 的同步版，供关机路径使用。
+    ///
+    /// 退避改用 <c>Thread.Sleep</c>：那条路径上本来就没有可跑的异步续体，而总退避时间
+    /// （20+40+60+80+100 = 300ms，重试减到 5 次）也压得进系统给的结束窗口。
+    /// 相比"异步等待但等不到"，同步阻塞反而更可能把文件写完。
+    /// </summary>
+    private static void MoveWithRetry(string source, string destination)
+    {
+        const int maxAttempts = 5;
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                File.Move(source, destination, overwrite: true);
+                return;
+            }
+            catch (Exception ex) when ((ex is IOException or UnauthorizedAccessException) && attempt < maxAttempts)
+            {
+                Thread.Sleep(20 * attempt);
             }
         }
     }
