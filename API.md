@@ -154,15 +154,32 @@ curl -X POST -d '' -H "X-Auth-Token: $TOKEN" "$BASE/api/tasks/<id>/complete"
 {
   "ReminderEnabled": true,
   "ReminderTime": "09:00",
+  "OverdueWarnEnabled": true,
+  "OverdueWarnTime": "21:00",
   "FeishuWebhook": "https://open.feishu.cn/open-apis/bot/v2/hook/xxx",
   "WeComWebhook": "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx"
 }
 ```
 
-- `ReminderTime`：全局提醒时间（HH:mm），每天到点若当日有任务则推送。
+`ReminderEnabled` 是总开关，它控制下面**三种**推送：
+
+| 推送 | 触发时机 | 内容 |
+|---|---|---|
+| 每日汇总 | `ReminderTime` | 当天任务清单：待完成 / 已完成 / **已逾期**（仅列最近 30 天）三段 |
+| 到点提醒 | 任务时间 − 任务自选的提醒档位 | 单条任务；一条任务勾了多个档位就各推一次 |
+| 逾期预警 | `OverdueWarnTime` | 当天还没做完的任务（跨日前的催办），另附往期逾期总数 |
+
+- `ReminderTime`：每日汇总时间（HH:mm）。
+- `OverdueWarnEnabled` / `OverdueWarnTime`：逾期预警的开关与时间（HH:mm），应与汇总时间拉开（例如 09:00 / 21:00）。
 - `FeishuWebhook` / `WeComWebhook`：留空则对应渠道不启用，两者可同时填。
 
-> **开机补发**：提醒状态会持久化到本地（`reminder-state.json`）。若电脑在提醒时间前关机，开机自启后程序会自动检查——当天尚未提醒且已过提醒时间，则立即补发一次；若还没到点则正常等待。
+**逾期口径**：跨过**任务当日的 24:00** 才算逾期。所以「今天」的任务即便时刻已经过了，也仍算当天待办，
+上面的逾期预警就是为跨日之前留的最后一次提醒。
+
+> **推送正文是纯文本**（`msgtype=text`）。任务标题里若带 Markdown 记号（`**粗体**`、`# 标题`、列表 `- `），
+> 会先被剥成纯文本再推送 —— 不会把源码样式原样发出去，也不会撑坏清单的编号结构。
+
+> **开机补发**：两个「今天已推」标记都会持久化到本地（`reminder-state.json`）。若电脑在提醒时间前关机，开机自启后程序会自动检查——当天尚未推送且已过时间，则立即补发一次；若还没到点则正常等待。汇总与预警各自独立计一次，早上收过汇总不影响晚上收到预警。
 
 ## 自动备份
 

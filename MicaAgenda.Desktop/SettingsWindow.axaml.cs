@@ -86,6 +86,8 @@ public partial class SettingsWindow : Window
         ApiTokenBox.Text = _config.ApiToken;
         ReminderEnabledBox.IsChecked = _config.ReminderEnabled;
         ReminderTimeBox.Text = _config.ReminderTime;
+        OverdueWarnEnabledBox.IsChecked = _config.OverdueWarnEnabled;
+        OverdueWarnTimeBox.Text = _config.OverdueWarnTime;
         FeishuWebhookBox.Text = _config.FeishuWebhook;
         WeComWebhookBox.Text = _config.WeComWebhook;
         BackupEnabledBox.IsChecked = _config.BackupEnabled;
@@ -673,7 +675,25 @@ public partial class SettingsWindow : Window
         var timeText = (ReminderTimeBox.Text ?? string.Empty).Trim();
         if (ReminderEnabledBox.IsChecked == true && !TimeOnly.TryParse(timeText, out _))
         {
-            await ShowInfoAsync("输入错误", "提醒时间格式应为 HH:mm，例如 09:00");
+            await ShowInfoAsync("输入错误", "汇总时间格式应为 HH:mm，例如 09:00");
+            return;
+        }
+
+        var overdueWarnTimeText = (OverdueWarnTimeBox.Text ?? string.Empty).Trim();
+        if (OverdueWarnEnabledBox.IsChecked == true && !TimeOnly.TryParse(overdueWarnTimeText, out _))
+        {
+            await ShowInfoAsync("输入错误", "逾期预警时间格式应为 HH:mm，例如 21:00");
+            return;
+        }
+
+        if (ReminderEnabledBox.IsChecked == true
+            && OverdueWarnEnabledBox.IsChecked == true
+            && TimeOnly.TryParse(timeText, out var digestAt)
+            && TimeOnly.TryParse(overdueWarnTimeText, out var warnAt)
+            && warnAt <= digestAt)
+        {
+            // 预警是「当天快过完了还没做完」的催办，排得比汇总还早就失去意义了。
+            await ShowInfoAsync("输入错误", "逾期预警时间应当晚于汇总时间（例如汇总 09:00、预警 21:00）。");
             return;
         }
 
@@ -701,6 +721,8 @@ public partial class SettingsWindow : Window
         _config.ApiToken = (ApiTokenBox.Text ?? string.Empty).Trim();
         _config.ReminderEnabled = ReminderEnabledBox.IsChecked == true;
         _config.ReminderTime = timeText;
+        _config.OverdueWarnEnabled = OverdueWarnEnabledBox.IsChecked == true;
+        _config.OverdueWarnTime = overdueWarnTimeText;
         _config.FeishuWebhook = (FeishuWebhookBox.Text ?? string.Empty).Trim();
         _config.WeComWebhook = (WeComWebhookBox.Text ?? string.Empty).Trim();
         _config.BackupEnabled = BackupEnabledBox.IsChecked == true;

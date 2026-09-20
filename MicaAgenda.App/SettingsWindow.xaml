@@ -543,17 +543,29 @@
                             <Border Style="{StaticResource SectionBar}" />
                             <TextBlock Text="定时提醒" Style="{StaticResource GroupTitle}" />
                         </StackPanel>
+                        <StackPanel Margin="0,0,0,12">
+                            <TextBlock Text="① 每日汇总 —— 到下面「汇总时间」推一条当天任务清单：待完成 / 已完成 / 已逾期三段。" Style="{StaticResource HintText}" TextWrapping="Wrap" />
+                            <TextBlock Text="② 到点提醒 —— 任务里单独设了具体时间和提醒档位（提前30分钟、提前一天…）时，按档位单独推那一条。" Style="{StaticResource HintText}" TextWrapping="Wrap" Margin="0,3,0,0" />
+                            <TextBlock Text="③ 逾期预警 —— 到下面「预警时间」若当天还有没做完的任务，推一条催办。跨过当天 24:00 未完成就算逾期。" Style="{StaticResource HintText}" TextWrapping="Wrap" Margin="0,3,0,0" />
+                        </StackPanel>
                         <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
                             <CheckBox x:Name="ReminderEnabledBox" Content="启用提醒" Style="{StaticResource SoftCheckBox}" VerticalAlignment="Center" Margin="0,0,16,0" />
-                            <TextBlock Text="提醒时间" Style="{StaticResource FieldLabel}" Margin="0,0,8,0" />
+                            <TextBlock Text="汇总时间" Style="{StaticResource FieldLabel}" Margin="0,0,8,0" />
                             <TextBox x:Name="ReminderTimeBox" Width="70" Style="{StaticResource InputBox}" />
                             <TextBlock Text="（HH:mm）" Style="{StaticResource HintText}" VerticalAlignment="Center" Margin="5,0,0,0" />
                         </StackPanel>
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+                            <CheckBox x:Name="OverdueWarnEnabledBox" Content="逾期预警" Style="{StaticResource SoftCheckBox}" VerticalAlignment="Center" Margin="0,0,16,0" />
+                            <TextBlock Text="预警时间" Style="{StaticResource FieldLabel}" Margin="0,0,8,0" />
+                            <TextBox x:Name="OverdueWarnTimeBox" Width="70" Style="{StaticResource InputBox}" />
+                            <TextBlock Text="（HH:mm）" Style="{StaticResource HintText}" VerticalAlignment="Center" Margin="5,0,0,0" />
+                        </StackPanel>
+                        <TextBlock Text="「启用提醒」是总开关：关掉之后上面三种推送全部停止。" Style="{StaticResource HintText}" Margin="0,0,0,12" TextWrapping="Wrap" />
                         <TextBlock Text="飞书 webhook 地址" Style="{StaticResource FieldLabel}" Margin="0,0,0,5" />
                         <TextBox x:Name="FeishuWebhookBox" Style="{StaticResource InputBox}" Margin="0,0,0,10" />
                         <TextBlock Text="企业微信 webhook 地址" Style="{StaticResource FieldLabel}" Margin="0,0,0,5" />
                         <TextBox x:Name="WeComWebhookBox" Style="{StaticResource InputBox}" />
-                        <TextBlock Text="上面两个地址对「定时提醒」和「定时报告」通用。" Style="{StaticResource HintText}" Margin="0,7,0,0" />
+                        <TextBlock Text="三种推送都走这两个机器人地址（与「定时报告」通用），不填则都发不出去。" Style="{StaticResource HintText}" Margin="0,7,0,0" TextWrapping="Wrap" />
                     </StackPanel>
                 </Border>
 

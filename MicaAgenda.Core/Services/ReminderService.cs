@@ -21,6 +21,7 @@ public sealed class ReminderService : IDisposable
     private readonly object _stateLock = new();
     private readonly Action? _onDataChanged;
     private DateOnly _lastReminderDate;
+    private DateOnly _lastOverdueWarnDate;
     private int _checking;
 
     /// <param name="onDataChanged">
@@ -39,6 +40,7 @@ public sealed class ReminderService : IDisposable
         _onDataChanged = onDataChanged;
         _httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
         _lastReminderDate = LoadLastReminderDate();
+        _lastOverdueWarnDate = LoadLastOverdueWarnDate();
         // 立即执行一次（处理开机补发），随后每 30 秒检查一次
         _timer = new System.Threading.Timer(_ => _ = CheckAsync(), null, TimeSpan.Zero, TimeSpan.FromSeconds(30));
     }
@@ -69,10 +71,11 @@ public sealed class ReminderService : IDisposable
                 return;
             }
 
-            // 逐条任务的到点提醒 + 每日汇总提醒。分开各自兜底：
+            // 逐条任务的到点提醒 + 每日汇总 + 逾期预警。分开各自兜底：
             // 逐条提醒里某一条推送失败，不应该拖住每日汇总。
             await CheckTaskRemindersAsync(config.FeishuWebhook, config.WeComWebhook);
             await CheckDailyReminderAsync(config, hasFeishu, hasWeCom);
+            await CheckOverdueWarningAsync(config, hasFeishu, hasWeCom);
         }
         catch (Exception ex)
         {
@@ -194,7 +197,7 @@ public sealed class ReminderService : IDisposable
         bool hasWeCom,
         string wecomWebhook)
     {
-        var text = BuildTaskReminderText(task, lead);
+        var text = ReminderTextBuilder.BuildTaskReminder(task, lead);
         var delivered = false;
 
         if (hasFeishu)
@@ -248,8 +251,11 @@ public sealed class ReminderService : IDisposable
     }
 
     /// <summary>
-    /// 每日汇总提醒：到点后把「当天全部任务」推一条清单。
+    /// 每日汇总提醒：到点后把「当天全部任务」+「已逾期未完成」推一条清单。
     /// 与逐条提醒共用 <see cref="AppConfig.ReminderEnabled"/> 总开关与同一对 webhook。
+    ///
+    /// <para>逾期明细只看最近 <see cref="ReminderTextBuilder.OverdueLookbackDays"/> 天，
+    /// 避免积年旧账把消息撑爆。</para>
     /// </summary>
     private async Task CheckDailyReminderAsync(AppConfig config, bool hasFeishu, bool hasWeCom)
     {
@@ -276,19 +282,25 @@ public sealed class ReminderService : IDisposable
 
         // 已到（或已过）提醒时间：发送提醒
         List<CalendarTask> tasks;
+        List<CalendarTask> overdue;
         lock (_syncRoot)
         {
             tasks = _data.Tasks.Where(t => t.Date == today).ToList();
+
+            // 逾期口径：跨过任务当日的 24:00 才算逾期 —— 所以这里是 Date < today，不是 <=。
+            overdue = _data.Tasks
+                .Where(t => ReminderTextBuilder.IsWithinOverdueWindow(t, today))
+                .ToList();
         }
 
-        if (tasks.Count == 0)
+        // 今天既没任务、也没有逾期欠账：记下已提醒，避免反复检查、也避免推一条空消息。
+        if (tasks.Count == 0 && overdue.Count == 0)
         {
-            // 当天无任务，记录已提醒，避免反复检查
             SetLastReminderDate(today);
             return;
         }
 
-        var text = BuildReminderText(today, tasks);
+        var text = ReminderTextBuilder.BuildDailyDigest(today, tasks, overdue);
 
         var anySent = false;
         if (hasFeishu)
@@ -328,11 +340,112 @@ public sealed class ReminderService : IDisposable
         SetLastReminderDate(today);
     }
 
+    /// <summary>
+    /// 逾期预警：当天还有未完成任务时，在 <see cref="AppConfig.OverdueWarnTime"/> 推一条催办。
+    ///
+    /// <para>逾期口径（用户指定）：跨过<b>任务当日的 24:00</b> 才算逾期。所以「今天」的任务即便时刻
+    /// 已经过了也仍算当天待办 —— 这条预警的意义就是在跨日之前提醒一次，
+    /// 别让当天没做完的任务悄无声息地变成逾期欠账。</para>
+    ///
+    /// <para>与每日汇总各自独立计一次「今天已推」标记：早上收过汇总，不影响晚上收到这条预警。</para>
+    /// </summary>
+    private async Task CheckOverdueWarningAsync(AppConfig config, bool hasFeishu, bool hasWeCom)
+    {
+        if (!config.OverdueWarnEnabled)
+        {
+            return;
+        }
+
+        if (!TimeOnly.TryParse(config.OverdueWarnTime, out var warnTime))
+        {
+            return;
+        }
+
+        var now = DateTime.Now;
+        var today = DateOnly.FromDateTime(now);
+
+        if (GetLastOverdueWarnDate() == today)
+        {
+            return;
+        }
+
+        if (TimeOnly.FromDateTime(now) < warnTime)
+        {
+            return;
+        }
+
+        List<CalendarTask> pendingToday;
+        int earlierOverdueCount;
+        lock (_syncRoot)
+        {
+            pendingToday = _data.Tasks
+                .Where(t => t.Date == today && !t.IsCompleted)
+                .OrderByDescending(t => t.IsImportant)
+                .ThenBy(t => t.Time ?? CalendarTask.DefaultTime)
+                .ToList();
+
+            earlierOverdueCount = _data.Tasks
+                .Count(t => ReminderTextBuilder.IsWithinOverdueWindow(t, today));
+        }
+
+        // 今天已经清空：没什么可催的，记下已处理避免反复检查。
+        if (pendingToday.Count == 0)
+        {
+            SetLastOverdueWarnDate(today);
+            return;
+        }
+
+        var text = ReminderTextBuilder.BuildOverdueWarning(today, pendingToday, earlierOverdueCount);
+
+        var anySent = false;
+        if (hasFeishu)
+        {
+            try
+            {
+                await SendFeishuAsync(config.FeishuWebhook, text);
+                anySent = true;
+            }
+            catch (Exception ex)
+            {
+                AppLog.Error(ex, "ReminderService.OverdueWarnFeishu");
+            }
+        }
+
+        if (hasWeCom)
+        {
+            try
+            {
+                await SendWeComAsync(config.WeComWebhook, text);
+                anySent = true;
+            }
+            catch (Exception ex)
+            {
+                AppLog.Error(ex, "ReminderService.OverdueWarnWeCom");
+            }
+        }
+
+        // 全渠道失败不标记，30 秒后重试。
+        if (!anySent)
+        {
+            return;
+        }
+
+        SetLastOverdueWarnDate(today);
+    }
+
     private DateOnly GetLastReminderDate()
     {
         lock (_stateLock)
         {
             return _lastReminderDate;
+        }
+    }
+
+    private DateOnly GetLastOverdueWarnDate()
+    {
+        lock (_stateLock)
+        {
+            return _lastOverdueWarnDate;
         }
     }
 
@@ -343,7 +456,17 @@ public sealed class ReminderService : IDisposable
             _lastReminderDate = date;
         }
 
-        SaveLastReminderDate(date);
+        SaveState();
+    }
+
+    private void SetLastOverdueWarnDate(DateOnly date)
+    {
+        lock (_stateLock)
+        {
+            _lastOverdueWarnDate = date;
+        }
+
+        SaveState();
     }
 
     private static string GetStatePath()
@@ -352,7 +475,12 @@ public sealed class ReminderService : IDisposable
         return System.IO.Path.Combine(appData, "MicaAgenda", "reminder-state.json");
     }
 
-    private static DateOnly LoadLastReminderDate()
+    private static DateOnly LoadLastReminderDate() => ReadStateDate("lastReminderDate");
+
+    private static DateOnly LoadLastOverdueWarnDate() => ReadStateDate("lastOverdueWarnDate");
+
+    /// <summary>读状态文件里的某个日期字段；文件缺失 / 字段缺失 / 解析失败一律返回 <see cref="DateOnly.MinValue"/>（等价于"从没推过"）。</summary>
+    private static DateOnly ReadStateDate(string property)
     {
         try
         {
@@ -364,7 +492,7 @@ public sealed class ReminderService : IDisposable
 
             var json = System.IO.File.ReadAllText(path);
             using var doc = JsonDocument.Parse(json);
-            if (doc.RootElement.TryGetProperty("lastReminderDate", out var el) &&
+            if (doc.RootElement.TryGetProperty(property, out var el) &&
                 DateOnly.TryParse(el.GetString(), out var date))
             {
                 return date;
@@ -378,8 +506,21 @@ public sealed class ReminderService : IDisposable
         return DateOnly.MinValue;
     }
 
-    private static void SaveLastReminderDate(DateOnly date)
+    /// <summary>
+    /// 把两个「今天已推」标记<b>一起</b>写回。
+    ///
+    /// <para>必须整个文件一次写完：两个标记共用同一个 state 文件，分别写的话后一次会把前一次覆盖掉，
+    /// 结果就是「早上推过汇总、晚上预警又把汇总标记清空」，第二天汇总会被重复推送。</para>
+    /// </summary>
+    private void SaveState()
     {
+        DateOnly daily, warn;
+        lock (_stateLock)
+        {
+            daily = _lastReminderDate;
+            warn = _lastOverdueWarnDate;
+        }
+
         try
         {
             var path = GetStatePath();
@@ -389,77 +530,17 @@ public sealed class ReminderService : IDisposable
                 System.IO.Directory.CreateDirectory(dir);
             }
 
-            var json = JsonSerializer.Serialize(new { lastReminderDate = date.ToString("yyyy-MM-dd") });
+            var json = JsonSerializer.Serialize(new
+            {
+                lastReminderDate = daily == DateOnly.MinValue ? null : daily.ToString("yyyy-MM-dd"),
+                lastOverdueWarnDate = warn == DateOnly.MinValue ? null : warn.ToString("yyyy-MM-dd")
+            });
             System.IO.File.WriteAllText(path, json);
         }
         catch
         {
             // 忽略写入失败
         }
-    }
-
-    /// <summary>
-    /// 单条任务某个档位的到点提醒文案。
-    /// 「提前一天」专门点明是次日的任务，免得收到时以为提醒错了日子。
-    /// </summary>
-    private static string BuildTaskReminderText(CalendarTask task, int lead)
-    {
-        // 任务时刻 = 老数据里存过的时间，否则是当天默认的 9:00。
-        var timeText = (task.Time ?? CalendarTask.DefaultTime).ToString("HH:mm");
-        lead = lead < 0 ? 0 : lead;
-
-        // 提前量按整天算时（如「提前一天」），提醒是在任务日之前推送的，
-        // 光写一个 14:00 会让人以为是今天的事，带上任务日期（今天 / 明天 / M月d日）。
-        var today = DateOnly.FromDateTime(DateTime.Now);
-        var dayText = task.Date == today
-            ? string.Empty
-            : task.Date == today.AddDays(1)
-                ? "明天 "
-                : $"{task.Date.Month}月{task.Date.Day}日 ";
-
-        var sb = new StringBuilder();
-        sb.AppendLine("【桌面日历任务提醒】");
-        if (lead > 0)
-        {
-            sb.AppendLine($"「{task.Title}」将在 {dayText}{timeText} 开始（还有 {Helpers.TimeText.FormatLead(lead)}）");
-        }
-        else
-        {
-            sb.AppendLine($"「{task.Title}」的时间到了（{dayText}{timeText}）");
-        }
-
-        if (task.IsImportant)
-        {
-            sb.AppendLine("⭐ 重要任务");
-        }
-
-        return sb.ToString().TrimEnd();
-    }
-
-    private static string BuildReminderText(DateOnly date, List<CalendarTask> tasks)
-    {
-        var pending = tasks.Where(t => !t.IsCompleted).ToList();
-        var done = tasks.Where(t => t.IsCompleted).ToList();
-
-        var sb = new StringBuilder();
-        sb.AppendLine($"【桌面日历提醒】{date:yyyy年M月d日}");
-        sb.AppendLine($"今日任务共 {tasks.Count} 项，待完成 {pending.Count} 项：");
-
-        var index = 1;
-        foreach (var task in tasks.OrderBy(t => t.IsCompleted).ThenByDescending(t => t.IsImportant))
-        {
-            var mark = task.IsCompleted ? "✅" : "⬜";
-            var star = task.IsImportant ? "⭐" : "";
-            sb.AppendLine($"{index}. {mark} {task.Title}{star}");
-            index++;
-        }
-
-        if (done.Count > 0)
-        {
-            sb.AppendLine($"已完成 {done.Count} 项，继续加油！");
-        }
-
-        return sb.ToString().TrimEnd();
     }
 
     private async Task SendFeishuAsync(string webhook, string text)

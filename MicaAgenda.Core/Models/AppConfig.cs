@@ -35,6 +35,17 @@ public sealed class AppConfig
     /// <summary>全局提醒时间，格式 HH:mm。</summary>
     public string ReminderTime { get; set; } = "09:00";
 
+    /// <summary>
+    /// 是否启用「逾期预警」（当天还有未完成任务时，在跨日之前提醒一次）。
+    ///
+    /// <para>逾期口径：跨过**任务当日的 24:00** 才算逾期。所以"今天"的任务即便时刻已经过了也仍是
+    /// 当天待办，这条预警的意义就在于别让当天没做完的任务悄无声息地变成逾期欠账。</para>
+    /// </summary>
+    public bool OverdueWarnEnabled { get; set; } = true;
+
+    /// <summary>「逾期预警」发送时间，格式 HH:mm。默认 21:00（跨日前留出处理时间）。</summary>
+    public string OverdueWarnTime { get; set; } = "21:00";
+
     /// <summary>飞书机器人 webhook 地址。</summary>
     public string FeishuWebhook { get; set; } = string.Empty;
 

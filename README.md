@@ -18,7 +18,7 @@
 - 8 种背景主题
 - 中国节假日联网刷新与本地缓存
 - 桌面嵌入 / 置底
-- 定时提醒（每日汇总 + 任务到点提醒）、自动备份
+- 定时提醒（每日汇总含逾期欠账 + 任务到点提醒 + 跨日前逾期预警）、自动备份
 - 系统托盘常驻
 - DWM Mica / Acrylic 窗口效果
 - 窄窗口响应式布局
@@ -74,7 +74,7 @@ https://bubu-lzy.github.io/desktop_todo_Calendar/
 - 锁定窗口位置
 - 导入 / 导出 JSON
 - 自动备份
-- 定时提醒：每日汇总 + 逐条任务的到点提醒
+- 定时提醒：每日汇总（含逾期欠账）+ 逐条任务的到点提醒 + 跨日前的逾期预警
 
 ## 下载
 
@@ -84,11 +84,11 @@ https://bubu-lzy.github.io/desktop_todo_Calendar/
 
 | 平台 | 文件 |
 |---|---|
-| Windows | `desktop_todo_Calendar-Setup-5.2.6.exe` |
-| macOS (Apple Silicon) | `desktop_todo_Calendar-5.2.6-arm64.dmg` / `.zip` |
-| macOS (Intel) | `desktop_todo_Calendar-5.2.6-x64.dmg` / `.zip` |
-| Linux | `desktop_todo_Calendar-5.2.6-x64.AppImage`、`desktop_todo_Calendar_5.2.6_amd64.deb` |
-| 源码 | `desktop_todo_Calendar-Source-5.2.6.zip` |
+| Windows | `desktop_todo_Calendar-Setup-5.2.7.exe` |
+| macOS (Apple Silicon) | `desktop_todo_Calendar-5.2.7-arm64.dmg` / `.zip` |
+| macOS (Intel) | `desktop_todo_Calendar-5.2.7-x64.dmg` / `.zip` |
+| Linux | `desktop_todo_Calendar-5.2.7-x64.AppImage`、`desktop_todo_Calendar_5.2.7_amd64.deb` |
+| 源码 | `desktop_todo_Calendar-Source-5.2.7.zip` |
 
 Windows 安装包打包的是跨平台宿主 `MicaAgenda.Desktop.exe`（Avalonia），不是仅 Windows 的 WPF 宿主。
 

@@ -94,6 +94,26 @@ public static class MarkdownText
         return sb.ToString().Trim();
     }
 
+    /// <summary>
+    /// Markdown → <b>单行</b>纯文本：去掉强调记号，并把换行 / 连续空白压成单个空格。
+    ///
+    /// <para>用途是把标题嵌进"<c>1. xxx</c>"这种列表行。任务标题里可能带换行或 <c>- </c> 列表记号，
+    /// 直接塞进去会把一条任务撑成两行、甚至破坏编号结构；推送出去的 IM 消息是**纯文本**
+    /// （<c>msgtype=text</c>），记号不会被渲染，只会原样露给用户看。</para>
+    /// </summary>
+    public static string ToSingleLine(string? markdown)
+    {
+        var plain = ToPlainText(markdown);
+        if (plain.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        // 按空白切分再拼回：换行、制表符、连续空格统统压成单个空格。
+        var parts = plain.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        return string.Join(' ', parts);
+    }
+
     /// <summary>规整单行：处理标题、列表、引用、分隔线与行内强调。</summary>
     private static string NormalizeLine(string line)
     {

@@ -203,19 +203,37 @@
               <Border DockPanel.Dock="Left" Classes="titleBar" />
               <TextBlock Text="定时提醒" Classes="groupTitle" />
             </DockPanel>
+
+            <!-- 先讲清楚「这一栏会给你推哪三种消息」，再放开关。
+                 用户反馈过原来的文案看不出哪个功能是干嘛的。 -->
+            <StackPanel Margin="0,0,0,12" Spacing="4">
+              <TextBlock Classes="hint" Text="① 每日汇总 —— 到下面「汇总时间」推一条当天任务清单：待完成 / 已完成 / 已逾期三段。" />
+              <TextBlock Classes="hint" Text="② 到点提醒 —— 任务里单独设了具体时间和提醒档位（提前30分钟、提前一天…）时，按档位单独推那一条。" />
+              <TextBlock Classes="hint" Text="③ 逾期预警 —— 到下面「预警时间」若当天还有没做完的任务，推一条催办。跨过当天 24:00 未完成就算逾期。" />
+            </StackPanel>
+
             <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
               <CheckBox x:Name="ReminderEnabledBox" Content="启用提醒" VerticalAlignment="Center" Margin="0,0,16,0" />
-              <TextBlock Text="提醒时间" Classes="fieldLabel" />
+              <TextBlock Text="汇总时间" Classes="fieldLabel" />
               <TextBox x:Name="ReminderTimeBox" Width="70" Classes="inputBox" />
               <TextBlock Text="（HH:mm）" Foreground="#9CA3AF" VerticalAlignment="Center" Margin="4,0,0,0" />
             </StackPanel>
+
+            <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+              <CheckBox x:Name="OverdueWarnEnabledBox" Content="逾期预警" VerticalAlignment="Center" Margin="0,0,16,0" />
+              <TextBlock Text="预警时间" Classes="fieldLabel" />
+              <TextBox x:Name="OverdueWarnTimeBox" Width="70" Classes="inputBox" />
+              <TextBlock Text="（HH:mm）" Foreground="#9CA3AF" VerticalAlignment="Center" Margin="4,0,0,0" />
+            </StackPanel>
+
+            <TextBlock Classes="hint" Margin="0,0,0,12" Text="「启用提醒」是总开关：关掉之后上面三种推送全部停止。" />
+
             <TextBlock Text="飞书 webhook 地址" Classes="fieldLabel" Margin="0,0,0,4" />
             <TextBox x:Name="FeishuWebhookBox" Classes="inputBox" Margin="0,0,0,10" />
             <TextBlock Text="企业微信 webhook 地址" Classes="fieldLabel" Margin="0,0,0,4" />
             <TextBox x:Name="WeComWebhookBox" Classes="inputBox" />
-            <TextBlock Text="上面两个地址对「定时提醒」和「定时报告」通用。" Classes="hint" Margin="0,6,0,0" />
-            <TextBlock Text="「启用提醒」是总开关：除了上面这个点的每日汇总，任务里单独设了具体时间后，也会在这里的地址上收到到点提醒。"
-                       Classes="hint" Margin="0,4,0,0" TextWrapping="Wrap" />
+            <TextBlock Text="三种推送都走这两个机器人地址（与「定时报告」通用），不填则都发不出去。"
+                       Classes="hint" Margin="0,6,0,0" />
           </StackPanel>
         </Border>
 

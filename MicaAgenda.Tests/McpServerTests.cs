@@ -29,18 +29,22 @@ public sealed class McpServerTests
     [Fact]
     public void AddTask_SupportsTimeAndMultipleRemindersIncludingOneDay()
     {
-        var task = Call("add_task", """
+        // 日期用「相对今天」算出来，不要写死。
+        // 这个测试原来写死 2026-09-20 14:30 并断言 isOverdue=false —— 到了当天 14:30 之后
+        // 任务就成了逾期，断言必挂（2026-09-20 15:58 真的翻过这一次车）。
+        var date = DateOnly.FromDateTime(DateTime.Now).AddDays(45);
+        var task = Call("add_task", $$"""
         {
           "title": "重要会议",
-          "date": "2026-09-20",
+          "date": "{{date:yyyy-MM-dd}}",
           "time": "14:30",
           "reminders": ["提前一天", "提前30分钟", "到时提醒"]
         }
         """);
 
-        Assert.Equal("2026-09-20", task.GetProperty("date").GetString());
+        Assert.Equal($"{date:yyyy-MM-dd}", task.GetProperty("date").GetString());
         Assert.Equal("14:30", task.GetProperty("time").GetString());
-        Assert.Equal("2026-09-20T14:30:00", task.GetProperty("scheduledAt").GetString());
+        Assert.Equal($"{date:yyyy-MM-dd}T14:30:00", task.GetProperty("scheduledAt").GetString());
         Assert.False(task.GetProperty("isOverdue").GetBoolean());
 
         // 顺序与传入一致：提前一天(1440) / 提前30分钟(30) / 到时提醒(0)
