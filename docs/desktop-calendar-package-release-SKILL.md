@@ -631,6 +631,23 @@ $api = (gh api repos/<owner>/<repo>/commits/main --jq .sha 2>&1 | Out-String).Tr
 **先判定"到底是谁推不动"再选路线**：`gh` 通但 `git` 不通 ⇒ 是 git 传输层 / 代理变量问题（走上面）；
 `gh` 也不通 ⇒ 才是真的网络断了，此时别硬推，先报告用户。
 
+⚠️ **每一类 push 都要各自做一遍双路回退，不要把结果存进变量跨命令复用** ——
+实测踩过：在同一条命令里先推 `main`（直连第 2 次成功）再推 `tag`，结果 `main` 成功、
+**`tag` 五连败**，因为 `$LASTEXITCODE` 的语义在两种失败形态（`Empty reply from server` /
+`CONNECT tunnel failed, response 502`）之间反复，用来判断"是否还需要走代理"并不可靠。
+**稳妥写法**：把 `main` 和 `tag` 各自包一层完整的「清变量直连 N 次 → 不通则切代理 N 次」，
+或者干脆分两条命令跑。推完**必须各查一次**：
+```powershell
+gh api repos/<owner>/<repo>/commits/main --jq .sha                              # main 是否到位
+gh api repos/<owner>/<repo>/git/refs/tags/v5.2.8 --jq .object.sha               # tag 是否到位
+```
+> 注意：`git tag -a` 推上去的 tag 是**附注标签**，`git/refs/tags/...` 返回的是**标签对象**的 SHA，
+> 与提交 SHA 不同 —— 别拿它和 `git rev-parse HEAD` 直接比对而误判成"没推上去"。
+> 要比就比 `git rev-list -n1 <tag>`（解引用后的提交）。
+
+**标签没推上去 = 不触发任何 CI**，Release 会静静地不出现。所以**推完 tag 一定要确认 CI 跑起来了**
+（`gh run list --limit 3` 里能看到 `headBranch = vX.Y.Z`），别只看 `main` 推成功就以为完事。
+
 **兜底方案：`gh api` 可以直接改远端文件**（当 git 完全推不动、但 `gh` 通时）。
 往 `contents` 端点 PUT 即可，无需 git 传输：
 ```powershell
@@ -999,6 +1016,103 @@ Select-String -Path MicaAgenda.Tests\*.cs -Pattern '20\d\d-\d\d-\d\d'
 
 ---
 
+### 坑 AB：一份 Markdown 喂给两个**方言不同**的渠道（**推送类 bug 必读**）
+
+**现象**：修完坑 AA 之后，用户又说"推送的卡片里**还是** Markdown 语法"。截图里长这样：
+
+```
+# 桌面日历 · 周报          ← # 原样露出
+**统计区间**：…            ← 但这个是【渲染成粗体】的
+## 📊 总览                 ← 原样露出
+> 期间到期 **0** 项         ← > 原样露出，**0** 却是粗体
+- 考前练车（09/21） — …     ← - 原样露出
+```
+
+**这条截图信息量极大 —— 先看"哪些记号生效了"**：
+`**` 生效、`#` `>` `-` 不生效 ⇒ **不是"忘了剥 Markdown"，而是"用了这个渠道不认的语法"**。
+如果全部原样露出，那才是坑 AA（压根没转义）。
+
+**根因**：**飞书卡片的 `lark_md` 不是通用 Markdown，是一个很小的子集。**
+
+| | 企微 `markdown` | 飞书 `lark_md` |
+|---|---|---|
+| `**加粗**` / `~~删除~~` / `[字](url)` | ✅ | ✅ |
+| `#` 标题 / `>` 引用 / `-` 列表 / `---` 分隔线 | ✅ | ❌ **原样显示** |
+
+而工程里通常只产出**一份** markdown 字符串，然后**同一份喂给两个渠道**。加内容的人
+根本无从察觉飞书不认什么 —— 这就是结构性缺陷。
+
+**修法（不要只补一次转义）**：把正文收敛成**「方言中立的块序列」**，
+块只声明"这是标题 / 引用 / 列表项"，由一层 `Emit(blocks, dialect)` 翻译成各渠道的记号：
+
+```csharp
+private abstract record Block;
+private sealed record Heading(int Level, string Text) : Block;
+private sealed record Quote(string Text)   : Block;
+private sealed record Bullet(string Text)  : Block;
+private sealed record Gap                  : Block;
+
+// 标题：企微 "# …" / 飞书 "**…**"
+// 引用：企微 "> …" / 飞书 直接一行
+// 列表：企微 "- …" / 飞书 "• …"（项目符号是普通字符，不依赖渲染）
+```
+
+**收益**：两条渠道的**正文内容只可能来自同一个 `BuildBody()`**，差异被压缩到语法翻译一处。
+以后加内容不会再踩这个坑。**"内容与语法分离"比"每个渠道各写一份渲染"可靠得多** ——
+后者早晚会漂移（本项目两个宿主的主题配色就是这么漂移的，见坑 Z）。
+
+**内嵌标题怎么办**：企微侧沿用 escape；**飞书侧直接剥成纯文本**
+（`MarkdownText.ToSingleLine`），**不要**赌 `lark_md` 认不认反斜杠转义 ——
+赌错的代价是把用户标题原样加一串 `\`。
+
+**回归测试怎么写**（比肉眼看卡片可靠）：
+```csharp
+foreach (var raw in feishuMarkdown.Split('\n'))
+{
+    var line = raw.TrimStart();
+    Assert.False(line.StartsWith('#'));
+    Assert.False(line.StartsWith('>'));
+    Assert.False(line.StartsWith("- "));
+}
+Assert.Contains("**桌面日历", feishuMarkdown);   // 它认的那部分要留下
+```
+再加一条**防漂移断言**：两种方言的输出里，每个存在的分组标题都必须出现。
+
+---
+
+### 坑 AC：「拖了几天」这类**相对时间**，口径必须挂在**业务日期**上，不是创建时间
+
+**现象**：报告里写「至今未完成 **4** 项，其中逾期 **0** 项」，同一段却又把四个任务
+全标成「已拖 2 天 / 2 天 / 1 天 / 当天新建」。四个任务的到期日是 09/21、09/22、09/22、10/24
+（**全在未来**）—— 两句话自相矛盾。
+
+**根因**：`GetPendingDays()` 是**从创建时间**算起的天数（"这个任务挂了多久没动"），
+而文案写的是"拖了几天"（相对**应该做完的日子**）。两个指标被当成一个用了。
+更隐蔽的是：这个值还**参与了排序**，于是"两个月后到期"的任务被排到"昨天就该做完"的前面。
+
+**修法**：相对时间的措辞挂到**业务日期**上，且**措辞只留一份定义**：
+```csharp
+public int DueOffsetDays { get; set; }   // today - Task.Date：正=已过期，负=还有几天，0=今天到期
+
+public string DelayText => DueOffsetDays switch
+{
+    > 0 => $"已拖 {DueOffsetDays} 天",
+    < 0 => $"还有 {-DueOffsetDays} 天到期",
+    _   => "今天到期"
+};
+```
+然后 **所有**渲染层（纯文本 / 各渠道 markdown / 各宿主的统计窗口）都读这一处，
+**不许任何一个地方再拼一遍**。排序改成按 `Date` 升序（最紧急在前）。
+
+⚠️ **口径要与同类功能对齐**：本项目"逾期"的定义是**跨过任务当日的 24:00**
+（用户明确指定），也就是 `Date < today`。检查新口径是否与提醒里的 `GetOverdueDays` 同源，
+否则两个功能会各说各话。
+
+**识别口诀**：文案里出现「已拖 / 还剩 / 逾期 / 超时 / 多久没…」这类**相对时间**，
+先问一句"**相对哪个时间点**"，再去核对它读的字段是不是那个时间点。
+
+---
+
 ## 关键约束清单
 
 ✅ **必须**：
@@ -1016,8 +1130,11 @@ Select-String -Path MicaAgenda.Tests\*.cs -Pattern '20\d\d-\d\d-\d\d'
 - 多处实现的同一规则（多宿主 / 多入口）**收敛成一个带单测的纯函数**
 - 视觉/配色类需求也写成**可测的不变式**（色距、WCAG 对比度、alpha 单调性）—— 见坑 Z
 - 推送类文案抽成 **Core 里的纯函数 builder**，并断言「不许出现 `**` / `#` / 换行」—— 见坑 AA
+- **同一份正文要发往多个渠道时，先把内容收敛成「方言中立的块序列」**，再按渠道翻译语法 —— 见坑 AB
 - 加新分支时回头检查**早退条件**（`if (没数据) return;` 很容易吞掉新逻辑）
+- **「已拖 / 还剩 / 逾期」这类相对时间必须挂在业务日期上**，且措辞只留一份定义 —— 见坑 AC
 - 推送前先看清并**清空代理环境变量**（`$env:HTTP_PROXY=""`），**优先试直连**
+- **每一类 push（`main` / `tag`）各自做一遍双路回退，推完各自查询确认**；tag 推不上 = 不触发 CI
 
 ❌ **绝对不能**：
 - WPF / WinForms 工程直接往 macOS / Linux 发
@@ -1036,6 +1153,8 @@ Select-String -Path MicaAgenda.Tests\*.cs -Pattern '20\d\d-\d\d-\d\d'
 - 在 XAML 里手写主题下拉清单（应由主题清单生成，否则必然与实现漂移）
 - 测试里写死日期后断言任何与"现在"有关的概念（逾期 / 已推 / 待办）—— 见坑 S-2
 - 把用户可控文本（标题等）原样拼进**纯文本**推送（会露出 Markdown 源码）—— 见坑 AA
+- 把企微方言的 Markdown（`#` / `>` / `-`）直接喂给飞书 `lark_md`（会原样显示）—— 见坑 AB
+- 用创建时间冒充业务日期说"拖了几天"（两个指标，用户一眼能看出矛盾）—— 见坑 AC
 - **`git reset --hard origin/main`**（remote-tracking ref 可能是陈旧的 → 回退并成批删文件）；
   先用 API 的 SHA 核对，再 `git reset --hard <SHA>`
 - 相信 `git fetch` 打印的 "main -> origin/main" 就当 ref 已更新（只信 `git rev-parse`）
