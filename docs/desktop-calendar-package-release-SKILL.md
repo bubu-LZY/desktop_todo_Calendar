@@ -591,6 +591,46 @@ for ($i=1; $i -le 6; $i++) {
 }
 ```
 
+**✅ 推荐做法：把「清变量 + 直连 + 代理回退」写进同一条命令**，一次跑完别再手试。
+直连时通时不通（实测同一台机器上，上午直连成功、下午直连稳定失败而代理成功），
+所以两者都留着、按顺序自动回退最省事：
+```powershell
+$out = "$env:TEMP\wb-push.txt"
+$tok = (gh auth token 2>&1 | Out-String).Trim()
+$url = "https://x-access-token:$tok@github.com/<owner>/<repo>.git"
+
+# ① 直连：清空被注入的陈旧代理变量（必须与 git 同一条命令）
+$env:HTTP_PROXY=""; $env:HTTPS_PROXY=""; $env:ALL_PROXY=""
+for ($i=1; $i -le 3; $i++) {
+  git -c credential.helper= -c http.version=HTTP/1.1 push $url main:main 2>&1 | Out-File $out -Append -Encoding utf8
+  if ($LASTEXITCODE -eq 0) { "DIRECT_OK attempt=$i" | Out-File $out -Append -Encoding utf8; break }
+  Start-Sleep -Seconds 5
+}
+
+# ② 直连没成功 → 换可用代理（本机实测 10808）
+if ($LASTEXITCODE -ne 0) {
+  $env:HTTP_PROXY="http://127.0.0.1:10808"
+  $env:HTTPS_PROXY="http://127.0.0.1:10808"
+  for ($i=1; $i -le 5; $i++) {
+    git -c credential.helper= -c http.version=HTTP/1.1 push $url main:main 2>&1 | Out-File $out -Append -Encoding utf8
+    if ($LASTEXITCODE -eq 0) { "PROXY_OK attempt=$i" | Out-File $out -Append -Encoding utf8; break }
+    Start-Sleep -Seconds 6
+  }
+}
+
+# ③ 用 API 的真实 sha 判定结果（不要相信 git status / git rev-parse 的 remote ref）
+$env:HTTP_PROXY=""; $env:HTTPS_PROXY=""; $env:ALL_PROXY=""
+$api = (gh api repos/<owner>/<repo>/commits/main --jq .sha 2>&1 | Out-String).Trim()
+"HEAD = $(git rev-parse HEAD)" | Out-File $out -Append -Encoding utf8
+"api  = $api"                    | Out-File $out -Append -Encoding utf8
+"match= $($api -eq (git rev-parse HEAD))" | Out-File $out -Append -Encoding utf8
+```
+> 实测：清空变量后直连**失败**，紧接着切 10808 代理**第 1 次即成功**（`57ca5f5..cc2d64c main -> main`）。
+> 判定一定要落在 ③ 的 `match=True` 上 —— 这个仓库的 `origin/main` 引用天生不更新（见坑 R）。
+
+**先判定"到底是谁推不动"再选路线**：`gh` 通但 `git` 不通 ⇒ 是 git 传输层 / 代理变量问题（走上面）；
+`gh` 也不通 ⇒ 才是真的网络断了，此时别硬推，先报告用户。
+
 **兜底方案：`gh api` 可以直接改远端文件**（当 git 完全推不动、但 `gh` 通时）。
 往 `contents` 端点 PUT 即可，无需 git 传输：
 ```powershell
