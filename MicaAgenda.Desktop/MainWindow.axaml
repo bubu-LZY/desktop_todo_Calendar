@@ -127,12 +127,19 @@
             <TextBlock Grid.Column="3" Text="{Binding TaskTimeText}" FontSize="8" Margin="0,0,2,0"
                        ToolTip.Tip="任务时刻（没设时间默认 09:00）"
                        Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center" />
-            <!-- 已完成：不显示勾选框，标题直接加删除线、整体变淡；还原入口在行首悬停出现 -->
+            <!-- 已完成：不显示勾选框，标题直接加删除线、整体变淡；还原入口在行首悬停出现。
+                 【周期】用 Run 内联而不是并排的第二个 TextBlock：内联之后省略号与换行
+                 仍按"前缀+标题"整行计算，前缀不会把标题挤出去。 -->
             <TextBlock Grid.Column="4" Classes="taskTitle" Classes.important="{Binding IsImportant}"
-                       Text="{Binding Title}" FontSize="8.5" VerticalAlignment="Center"
+                       FontSize="8.5" VerticalAlignment="Center"
                        TextTrimming="CharacterEllipsis"
                        Opacity="{Binding IsCompleted, Converter={StaticResource TaskTitleOpacity}}"
-                       TextDecorations="{Binding IsCompleted, Converter={StaticResource CompletedStrikethrough}}" />
+                       TextDecorations="{Binding IsCompleted, Converter={StaticResource CompletedStrikethrough}}">
+              <TextBlock.Inlines>
+                <Run Text="{Binding RecurringPrefix}" Foreground="{DynamicResource RecurringBadgeBrush}" />
+                <Run Text="{Binding Title}" />
+              </TextBlock.Inlines>
+            </TextBlock>
           </Grid>
           <!-- 右侧状态位：未完成 = 小勾选框；已完成 = 悬停才浮现的还原箭头（平时完全不占位干扰） -->
           <Grid Grid.Column="1" Width="15" Margin="2,0,0,0" VerticalAlignment="Center">
@@ -253,6 +260,7 @@
          x:CompileBindings 在本文件已关，所以不需要写类型转换。 -->
     <Border Width="132"
             Height="{Binding $parent[Window].DataContext.WeekScrollCellHeight}"
+            HorizontalAlignment="Left"
             CornerRadius="6" Margin="0,0,0,4" Padding="5,4"
             Classes="weekDayRow"
             Classes.outmonth="{Binding IsOutMonth}"
@@ -415,8 +423,13 @@
           </Grid>
           <StackPanel Grid.Column="1" IsVisible="{Binding IsEditing, Converter={StaticResource InverseBool}}">
             <TextBlock Classes="taskTitle" Classes.important="{Binding IsImportant}"
-                       Text="{Binding Title}" FontSize="11.5" TextWrapping="Wrap"
-                       TextDecorations="{Binding IsCompleted, Converter={StaticResource CompletedStrikethrough}}" />
+                       FontSize="11.5" TextWrapping="Wrap"
+                       TextDecorations="{Binding IsCompleted, Converter={StaticResource CompletedStrikethrough}}">
+              <TextBlock.Inlines>
+                <Run Text="{Binding RecurringPrefix}" Foreground="{DynamicResource RecurringBadgeBrush}" />
+                <Run Text="{Binding Title}" />
+              </TextBlock.Inlines>
+            </TextBlock>
             <TextBlock Text="{Binding TimeBadge}" FontSize="9.5" Foreground="{DynamicResource MutedTextBrush}" Margin="0,1,0,0" />
           </StackPanel>
           <TextBox Grid.Column="1" Text="{Binding EditTitle}" IsVisible="{Binding IsEditing}"
@@ -460,17 +473,22 @@
                      Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center"
                      Opacity="{Binding IsCompleted, Converter={StaticResource TaskTitleOpacity}}" />
           <StackPanel Grid.Column="2" VerticalAlignment="Center" Margin="2,0,4,0">
-            <!-- 标题行：逾期任务前置红色【已逾期】，与标题同一行、不换行；已完成整行删除线、自动沉到该日最后 -->
-            <StackPanel Orientation="Horizontal">
-              <TextBlock Text="{Binding OverduePrefix}" FontSize="10.5" FontWeight="SemiBold"
-                         Foreground="{DynamicResource ImportantTaskTextBrush}"
-                         VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
-              <TextBlock Classes="taskTitle" Classes.important="{Binding IsImportant}"
-                         Text="{Binding Title}" FontSize="11" TextTrimming="CharacterEllipsis"
-                         VerticalAlignment="Center"
-                         Opacity="{Binding IsCompleted, Converter={StaticResource TaskTitleOpacity}}"
-                         TextDecorations="{Binding IsCompleted, Converter={StaticResource CompletedStrikethrough}}" />
-            </StackPanel>
+            <!-- 标题行：前缀（红色【已逾期】、蓝色【周期】）+ 标题。
+                 三者用**同一个 TextBlock 的 Inlines**，而不是并排几个 TextBlock ——
+                 并排时省略号只作用于标题那个块，前缀照样占满宽度、标题被挤没；
+                 内联之后整行一起参与布局，省略号才是真的"整行放不下才截"。
+                 已完成整行删除线、自动沉到该日最后。 -->
+            <TextBlock Classes="taskTitle" Classes.important="{Binding IsImportant}"
+                       FontSize="11" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"
+                       Opacity="{Binding IsCompleted, Converter={StaticResource TaskTitleOpacity}}"
+                       TextDecorations="{Binding IsCompleted, Converter={StaticResource CompletedStrikethrough}}">
+              <TextBlock.Inlines>
+                <Run Text="{Binding OverduePrefix}" FontWeight="SemiBold"
+                     Foreground="{DynamicResource ImportantTaskTextBrush}" />
+                <Run Text="{Binding RecurringPrefix}" Foreground="{DynamicResource RecurringBadgeBrush}" />
+                <Run Text="{Binding Title}" />
+              </TextBlock.Inlines>
+            </TextBlock>
             <TextBlock Text="{Binding TimeBadge}" FontSize="9" Foreground="{DynamicResource MutedTextBrush}" />
           </StackPanel>
         </Grid>
@@ -903,11 +921,21 @@
             BorderThickness="1"
             BorderBrush="{DynamicResource WindowEdgeBrush}"
             Background="#D8FFFFFF"
-            Padding="8"
+            Padding="0"
             ClipToBounds="True"
             PointerPressed="Shell_PointerPressed"
             PointerMoved="Shell_PointerMoved">
-      <Grid RowDefinitions="Auto,*">
+      <!-- Panel 只做叠放：纹理层在下、内容在上。
+           Padding 从 Shell 挪到了内容 Grid 上（8 → 0 + Margin=8），布局结果完全一样，
+           但纹理层因此能铺满整块外壳 —— 留在 Border.Padding 里的话，
+           四周会留出一圈 8px 的"没纹理的相框"，一眼就看得出背景是拼接的。 -->
+      <Panel>
+        <!-- ===== 纹理层（仅「米色纹理」这类主题启用）=====
+             必须是 Panel 的**第一个孩子**：同级里后声明的画在上面，放后面会盖住整个界面。
+             IsHitTestVisible=False 是关键 —— 这层铺满全窗，若参与命中测试，
+             拖动窗口、点格子这些操作会全部被它吃掉。 -->
+        <Rectangle x:Name="TextureLayer" IsHitTestVisible="False" IsVisible="False" />
+        <Grid RowDefinitions="Auto,*" Margin="8">
         <!-- ===== 顶栏（自适应，最宽两行）：日期信息 + 背景/透明度 + 今天 / 视图 / 设置 / 锁定 =====
              窗口变窄时的降级顺序（由 UpdateResponsiveLayout 驱动，见宿主代码）：
                ① 宽度够  → 全部单行展示；
@@ -1019,16 +1047,36 @@
                整列可上下滚动 —— 默认停在开头（最近 7 天），往下滚能看到后面日期的格子。 -->
           <Grid IsVisible="{Binding IsWeekView}" Margin="8">
             <Grid.ColumnDefinitions>
-              <ColumnDefinition Width="132" />
+              <!-- 左列 = 132 的格子宽度 + 10 的滚动条沟槽。
+                   沟槽必须**算进列宽**：滚动条是 ScrollViewer 模板的一部分、画在自己的右边缘，
+                   左列刚好 132 时那条滚动条就压在最右侧的日期格子上（用户反馈"压住我的格子，很丑"）。
+                   格子本身写死 Width=132 且 HorizontalAlignment=Left，所以列宽多出来的 10px
+                   只会让滚动条落进右侧的空白沟槽，格子宽度与位置都不受影响。 -->
+              <ColumnDefinition Width="142" />
               <ColumnDefinition Width="*" />
             </Grid.ColumnDefinitions>
             <ScrollViewer x:Name="WeekScrollViewer" Grid.Column="0"
                           VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
                           ScrollChanged="WeekScroll_ScrollChanged">
+              <!-- 滚动条配色：默认的 Fluent 滑块在浅色主题下偏深、存在感过强。
+                   这里只覆盖**这一处**滚动条的滑块色（资源就近覆盖，不影响月/年视图），
+                   并调窄到 8px 让它更像"缝里的一条细指示"。 -->
+              <ScrollViewer.Resources>
+                <SolidColorBrush x:Key="ScrollBarThumbFill" Color="#3394A3B8" />
+                <SolidColorBrush x:Key="ScrollBarThumbFillPointerOver" Color="#6694A3B8" />
+                <SolidColorBrush x:Key="ScrollBarThumbFillPressed" Color="#8C7B8CA0" />
+                <SolidColorBrush x:Key="ScrollBarTrackFill" Color="Transparent" />
+                <SolidColorBrush x:Key="ScrollBarTrackFillPointerOver" Color="Transparent" />
+                <SolidColorBrush x:Key="ScrollBarTrackFillPressed" Color="Transparent" />
+                <SolidColorBrush x:Key="ScrollBarTrackStroke" Color="Transparent" />
+                <SolidColorBrush x:Key="ScrollBarTrackStrokePointerOver" Color="Transparent" />
+                <SolidColorBrush x:Key="ScrollBarTrackStrokePressed" Color="Transparent" />
+              </ScrollViewer.Resources>
               <ItemsControl ItemsSource="{Binding VisibleDays}" ItemTemplate="{StaticResource WeekDayRowTemplate}" />
             </ScrollViewer>
-            <!-- 右侧：任务面板占满剩余高度（内容多时内部自己滚动） -->
-            <ContentControl Grid.Column="1" Margin="8,0,0,0"
+            <!-- 右侧：任务面板占满剩余高度（内容多时内部自己滚动）。
+                 左边距 8 → 0：那 8px 现在由左列的滚动条沟槽占掉了，再加 8 会让缝隙翻倍。 -->
+            <ContentControl Grid.Column="1" Margin="0,0,0,0"
                             Content="{Binding}"
                             ContentTemplate="{StaticResource RightPanelTemplate}" />
           </Grid>
@@ -1105,7 +1153,8 @@
         <ctl:AiChatPanel x:Name="AiPanel" Grid.Row="1"
                          HorizontalAlignment="Right" VerticalAlignment="Top"
                          Margin="0,8,8,0" ZIndex="100" IsVisible="False" />
-      </Grid>
+        </Grid>
+      </Panel>
     </Border>
 
     <!-- ===== 边缘 / 角落缩放热区 =====

@@ -36,7 +36,12 @@ public enum CalendarBackgroundMode
     Cream,
     Caramel,
     Walnut,
-    Terracotta
+    Terracotta,
+
+    // ===== v5.2.9 新增：带噪点纹理的主题 =====
+    // 与其它主题的区别不只是颜色 —— 它在底色之上还会铺一层**平铺的细颗粒**，
+    // 所以它必须能被"认出来"（见 ThemeDefinition.TextureOpacity）。
+    BeigeTexture
 }
 
 public static class CalendarBackgroundModeExtensions

@@ -74,6 +74,19 @@ public sealed class CalendarTask
     public bool IsRecurringInstance => SeriesId is not null;
 
     /// <summary>
+    /// 是否属于周期任务 —— 源任务与其实例都算。
+    ///
+    /// <para><b>必须两个都判</b>：源任务自己也是一个可见任务，而实例的 <see cref="Recurrence"/> 是
+    /// <c>None</c>（规则只存在源任务上）。只判其中一个都会漏掉一半，UI 上就会出现
+    /// "有的周期任务有【周期】标识、有的没有"。</para>
+    ///
+    /// <para>同时它也是排序的最后一级权重：周期任务排在所有任务之后（见
+    /// <c>MainViewModel.OrderForDay</c>）。</para>
+    /// </summary>
+    [JsonIgnore]
+    public bool IsRecurring => IsRecurringMaster || IsRecurringInstance;
+
+    /// <summary>
     /// 主提醒的提前量（分钟）：在「当天基准时刻 - 本值」推一次提醒。
     /// 多选提醒时它是第一个勾选项；其余档位在 <see cref="AdditionalReminderLeadMinutes"/>。
     /// null = 一个提醒都没设：完全不推。

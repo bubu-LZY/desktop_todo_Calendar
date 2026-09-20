@@ -11,12 +11,20 @@ public readonly record struct RgbaColor(byte A, byte R, byte G, byte B)
 }
 
 /// <summary>一个主题的定义：身份由 <see cref="Base"/>（基色）+ <see cref="ShellMix"/>（浓度）决定。</summary>
+/// <param name="TextureOpacity">
+/// 纹理层浓度（0 = 无纹理）。非 0 时宿主会在底色之上再铺一层**平铺的细颗粒**，
+/// 用来表现"纸感 / 布感"这类**不是纯色**的底色。
+///
+/// <para>它同时乘上用户的透明度设置 —— 纹理属于背景的一部分，
+/// 背景变透明时纹理也要跟着淡掉，否则"拉低透明度"会留下满屏悬浮的噪点，比不透明还难看。</para>
+/// </param>
 public sealed record ThemeDefinition(
     CalendarBackgroundMode Mode,
     string Name,
     bool IsDark,
     RgbaColor Base,
-    double ShellMix);
+    double ShellMix,
+    double TextureOpacity = 0);
 
 /// <summary>某个主题 + 某档不透明度下，整套界面用色。</summary>
 public sealed record ThemeColors(
@@ -50,7 +58,11 @@ public sealed record ThemeColors(
     RgbaColor ToolbarBackground,
     RgbaColor ToolbarBorder,
     RgbaColor ToolbarHover,
-    RgbaColor ToolbarPressed);
+    RgbaColor ToolbarPressed,
+    /// <summary>周期任务前缀【周期】的颜色（蓝）。明暗主题各取一档，保证压在各自底色上都看得清。</summary>
+    RgbaColor RecurringBadge = default,
+    /// <summary>纹理层的有效浓度（已乘上用户透明度）。0 表示该主题不铺纹理。</summary>
+    double TextureOpacity = 0);
 
 /// <summary>
 /// 全部主题的唯一权威定义（两个宿主共用，并有单测覆盖）。
@@ -112,7 +124,16 @@ public static class ThemeCatalog
         new(CalendarBackgroundMode.FrostedDark,    "暗色磨砂",   true,  RgbaColor.Rgb(128, 132, 140), 0.62), // 纯中性深灰
         new(CalendarBackgroundMode.Graphite,       "石墨深色",   true,  RgbaColor.Rgb(75, 105, 170),  0.75), // 深蓝黑
         new(CalendarBackgroundMode.Walnut,         "暖褐木色",   true,  RgbaColor.Rgb(150, 110, 74),  0.70), // 暖褐（深色暖调）
-        new(CalendarBackgroundMode.Terracotta,     "陶土赭石",   true,  RgbaColor.Rgb(178, 78, 54),   0.50)  // 土红（深色暖调）
+        new(CalendarBackgroundMode.Terracotta,     "陶土赭石",   true,  RgbaColor.Rgb(178, 78, 54),   0.50),  // 土红（深色暖调）
+
+        // ===== 带纹理 =====
+        // 米色纹理：参考图是一张"米色再生纸"—— 浅暖米底 + 细密的暖色颗粒。
+        //
+        // 基色刻意取**偏中性的暖灰米（greige）**，而不是更饱和的黄米：浅色暖调这个区间已经很挤
+        // （米杏奶油偏粉、纸感浅白偏黄、焦糖奶茶偏深棕），再塞一个暖黄进去，单测的
+        // 「主题间色距 ≥ 28」会立刻报红（实测第一版取 (222,205,185) 时与白雾玻璃只差 15.3）。
+        // 这个主题的辨识度本来就**不靠颜色**、靠那层颗粒，所以让基色保持中性、把个性交给纹理层。
+        new(CalendarBackgroundMode.BeigeTexture,   "米色纹理",   false, RgbaColor.Rgb(188, 180, 168), 0.66, 0.50)
     };
 
     private static readonly Dictionary<CalendarBackgroundMode, ThemeDefinition> ByMode =
@@ -156,12 +177,13 @@ public static class ThemeCatalog
         var def = Get(mode);
         var alpha = (byte)Math.Clamp(Math.Round(opacity * 255), 0, 255);
 
-        if (IsTransparent(mode))
-        {
-            return BuildTransparent(def, alpha);
-        }
+        var colors = IsTransparent(mode)
+            ? BuildTransparent(def, alpha)
+            : def.IsDark ? BuildDark(def, alpha) : BuildLight(def, alpha);
 
-        return def.IsDark ? BuildDark(def, alpha) : BuildLight(def, alpha);
+        // 纹理浓度乘上用户透明度，且**在这里统一算**（不在三个分支里各写一遍）：
+        // 纹理是背景的一部分，背景被调透明时它必须跟着淡掉。
+        return colors with { TextureOpacity = def.TextureOpacity * Math.Clamp(opacity, 0, 1) };
     }
 
     // ===== 派生工具 =====
@@ -307,7 +329,9 @@ public static class ThemeCatalog
                 ToolbarBackground: RgbaColor.Transparent,
                 ToolbarBorder: WithAlpha(RgbaColor.White, 70),
                 ToolbarHover: RgbaColor.Transparent,
-                ToolbarPressed: RgbaColor.Transparent);
+                ToolbarPressed: RgbaColor.Transparent,
+                // 深色底上用**浅**蓝，深蓝会糊在深色里看不出来（与"深色面板不能比底色更暗"是同一条规则）。
+                RecurringBadge: RgbaColor.Rgb(147, 197, 253));
         }
 
         return new ThemeColors(
@@ -344,7 +368,9 @@ public static class ThemeCatalog
             ToolbarBackground: RgbaColor.Transparent,
             ToolbarBorder: WithAlpha(RgbaColor.Black, 42),
             ToolbarHover: RgbaColor.Transparent,
-            ToolbarPressed: RgbaColor.Rgb(229, 231, 235));
+            ToolbarPressed: RgbaColor.Rgb(229, 231, 235),
+            // 浅色底上用深蓝：对最"中灰"的浅色主题也保得住 4.5:1（单测会检查）。
+            RecurringBadge: RgbaColor.Rgb(29, 78, 216));
     }
 
     // ===== 供测试与宿主使用的小工具 =====

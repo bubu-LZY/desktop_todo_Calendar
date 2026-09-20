@@ -611,8 +611,16 @@
                                    FontWeight="Bold"
                                    VerticalAlignment="Center"
                                    Visibility="{Binding IsImportant, Converter={StaticResource BoolVisibility}}" />
-                        <TextBlock Text="{Binding Title}"
-                                   Style="{StaticResource TaskTextStyle}" />
+                        <TextBlock Style="{StaticResource TaskTextStyle}">
+                            <!-- 【周期】用 Run 内联而不是并排第二个 TextBlock：内联之后
+                                 省略号与换行仍按"前缀+标题"整行计算，前缀不会把标题挤出去。
+                                 标识要蓝色、标题跟随样式色，拼成一串就没法分别着色。 -->
+                            <TextBlock.Inlines>
+                                <Run Text="{Binding RecurringPrefix}"
+                                     Foreground="{DynamicResource RecurringBadgeBrush}" />
+                                <Run Text="{Binding Title}" />
+                            </TextBlock.Inlines>
+                        </TextBlock>
                     </StackPanel>
                     <!-- 右侧：复选框，固定显示，用于快速标记完成 -->
                     <CheckBox Grid.Column="1"
@@ -1095,8 +1103,13 @@
                     <!-- 标题 + 时间徽标（未完成 N 天 / 逾期 N 天 / 用时 X） -->
                     <StackPanel Grid.Column="1"
                                 Visibility="{Binding IsEditing, Converter={StaticResource InverseBoolVisibility}}">
-                        <TextBlock Text="{Binding Title}"
-                                   Style="{StaticResource TodayTaskTextStyle}" />
+                        <TextBlock Style="{StaticResource TodayTaskTextStyle}">
+                            <TextBlock.Inlines>
+                                <Run Text="{Binding RecurringPrefix}"
+                                     Foreground="{DynamicResource RecurringBadgeBrush}" />
+                                <Run Text="{Binding Title}" />
+                            </TextBlock.Inlines>
+                        </TextBlock>
                         <TextBlock Text="{Binding TimeBadge}"
                                    FontSize="9.5"
                                    Foreground="{DynamicResource MutedTextBrush}"
@@ -1223,8 +1236,7 @@
                     <StackPanel Grid.Column="2"
                                 VerticalAlignment="Center"
                                 Margin="2,0,4,0">
-                        <TextBlock Text="{Binding Title}"
-                                   FontSize="11"
+                        <TextBlock FontSize="11"
                                    TextTrimming="CharacterEllipsis">
                             <TextBlock.Style>
                                 <Style TargetType="TextBlock">
@@ -1241,6 +1253,14 @@
                                     </Style.Triggers>
                                 </Style>
                             </TextBlock.Style>
+                            <TextBlock.Inlines>
+                                <Run Text="{Binding OverduePrefix}"
+                                     FontWeight="SemiBold"
+                                     Foreground="{DynamicResource ImportantTaskTextBrush}" />
+                                <Run Text="{Binding RecurringPrefix}"
+                                     Foreground="{DynamicResource RecurringBadgeBrush}" />
+                                <Run Text="{Binding Title}" />
+                            </TextBlock.Inlines>
                         </TextBlock>
                         <TextBlock Text="{Binding TimeBadge}"
                                    FontSize="9"
@@ -1304,10 +1324,15 @@
                     <StackPanel Grid.Column="2"
                                 VerticalAlignment="Center"
                                 Margin="2,0,4,0">
-                        <TextBlock Text="{Binding Title}"
-                                   FontSize="11"
+                        <TextBlock FontSize="11"
                                    TextTrimming="CharacterEllipsis"
-                                   Foreground="{DynamicResource ImportantTaskTextBrush}" />
+                                   Foreground="{DynamicResource ImportantTaskTextBrush}">
+                            <TextBlock.Inlines>
+                                <Run Text="{Binding RecurringPrefix}"
+                                     Foreground="{DynamicResource RecurringBadgeBrush}" />
+                                <Run Text="{Binding Title}" />
+                            </TextBlock.Inlines>
+                        </TextBlock>
                         <TextBlock Text="{Binding TimeBadge}"
                                    FontSize="9"
                                    Foreground="{DynamicResource ImportantTaskTextBrush}" />
@@ -1593,6 +1618,14 @@
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="*" />
             </Grid.RowDefinitions>
+
+            <!-- 纹理层（仅「米色纹理」这类主题启用）：铺在底色之上、内容之下。
+                 Margin=-8 是为了抵消外壳的 Padding=8 —— 不抵消的话四周会留出一圈
+                 "没纹理的相框"，一眼就看得出背景是拼接的。
+                 IsHitTestVisible=False 是关键：这层铺满全窗，若参与命中测试，
+                 拖动窗口、点格子这些操作会全部被它吃掉。 -->
+            <Rectangle x:Name="TextureLayer" Grid.Row="0" Grid.RowSpan="2" Margin="-8"
+                       IsHitTestVisible="False" Visibility="Collapsed" />
 
         <DockPanel x:Name="ToolbarPanel"
                    Grid.Row="0"

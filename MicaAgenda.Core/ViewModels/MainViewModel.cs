@@ -92,8 +92,44 @@ public sealed class MainViewModel : ViewModelBase
         PreviousCommand = new RelayCommand(_ => MovePrevious());
         NextCommand = new RelayCommand(_ => MoveNext());
         TodayCommand = new RelayCommand(_ => GoToday());
+
+        // 先把周期地平线推到今天，再建日历。
+        // 顺序反了的话，这次补出来的实例要等到下一次重建才看得见（用户会以为"没生效"）。
+        EnsureRecurrenceHorizon();
+
         BuildTimeline();
         RebuildCalendar();
+    }
+
+    /// <summary>
+    /// 本次构造 / 跨天时，是否真的补出过周期实例。
+    /// 宿主用它决定"要不要立刻落盘"，单测用它断言幂等（第二次调用必须为 false）。
+    /// </summary>
+    public bool RecurrenceHorizonExtended { get; private set; }
+
+    /// <summary>
+    /// 把周期系列的物化地平线推到今天之后（见 <see cref="Services.RecurrenceService.TopUp"/>）。
+    ///
+    /// <para>不这么做的话，封顶挂在模板日期上，系列铺满 2 年就永久用完 ——
+    /// 用户看到的就是"周期任务最多只能加 731 个"。放在跨天路径上，系列会随日子自动续期。</para>
+    /// </summary>
+    private bool EnsureRecurrenceHorizon()
+    {
+        List<CalendarTask> added;
+        lock (_syncRoot)
+        {
+            added = RecurrenceService.TopUp(_data.Tasks, _today);
+            if (added.Count == 0)
+            {
+                return false;
+            }
+
+            _data.Tasks.AddRange(added);
+        }
+
+        RecurrenceHorizonExtended = true;
+        MarkDirty();
+        return true;
     }
 
     public CalendarData Data => _data;
@@ -822,16 +858,23 @@ public sealed class MainViewModel : ViewModelBase
         lock (_syncRoot)
         {
             // 合并后的「未完成」：逾期欠账（日期最早的排最前）在前，本周待办按日期接在后面。
+            //
+            // 周期任务在这一组里**只压到"同一天内的最后"**，不做全局垫底：
+            // 这一组跨多天，而"逾期欠账排最前"是既有明确规则（见上面那行注释）。
+            // 若让周期任务整段垫底，一条上周的逾期周期任务会被排到本周普通任务之后，
+            // 等于把最该催的欠账藏起来 —— 那不是用户想要的效果。
             var overdue = _data.Tasks
                 .Where(t => IsOverdueTask(t, nowLocal))
                 .OrderBy(t => t.Date)
                 .ThenBy(t => t.Time ?? CalendarTask.DefaultTime)
+                .ThenBy(t => t.IsRecurring)
                 .ThenBy(t => t.CreatedAt)
                 .ToList();
             var open = _data.Tasks
                 .Where(t => IsOpenTask(t, nowLocal, weekStart, weekEnd))
                 .OrderBy(t => t.Date)
                 .ThenBy(t => t.Time ?? CalendarTask.DefaultTime)
+                .ThenBy(t => t.IsRecurring)
                 .ThenBy(t => t.CreatedAt)
                 .ToList();
             mergedOpen = [..overdue, ..open];
@@ -839,9 +882,11 @@ public sealed class MainViewModel : ViewModelBase
             // 判定用「计划日期在本周」或「实际完成于本周」的并集：
             // 只用 Date 判定的话，一条 8 月的逾期任务在今天勾完就会从组里凭空消失
             // （既不再是"逾期未完成"，也不算"本周完成"），看起来像任务丢了。
+            // 「已完成」这组允许周期任务整段垫底：它本来就是"看战果"的列表，顺序无关紧要。
             completed = _data.Tasks
                 .Where(t => t.IsCompleted && IsInWeek(t, weekStart, weekEnd))
-                .OrderByDescending(t => t.CompletedAt ?? t.CreatedAt)
+                .OrderBy(t => t.IsRecurring)
+                .ThenByDescending(t => t.CompletedAt ?? t.CreatedAt)
                 .ThenBy(t => t.CreatedAt)
                 .ToList();
 
@@ -1096,9 +1141,21 @@ public sealed class MainViewModel : ViewModelBase
     /// 结果格子内部留出大片空白、右面板反而被挤窄，已废弃）。
     ///
     /// 132 是用户实测"152 太宽"后收窄的值。注意 XAML 里还有同值的硬编码
-    ///（周视图左列的 Border / ColumnDefinition 的 Width），改这里时要一并改掉。
+    ///（周视图左列的 Border 的 Width），改这里时要一并改掉。
+    ///
+    /// <para>周视图左列（ColumnDefinition）比它**宽 <see cref="WeekScrollBarGutter"/>**，
+    /// 多出来的那一条是滚动条沟槽 —— 见下面常量的说明。</para>
     /// </summary>
     public const double WeekScrollColumnWidth = 132;
+
+    /// <summary>
+    /// 周视图左列留给纵向滚动条的沟槽宽度（列宽 = <see cref="WeekScrollColumnWidth"/> + 它）。
+    ///
+    /// <para>滚动条是 <c>ScrollViewer</c> 模板的一部分、画在自己的右边缘：左列刚好等于格子宽度时，
+    /// 那条滚动条就压在最右侧的日期格子上（用户反馈"压住我的每一个日期格子，感觉很丑"）。
+    /// 把列宽多留一条沟槽、格子本身固定 132 且左对齐，滚动条就落进缝隙里了。</para>
+    /// </summary>
+    public const double WeekScrollBarGutter = 10;
 
     /// <summary>
     /// 周视图左栏日期格子的高度，由宿主的 <c>UpdateResponsiveLayout</c> 写入。
@@ -1152,6 +1209,10 @@ public sealed class MainViewModel : ViewModelBase
         // 每次都会引发一整轮 UI 刷新——而结果与上一分钟完全相同。
         if (dayChanged)
         {
+            // 跨天的第一件事：把周期地平线往前推（可能补出今天之后 2 年内的实例），
+            // 再重建日历，新补出来的实例才会一起出现在格子里。
+            EnsureRecurrenceHorizon();
+
             if (Settings.ViewMode == CalendarViewMode.Month)
             {
                 RefreshTimelineTasks();
@@ -1854,6 +1915,54 @@ public sealed class MainViewModel : ViewModelBase
     }
 
     /// <summary>
+    /// 周视图向**前**插入日期格子（滚到接近顶部时由宿主调用）。
+    ///
+    /// <para><b>为什么以前看不了今天之前</b>：起始点固定在"本周周日"，而 <see cref="ExtendWeekScroll"/>
+    /// 只往尾部 Add —— 今天之前的日期根本铺不出来，用户想回头看看前几天做不到。</para>
+    ///
+    /// <para>返回实际插入的天数（0 表示当前不是周视图，没插）。</para>
+    /// </summary>
+    public int ExtendWeekScrollBackward()
+    {
+        if (Settings.ViewMode != CalendarViewMode.Week || VisibleDays.Count == 0)
+        {
+            return 0;
+        }
+
+        var count = WeekScrollAppendWeeks * 7;
+        var start = VisibleDays[0].Date.AddDays(-count);
+
+        // 插到**头部**：其后每一行的索引都后移 count，宿主必须据此补偿滚动偏移
+        // （见 WeekScrollHeadPrepended），否则画面会突然往下跳一整屏。
+        var inserted = new List<DayCellViewModel>(count);
+        for (var offset = 0; offset < count; offset++)
+        {
+            var date = start.AddDays(offset);
+            inserted.Add(CreateDayCell(new CalendarDay(date, true, date == _today)));
+        }
+
+        for (var i = 0; i < inserted.Count; i++)
+        {
+            VisibleDays.Insert(i, inserted[i]);
+        }
+
+        WeekScrollHeadPrepended?.Invoke(count);
+
+        // 与向后追加共用同一个总量上限。这次裁的是**尾部** —— 用户正在顶部附近，
+        // 尾部是没在看的那一侧（向后追加时反之，裁头部）。
+        var overflow = VisibleDays.Count - WeekScrollMaxDays;
+        for (var i = 0; i < overflow; i++)
+        {
+            VisibleDays.RemoveAt(VisibleDays.Count - 1);
+        }
+
+        return count;
+    }
+
+    /// <summary>周视图滚到接近**顶部**时向头部插入了 N 天：宿主需要把滚动偏移加回 N 行。</summary>
+    public event Action<int>? WeekScrollHeadPrepended;
+
+    /// <summary>
     /// 周视图向后续追加日期格子（滚到接近底部时由宿主调用）。
     ///
     /// 追加点紧接在最后一个已有格子的次日，按整周推进 —— 因为左栏是"竖排日期"，
@@ -1896,15 +2005,17 @@ public sealed class MainViewModel : ViewModelBase
     }
 
     /// <summary>
-    /// 周视图滚动到的第一个可见日期：滚回"本周"用的锚点。
-    /// 默认视图（未滚动）时就是当前这一周的周日。
+    /// 周视图滚动列表的起点：**今天（或选中日）往前 <c>WeekCenterOffsetDays</c> 天**。
+    ///
+    /// <para>与 <see cref="CalendarService.BuildWeekScroll"/> 的起点保持同一个口径 ——
+    /// 起点不再对齐到"本周周日"，是为了让今天落在第 4 行（上 3 下 3、今天居中）。</para>
     /// </summary>
     public DateOnly WeekScrollStartDate
     {
         get
         {
             var target = SelectedDate == default ? _today : SelectedDate;
-            return target.AddDays(-(int)target.DayOfWeek);
+            return target.AddDays(-Services.CalendarService.WeekCenterOffsetDays);
         }
     }
 
@@ -2080,13 +2191,21 @@ public sealed class MainViewModel : ViewModelBase
     }
 
     /// <summary>
-    /// 同一天任务的统一显示顺序：<b>未完成在前、已完成自动沉到该日最后</b>；
-    /// 未完成 / 已完成两段内部再按「重要优先 → 创建时间」排。
+    /// 同一天任务的统一显示顺序：<b>普通任务在前、周期任务整段垫底</b>；
+    /// 两段内部再按「未完成在前 → 重要优先 → 创建时间」排。
     /// 日历格子与今日任务面板共用这一个口径，避免两处排序漂移。
+    ///
+    /// <para><b>为什么周期任务权重最小</b>：周期任务天天都在，是"背景噪声"；
+    /// 用户真正要盯的是当天临时加的那几条。让周期任务整段沉到最下面，
+    /// 一眼扫过去看到的就是"今天新出现的事"。这是用户明确要求的口径。</para>
+    ///
+    /// <para>放成**第一级**而不是最后一级：只加在末尾的话，它前面还隔着创建时间，
+    /// 月初建的周期任务照样会排在当天新建的普通任务前面 —— 达不到"放在所有任务下面"。</para>
     /// </summary>
     private static IOrderedEnumerable<CalendarTask> OrderForDay(IEnumerable<CalendarTask> tasks)
         => tasks
-            .OrderBy(task => task.IsCompleted)
+            .OrderBy(task => task.IsRecurring)
+            .ThenBy(task => task.IsCompleted)
             .ThenByDescending(task => task.IsImportant)
             .ThenBy(task => task.CreatedAt);
 }

@@ -203,7 +203,7 @@ public sealed class MainViewModelTests
     }
 
     [Fact]
-    public void IndexOfTodayInWeekScroll_PointsAtToday()
+    public void IndexOfTodayInWeekScroll_PutsTodayInTheMiddle()
     {
         var data = new CalendarData();
         var viewModel = new MainViewModel(data, () => new DateTimeOffset(2026, 5, 10, 9, 0, 0, TimeSpan.Zero));
@@ -211,22 +211,18 @@ public sealed class MainViewModelTests
 
         var index = viewModel.IndexOfTodayInWeekScroll;
 
-        // 周视图从"今天所在那一周的周一"开始铺，所以今天一定落在首屏之内；
-        // 宿主点「今天」时就是靠这个下标反推要滚到哪一行。
         Assert.InRange(index, 0, (MainViewModel.WeekScrollInitialWeeks * 7) - 1);
         Assert.Equal(new DateOnly(2026, 5, 10), viewModel.VisibleDays[index].Date);
         Assert.True(viewModel.VisibleDays[index].IsToday);
 
-        // 首行必须是那一周的第一天，否则 ScrollWeekToToday 会滚到半周中间去。
-        // 本项目全链路（CalendarService / MainViewModel / TaskApiServer）都以**周日**为
-        // 一周起点，即 AddDays(-(int)DayOfWeek)，所以这里是 Sunday 而不是 Monday。
-        Assert.Equal(DayOfWeek.Sunday, viewModel.VisibleDays[0].Date.DayOfWeek);
-
-        // 宿主滚到的是"今天所在那一周的第一行"：该行日期必须仍是同一周、且是周起点。
-        var weekStartIndex = index - (index % 7);
-        Assert.Equal(DayOfWeek.Sunday, viewModel.VisibleDays[weekStartIndex].Date.DayOfWeek);
-        Assert.Equal(viewModel.VisibleDays[index].Date.AddDays(-(index % 7)),
-            viewModel.VisibleDays[weekStartIndex].Date);
+        // 今天必须落在**第 4 行（索引 3）**：上面 3 格、今天居中、下面 3 格，
+        // 滚动归零时就是这个画面 —— 这是用户明确要求的口径。
+        //
+        // 旧实现从"今天所在那一周的周日"起铺，今天落在第几行取决于当天是星期几：
+        // 周日那天在最上面、周六那天在最下面，每点一次「今天」位置都不一样。
+        Assert.Equal(3, index);
+        Assert.Equal(new DateOnly(2026, 5, 7), viewModel.VisibleDays[0].Date);
+        Assert.Equal(new DateOnly(2026, 5, 13), viewModel.VisibleDays[6].Date);
     }
 
     [Fact]

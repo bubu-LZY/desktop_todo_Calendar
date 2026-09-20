@@ -8,13 +8,66 @@ namespace MicaAgenda.App.Services;
 /// 设计取舍 —— 为什么物化而不是动态计算：
 /// 物化把未来的重复实例提前生成为普通 <see cref="CalendarTask"/>（独立 Id、独立完成态），
 /// 这样日历构建、编辑、勾选完成、删除、提醒、MCP 全部复用现有逻辑，一处都不用为"虚拟日期"打补丁。
-/// 代价是数据文件里会多出未来的实例，所以这里封顶 2 年（约 730 天），
-/// 需要更久的用 <see cref="CalendarTask.RecurrenceEnd"/> 显式控制。
+/// 代价是数据文件里会多出未来的实例，所以有**地平线**：任一时刻最多物化到今天之后 2 年
+/// （<see cref="MaxMaterializedDays"/>），需要更久的用 <see cref="CalendarTask.RecurrenceEnd"/> 显式控制。
+///
+/// <para><b>地平线是滚动的，不是一次性的</b>：只靠 <see cref="Expand"/> 的话，封顶挂在模板日期上，
+/// 系列铺满 2 年就永久用完（用户报的"只能加 731 个"）。所以启动与每次跨天都要调一次
+/// <see cref="TopUp"/> 把窗口往前推 —— 想改成"真正无限"就必须放弃物化
+/// （虚拟实例 + 处处补丁），那是另一种取舍，代价远大于收益。</para>
 /// </summary>
 public static class RecurrenceService
 {
-    /// <summary>物化封顶天数：无结束日期的周期任务最多向前铺约 2 年。</summary>
+    /// <summary>物化封顶天数：**从今天起算**向前铺约 2 年（见 <see cref="TopUp"/>）。</summary>
     public const int MaxMaterializedDays = 730;
+
+    /// <summary>
+    /// 把各周期系列补到今天之后 <see cref="MaxMaterializedDays"/> 天，返回**需要新增**的实例。
+    ///
+    /// <para><b>为什么需要它</b>：物化时的封顶若挂在"模板日期"上，一个系列铺满 730 天之后就
+    /// **永久用完**了 —— 用户看到的现象就是"周期任务最多只能加 731 个"。
+    /// 这里把封顶改挂在**今天**上，于是它变成一扇**滚动的窗口**：
+    /// 老系列每过一天就自动往前续一天，永远不会用完，而数据文件的规模仍然有界
+    /// （任一时刻最多约 2 年的实例）。</para>
+    ///
+    /// <para><b>幂等</b>：从该系列**已有的最后一天**往后续，已经铺到位时什么都不加。
+    /// 所以可以放心地在每次启动、每次跨天时调用。</para>
+    ///
+    /// <para><b>会尊重 <see cref="CalendarTask.RecurrenceEnd"/></b>：显式设了结束日期的系列
+    /// 不会越过它 —— 那是用户的明确意图，不能被"地平线"顶穿。</para>
+    /// </summary>
+    public static List<CalendarTask> TopUp(IReadOnlyList<CalendarTask> allTasks, DateOnly today)
+    {
+        var result = new List<CalendarTask>();
+        var horizon = today.AddDays(MaxMaterializedDays);
+
+        // 只看源任务（实例的 Recurrence 是 None，规则只存在源任务上）。
+        foreach (var master in allTasks.Where(t => t.Recurrence != RecurrenceFrequency.None))
+        {
+            // 该系列已铺到的最后一天：源任务自己 + 所有 SeriesId 指向它的实例。
+            var last = master.Date;
+            foreach (var task in allTasks)
+            {
+                if (task.SeriesId == master.Id && task.Date > last)
+                {
+                    last = task.Date;
+                }
+            }
+
+            // 地平线与 RecurrenceEnd 谁更早听谁的。
+            var limit = master.RecurrenceEnd is { } end && end < horizon ? end : horizon;
+            var interval = Math.Max(1, master.RecurrenceInterval);
+
+            var next = NextDate(last, master.Recurrence, interval);
+            while (next <= limit)
+            {
+                result.Add(CreateInstance(master, next));
+                next = NextDate(next, master.Recurrence, interval);
+            }
+        }
+
+        return result;
+    }
 
     /// <summary>
     /// 按模板生成后续实例（不含模板本身，模板自己就是第一次发生）。

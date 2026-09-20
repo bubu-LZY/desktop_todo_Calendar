@@ -6,6 +6,7 @@ using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using Microsoft.Win32;
 using MicaAgenda.App.Models;
@@ -120,7 +121,7 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
-        Title = "MicaAgenda v5.2.8";
+        Title = "MicaAgenda v5.2.9";
 
         // 窗口初始化前同步加载配置，确保桌面嵌入/锁定在首帧即生效
         _config = _configStore.Load();
@@ -381,6 +382,7 @@ public partial class MainWindow : Window
         _viewModel.ReviewTaskDeleted += NotifyReviewDeletion;
         _viewModel.ReviewTaskStatusChanged += OnReviewTaskStatusChanged;
         _viewModel.WeekScrollHeadTrimmed += OnWeekScrollHeadTrimmed;
+        _viewModel.WeekScrollHeadPrepended += OnWeekScrollHeadPrepended;
 
         // 右上角迷你 AI 对话卡片：注入数据与配置，与 MCP 的 AI 工具共用同一套任务执行逻辑。
         AiPanel.Initialize(_viewModel.Data, _syncRoot, () => _config, OnDataChangedFromApi, CreateHostActions());
@@ -1340,12 +1342,37 @@ public partial class MainWindow : Window
 
         var remaining = viewer.ExtentHeight - viewer.VerticalOffset - viewer.ViewportHeight;
         var threshold = Math.Max(120, viewer.ViewportHeight / 3);
-        if (remaining > threshold)
+        if (remaining <= threshold)
+        {
+            _viewModel.ExtendWeekScroll();
+            return;
+        }
+
+        // 向上滚到接近顶部时往**前**铺更早的日期。
+        // 这是"回头看今天之前"能成立的关键：起始点虽然已经在今天之前，
+        // 但一路往上滚总会有到头的时候，这里负责继续往前接。
+        if (viewer.VerticalOffset <= threshold)
+        {
+            _viewModel.ExtendWeekScrollBackward();
+        }
+    }
+
+    /// <summary>
+    /// 周视图左栏在**头部插入了 N 天**时回调：内容整体下移了 N 行，
+    /// 滚动偏移必须加上 N × 行高，否则用户当前看的那一天会瞬间往下跳一整屏。
+    ///
+    /// <para>与 <see cref="OnWeekScrollHeadTrimmed"/> 正好相反：那个是裁掉头部要**减**，
+    /// 这个是插入头部要**加**。两个方向都必须补偿。</para>
+    /// </summary>
+    private void OnWeekScrollHeadPrepended(int addedDays)
+    {
+        if (WeekScrollViewer is null || _viewModel is null)
         {
             return;
         }
 
-        _viewModel.ExtendWeekScroll();
+        var delta = addedDays * _viewModel.WeekScrollCellHeight;
+        ApplyWeekOffset(WeekScrollViewer.VerticalOffset + delta);
     }
 
     /// <summary>
@@ -1415,18 +1442,29 @@ public partial class MainWindow : Window
         var todayIndex = _viewModel.IndexOfTodayInWeekScroll;
         if (todayIndex < 0)
         {
-            // 兜底：列表起点就是本周周日，滚回顶部等同于"回到最近 7 天"。
+            // 兜底：列表起点就在今天之前，滚回顶部等同于"回到最近 7 天"。
             ApplyWeekOffset(0);
             return;
         }
 
-        var weekStartIndex = todayIndex - (todayIndex % 7);
+        // 让今天那一行的**垂直中心对准视口中心**：一屏 7 格时正好上面 3 格、今天居中、下面 3 格。
+        // 用"今天所在周的第一行"定位是不对的：那样今天落在第 0~6 行取决于当天是星期几，
+        // 每点一次「今天」位置都不一样。
         var rowSpan = _viewModel.WeekScrollCellHeight + WeekDayRowBottomMargin;
-        var target = weekStartIndex * rowSpan;
+        var viewport = WeekScrollViewer.ViewportHeight;
+        var above = viewport > 0
+            ? Math.Max(0, (viewport - rowSpan) / 2)
+            : rowSpan * WeekCenterRowsFallback;
 
+        var target = (todayIndex * rowSpan) - above;
+
+        // 夹到可滚动范围内，避免超出上下限导致偏移被拒（赋值被忽略看起来就像"没生效"）。
         var maxOffset = Math.Max(0, WeekScrollViewer.ExtentHeight - WeekScrollViewer.ViewportHeight);
         ApplyWeekOffset(Math.Clamp(target, 0, maxOffset));
     }
+
+    /// <summary>视口还没量出来时，默认按"可见 7 格"给今天上方留 3 行的位置（与 Avalonia 宿主一致）。</summary>
+    private const double WeekCenterRowsFallback = 3;
 
     /// <summary>
     /// 带闸门地设置周视图左栏的滚动偏移。
@@ -3775,6 +3813,83 @@ public partial class MainWindow : Window
         return new RectangleGeometry(new Rect(0, 0, width, height), radius, radius);
     }
 
+    /// <summary>
+    /// 纹理图案是**常量**，全进程只生成一次 —— 换肤/拖透明度滑杆都只是改这个画刷的 Opacity，
+    /// 不重建位图（拖滑杆时每帧重建一张 bitmap 会把拖拽拖卡）。
+    /// </summary>
+    private static ImageBrush? _paperTextureBrush;
+
+    /// <summary>
+    /// 按主题的纹理浓度铺/收纹理层。<paramref name="textureOpacity"/> 已经在
+    /// <see cref="ThemeCatalog.Build"/> 里乘过用户透明度了，这里直接用。
+    /// 与 Avalonia 宿主同一套逻辑、同一份图案（<see cref="PaperTexture"/>）。
+    /// </summary>
+    private void ApplyTextureLayer(double textureOpacity)
+    {
+        if (TextureLayer is null)
+        {
+            return;
+        }
+
+        if (textureOpacity <= 0)
+        {
+            // 非纹理主题：整层关掉 —— 不是设成全透明，而是既不画也不参与命中测试，
+            // 免得给绝大多数主题白添一层全屏元素。
+            TextureLayer.Visibility = Visibility.Collapsed;
+            TextureLayer.Fill = null;
+            return;
+        }
+
+        _paperTextureBrush ??= BuildPaperTextureBrush();
+        TextureLayer.Fill = _paperTextureBrush;
+        TextureLayer.Opacity = Math.Clamp(textureOpacity, 0, 1);
+        TextureLayer.Visibility = Visibility.Visible;
+    }
+
+    private static ImageBrush BuildPaperTextureBrush()
+    {
+        var source = PaperTexture.Create();
+        var pixels = new byte[source.Length * 4];
+
+        for (var i = 0; i < source.Length; i++)
+        {
+            var c = source[i];
+            var o = i * 4;
+            // Pbgra32 = WPF 的**预乘** BGRA，必须自己预乘 alpha。直接写原始 RGB 的话，
+            // 半透明颗粒会被当成亮色叠加，整片纹理反而比底色更亮（与参考图相反）。
+            pixels[o + 0] = (byte)(c.B * c.A / 255);
+            pixels[o + 1] = (byte)(c.G * c.A / 255);
+            pixels[o + 2] = (byte)(c.R * c.A / 255);
+            pixels[o + 3] = c.A;
+        }
+
+        var bitmap = BitmapSource.Create(
+            PaperTexture.Size,
+            PaperTexture.Size,
+            96,
+            96,
+            PixelFormats.Pbgra32,
+            null,
+            pixels,
+            PaperTexture.Size * 4);
+
+        // 冻结：画刷会被跨线程读取（换肤可能在非 UI 线程触发），不冻结会抛跨线程访问异常。
+        bitmap.Freeze();
+
+        var brush = new ImageBrush(bitmap)
+        {
+            TileMode = TileMode.Tile,
+            Stretch = Stretch.Fill,
+            // 平铺单元写死成图块的**像素尺寸**。不给的话一格的尺寸由画刷自己推，
+            // 整窗可能只出现一颗被放大成屏幕的噪点。
+            Viewport = new Rect(0, 0, PaperTexture.Size, PaperTexture.Size),
+            ViewportUnits = BrushMappingMode.Absolute
+        };
+
+        brush.Freeze();
+        return brush;
+    }
+
     private void ApplyBackgroundResources(CalendarBackgroundMode mode)
     {
         var c = ThemeCatalog.Build(mode, _viewModel?.Settings.Opacity ?? 1.0);
@@ -3798,6 +3913,8 @@ public partial class MainWindow : Window
         Resources["TaskBackgroundBrush"] = ToBrush(c.TaskPill);
         Resources["TodayPanelBackgroundBrush"] = ToBrush(c.Panel);
         Resources["TodayPanelBorderBrush"] = ToBrush(c.PanelBorder);
+        Resources["RecurringBadgeBrush"] = ToBrush(c.RecurringBadge);
+        ApplyTextureLayer(c.TextureOpacity);
         Resources["WeekGroupBackgroundBrush"] = ToBrush(c.WeekGroup);
         Resources["WeekGroupHoverBrush"] = ToBrush(c.WeekGroupHover);
         Resources["WeekTaskRowHoverBrush"] = ToBrush(c.WeekRowHover);

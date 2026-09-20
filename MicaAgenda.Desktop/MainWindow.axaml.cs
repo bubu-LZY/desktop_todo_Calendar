@@ -1,6 +1,7 @@
 using System;
 using System.Collections;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using System.Threading.Tasks;
 using Avalonia;
@@ -12,6 +13,7 @@ using Avalonia.Interactivity;
 using Avalonia.Layout;
 using Avalonia.LogicalTree;
 using Avalonia.Media;
+using Avalonia.Media.Imaging;
 using Avalonia.Platform;
 using Avalonia.Styling;
 using Avalonia.Threading;
@@ -319,7 +321,17 @@ public partial class MainWindow : Window
             // 于是点「今天」只改了 ViewModel 状态、画面一动不动。
             _viewModel.TimelineRebuilt += OnTimelineRebuilt;
             _viewModel.WeekScrollHeadTrimmed += OnWeekScrollHeadTrimmed;
+            _viewModel.WeekScrollHeadPrepended += OnWeekScrollHeadPrepended;
             SubscribeAutoSave();
+
+            // 构造期就可能已经变脏（周期地平线补实例），而 SubscribeAutoSave 只对**之后**的
+            // 变化生效 —— 不补这一下，新补出来的实例要等用户下次改动才会落盘。
+            // 落了盘，数据文件才是"自洽"的（否则每次启动都要重新算一遍地平线）。
+            if (_viewModel.IsDirty && _saveTimer is not null)
+            {
+                _saveTimer.Start();
+            }
+
             DataContext = _viewModel;
 
             // 右上角迷你 AI 对话卡片：注入数据与配置，与 MCP 的 AI 工具共用同一套任务执行逻辑。
@@ -2568,6 +2580,75 @@ public partial class MainWindow : Window
         SetBrush("ToolbarControlBorderBrush", ToBrush(c.ToolbarBorder));
         SetBrush("ToolbarControlHoverBrush", ToBrush(c.ToolbarHover));
         SetBrush("ToolbarControlPressedBrush", ToBrush(c.ToolbarPressed));
+        SetBrush("RecurringBadgeBrush", ToBrush(c.RecurringBadge));
+
+        ApplyTextureLayer(c.TextureOpacity);
+    }
+
+    /// <summary>
+    /// 纹理图案是**常量**，全进程只生成一次 —— 换肤/拖透明度滑杆都只是改这个画刷的 Opacity，
+    /// 不重建位图（拖滑杆时每帧重建一张 bitmap 会把拖拽拖卡）。
+    /// </summary>
+    private static IBrush? _paperTextureBrush;
+
+    /// <summary>
+    /// 按主题的纹理浓度铺/收纹理层。<paramref name="textureOpacity"/> 已经在
+    /// <see cref="ThemeCatalog.Build"/> 里乘过用户透明度了，这里直接用。
+    /// </summary>
+    private void ApplyTextureLayer(double textureOpacity)
+    {
+        if (textureOpacity <= 0)
+        {
+            // 非纹理主题：整层关掉 —— 不是设成全透明，而是既不画也不参与布局，
+            // 免得给绝大多数主题白添一层全屏元素。
+            TextureLayer.IsVisible = false;
+            TextureLayer.Fill = null;
+            return;
+        }
+
+        _paperTextureBrush ??= BuildPaperTextureBrush();
+        TextureLayer.Fill = _paperTextureBrush;
+        TextureLayer.Opacity = Math.Clamp(textureOpacity, 0, 1);
+        TextureLayer.IsVisible = true;
+    }
+
+    private static IBrush BuildPaperTextureBrush()
+    {
+        var source = PaperTexture.Create();
+        var bytes = new byte[source.Length * 4];
+
+        for (var i = 0; i < source.Length; i++)
+        {
+            var c = source[i];
+            var o = i * 4;
+            // Bgra8888 + Premul：必须**自己预乘 alpha**。直接写原始 RGB 的话，
+            // 半透明颗粒会被当作"亮色"叠加，整片纹理反而比底色更亮（与参考图相反）。
+            bytes[o + 0] = (byte)(c.B * c.A / 255);
+            bytes[o + 1] = (byte)(c.G * c.A / 255);
+            bytes[o + 2] = (byte)(c.R * c.A / 255);
+            bytes[o + 3] = c.A;
+        }
+
+        var bitmap = new WriteableBitmap(
+            new PixelSize(PaperTexture.Size, PaperTexture.Size),
+            new Vector(96, 96),
+            PixelFormat.Bgra8888,
+            AlphaFormat.Premul);
+
+        using (var locked = bitmap.Lock())
+        {
+            Marshal.Copy(bytes, 0, locked.Address, bytes.Length);
+        }
+
+        return new ImageBrush(bitmap)
+        {
+            TileMode = TileMode.Tile,
+            Stretch = Stretch.None,
+            // 平铺单元写死成图块的**像素尺寸**。不显式给的话，TileBrush 会把一格拉伸到
+            // 目标控件大小 —— 整窗只会出现一颗被放大成屏幕的噪点。
+            DestinationRect = new RelativeRect(
+                0, 0, PaperTexture.Size, PaperTexture.Size, RelativeUnit.Absolute)
+        };
     }
 
     private void SetBrush(string key, IBrush brush) => Resources[key] = brush;
@@ -2963,16 +3044,47 @@ public partial class MainWindow : Window
             return;
         }
 
-        // 只在用户向下滚动接近底部时才追加；程序初次布局时 Offset=0 不会命中。
+        // 只在用户**向下**滚动接近底部时才追加；程序初次布局时 Offset=0 不会命中。
         var remaining = viewer.Extent.Height - viewer.Offset.Y - viewer.Viewport.Height;
         var threshold = Math.Max(120, viewer.Viewport.Height / 3);
-        if (remaining > threshold)
+        if (remaining <= threshold)
+        {
+            // 追加成功即可（AppLog 只有 Error 级别，这里不需要额外记录）。
+            _viewModel.ExtendWeekScroll();
+            return;
+        }
+
+        // 向上滚到接近顶部时往**前**铺更早的日期。
+        // 这是"回头看今天之前"能成立的关键：起始点虽然已经在今天之前，
+        // 但一路往上滚总会有到头的时候，这里负责继续往前接。
+        var top = viewer.Offset.Y;
+        if (top <= threshold)
+        {
+            _viewModel.ExtendWeekScrollBackward();
+        }
+    }
+
+    /// <summary>
+    /// 周视图左栏在**头部插入了 N 天**时回调：内容整体下移了 N 行，
+    /// 滚动偏移必须加上 N × 行高，否则用户当前看的那一天会瞬间往下跳一整屏。
+    ///
+    /// <para>与 <see cref="OnWeekScrollHeadTrimmed"/> 正好相反：那个是裁掉头部要**减**，
+    /// 这个是插入头部要**加**。两个方向都必须补偿，只补一个就会出现"往下滚很顺、往上滚会跳"。</para>
+    ///
+    /// <para>这里直接同步赋值是安全的：补偿只在**贴近顶部**时发生，加完仍在旧 Extent 的
+    /// 可滚动范围之内，不会被还没更新的 Extent 夹掉。（反方向就未必 —— 往下滚到底时
+    /// 若靠加偏移补偿，就会撞上旧上限，所以那条路径用的是"从头部裁掉、偏移往下减"。）</para>
+    /// </summary>
+    private void OnWeekScrollHeadPrepended(int addedDays)
+    {
+        if (WeekScrollViewer is null || _viewModel is null)
         {
             return;
         }
 
-        // 追加成功即可（AppLog 只有 Error 级别，这里不需要额外记录）。
-        _viewModel.ExtendWeekScroll();
+        var delta = addedDays * _viewModel.WeekScrollCellHeight;
+        var current = WeekScrollViewer.Offset.Y;
+        ApplyWeekOffset(current + delta);
     }
 
     /// <summary>
@@ -3897,8 +4009,7 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// 把光标写到「指针底下那一圈」的每个元素上。
-    ///
+    /// 把光标写到「指针底下那一圈」的每个元素上。    ///
     /// 光标必须逐元素设置：它不会从窗口往下继承，而外壳 Border 与四条缩放热区（见 MainWindow.axaml）
     /// 是同级节点、各自都是独立的命中目标 —— 只写在其中一个上，指针落到另一个上面时图标就不会变，
     /// 用户看到的就是"角落里没有斜着的缩放图标"。
@@ -4188,15 +4299,15 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// 把周视图左栏滚回"今天所在那一周"。
+    /// 把周视图左栏滚到**今天居中**的位置。
     ///
-    /// 左栏是一维的日期长列表（从"本周周日"起铺，只往后追加），所以定位就是
-    /// 「目标行的索引 × 行高」。用行高算偏移而不是 ScrollIntoView：
-    /// 后者要先把容器虚拟化出来才拿得到，首帧/刚切视图时拿不到就会静默失败；
+    /// 左栏是一维的日期长列表，所以定位就是「目标行的索引 × 行高」。用行高算偏移而不是
+    /// <c>ScrollIntoView</c>：后者要先把容器虚拟化出来才拿得到，首帧/刚切视图时拿不到就会静默失败；
     /// 行高是已知量（格子高度 + 下外边距），算出来直接赋值最稳。
     ///
-    /// 目标是**今天所在周的第一行**（周日），而不是今天那一行 —— 用户点「今天」是想看
-    /// "这一周"，让整周完整出现在视口里才符合预期。
+    /// 目标是让今天那一行的**垂直中心对准视口中心** —— 一屏 7 格时，正好是
+    /// 上面 3 格、今天居中、下面 3 格。用"今天所在周的第一行"来定位是不对的：
+    /// 那样今天落在第 0~6 行取决于当天是星期几，每点一次位置都不一样。
     /// </summary>
     private bool ScrollWeekToToday()
     {
@@ -4208,21 +4319,31 @@ public partial class MainWindow : Window
         var todayIndex = _viewModel.IndexOfTodayInWeekScroll;
         if (todayIndex < 0)
         {
-            // 理论上不会发生（列表起点就是本周周日）。兜底滚回顶部，等同于"回到最近 7 天"。
+            // 理论上不会发生（列表起点就在今天之前）。兜底滚回顶部。
             ApplyWeekOffset(0);
             return true;
         }
 
-        // 今天所在周的第一行：把索引向前对齐到 7 的整数倍。
-        var weekStartIndex = todayIndex - (todayIndex % 7);
         var rowSpan = _viewModel.WeekScrollCellHeight + WeekDayRowBottomMargin;
-        var target = weekStartIndex * rowSpan;
+
+        // 今天上方要留出的高度 = (视口高 - 行高) / 2。
+        // 视口还没量出来（首帧 / 刚切视图）时它可能是 0，按"默认 7 格"这个常见情形算，
+        // 否则会退化成"今天贴在最顶上"，用户第一眼看到的就不居中。
+        var viewport = WeekScrollViewer.Viewport.Height;
+        var above = viewport > 0
+            ? Math.Max(0, (viewport - rowSpan) / 2)
+            : rowSpan * WeekCenterRowsFallback;
+
+        var target = (todayIndex * rowSpan) - above;
 
         // 夹到可滚动范围内，避免超出上下限导致偏移被拒（赋值被忽略看起来就像"没生效"）。
         var maxOffset = Math.Max(0, WeekScrollViewer.Extent.Height - WeekScrollViewer.Viewport.Height);
         ApplyWeekOffset(Math.Clamp(target, 0, maxOffset));
         return true;
     }
+
+    /// <summary>视口还没量出来时，默认按"可见 7 格"给今天上方留 3 行的位置。</summary>
+    private const double WeekCenterRowsFallback = 3;
 
     /// <summary>
     /// 带闸门地设置周视图左栏的滚动偏移。

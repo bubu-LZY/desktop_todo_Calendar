@@ -125,6 +125,24 @@ public sealed class TaskItemViewModel : ViewModelBase
     /// <summary>逾期前缀文本；未逾期 / 已完成时是空串（占位不换行）。</summary>
     public string OverduePrefix => IsOverdueNow ? "【已逾期】" : string.Empty;
 
+    /// <summary>
+    /// 是否属于周期任务 —— 源任务（<see cref="CalendarTask.Recurrence"/> 非 None）
+    /// 和它展开出来的实例（<see cref="CalendarTask.SeriesId"/> 非 null）都算。
+    /// 判定逻辑只在 <see cref="CalendarTask.IsRecurring"/> 里写一次，这里直接转发。
+    /// </summary>
+    public bool IsRecurring => _task.IsRecurring;
+
+    /// <summary>
+    /// 周期前缀文本；非周期任务为空串（占位不换行，与 <see cref="OverduePrefix"/> 同一套做法）。
+    ///
+    /// <para>做成**文本 + 独立颜色**而不是把"【周期】"拼进 <see cref="Title"/>：
+    /// 标识要求蓝色、标题是正常前景色，拼成一串就没法分别着色了。</para>
+    ///
+    /// <para>不需要变更通知 —— <c>Recurrence</c> / <c>SeriesId</c> 在实例创建后就不再变化
+    /// （改周期规则走的是"删旧建新"），所以它不是随刷新变化的派生值。</para>
+    /// </summary>
+    public string RecurringPrefix => IsRecurring ? "【周期】" : string.Empty;
+
     public bool IsEditing
     {
         get => _isEditing;

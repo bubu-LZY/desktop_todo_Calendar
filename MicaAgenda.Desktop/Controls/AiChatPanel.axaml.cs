@@ -155,15 +155,19 @@ public partial class AiChatPanel : UserControl
             // 用户自己输入的内容不动：那是他自己写的，改了反而奇怪。
             Text = isUser ? text : MarkdownText.ToPlainText(text),
             TextWrapping = TextWrapping.Wrap,
-            FontSize = 12,
-            MaxWidth = 230
+            // 12 → 10.5：用户反馈"字有点大，想看到更多对话"。字号小了之后单行能放更多字，
+            // 所以 MaxWidth 同步放宽，否则白白浪费面板右侧的空白。
+            FontSize = 10.5,
+            MaxWidth = 250
         };
 
         var border = new Border
         {
             CornerRadius = new CornerRadius(8),
-            Padding = new Thickness(8, 5),
-            Margin = new Thickness(0, 3),
+            // 内边距 / 行距也一起收紧 —— 只缩字号的话，气泡之间的空白仍是大字号的尺度，
+            // "一屏看到更多轮"的效果会被吃掉一半。
+            Padding = new Thickness(7, 4),
+            Margin = new Thickness(0, 2),
             Child = textBlock
         };
 

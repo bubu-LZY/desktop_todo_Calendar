@@ -18,8 +18,8 @@
     <DockPanel>
       <!-- 顶行：标题 + 日志入口（点击弹出日志查看窗） -->
       <Grid DockPanel.Dock="Top" ColumnDefinitions="*,Auto" Margin="0,0,0,8">
-        <TextBlock Text="AI 助手" FontSize="12" FontWeight="SemiBold" Foreground="#111827" VerticalAlignment="Center" />
-        <Button Grid.Column="1" Content="日志" Click="OpenLog_Click" FontSize="10.5" Padding="8,2"
+        <TextBlock Text="AI 助手" FontSize="11.5" FontWeight="SemiBold" Foreground="#111827" VerticalAlignment="Center" />
+        <Button Grid.Column="1" Content="日志" Click="OpenLog_Click" FontSize="10" Padding="7,2"
                 CornerRadius="6" Background="#F5F7FA" BorderBrush="#E2E6EB" BorderThickness="1"
                 Foreground="#374151" Cursor="Hand"
                 ToolTip.Tip="查看最近 7 天的 AI 对话日志（自动清理更早的）" />
@@ -29,18 +29,20 @@
       <Grid DockPanel.Dock="Bottom" ColumnDefinitions="*,Auto" Margin="0,8,0,0">
         <TextBox x:Name="InputBox" Grid.Column="0"
                  PlaceholderText="问 AI，回车发送…"
-                 Padding="8,6" CornerRadius="8" FontSize="12"
+                 Padding="8,5" CornerRadius="8" FontSize="11"
                  Background="#F5F7FA" BorderBrush="#E2E6EB" BorderThickness="1"
                  VerticalContentAlignment="Center"
                  KeyDown="InputBox_KeyDown" />
         <Button x:Name="SendButton" Grid.Column="1" Content="发送" Margin="8,0,0,0"
-                Padding="12,6" CornerRadius="8" FontSize="12"
+                Padding="12,5" CornerRadius="8" FontSize="11"
                 Background="#2563EB" Foreground="#FFFFFF" BorderThickness="0" FontWeight="SemiBold"
                 Click="Send_Click" />
       </Grid>
 
-      <!-- 反馈内容（滚动，最多 200 高） -->
-      <ScrollViewer x:Name="ChatScroll" MaxHeight="200" VerticalScrollBarVisibility="Auto">
+      <!-- 反馈内容（滚动）。MaxHeight 从 200 提到 280：字号同时调小了，
+           一屏能看到的对话轮数大约从 10 行涨到 15 行 —— 用户的要求是"看到更多对话内容"，
+           光缩小字号不够，纵向也得让出来一点。 -->
+      <ScrollViewer x:Name="ChatScroll" MaxHeight="280" VerticalScrollBarVisibility="Auto">
         <StackPanel x:Name="ChatHost" />
       </ScrollViewer>
     </DockPanel>
