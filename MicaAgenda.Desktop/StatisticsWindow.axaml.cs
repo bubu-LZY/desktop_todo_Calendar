@@ -86,12 +86,10 @@ public partial class StatisticsWindow : Window
             $"{line.DurationText}{(line.LateDays > 0 ? $"（超时 {line.LateDays} 天）" : string.Empty)}");
 
         OpenTitle.Text = $"📌 至今未完成（{report.OpenCount}）";
+        // 「拖了几天」读 ReportTaskLine.DelayText（按任务日期算，与创建时间无关），
+        // 不在宿主里另拼一份 —— 口径重复就会漂移。
         OpenList.Text = FormatLines(report.StillOpen, line =>
-        {
-            var pending = line.PendingDays > 0 ? $"已拖 {line.PendingDays} 天" : "当天新建";
-            var overdue = line.OverdueDays > 0 ? $" · 逾期 {line.OverdueDays} 天" : string.Empty;
-            return $"{pending}{overdue}";
-        });
+            line.OverdueDays > 0 ? $"{line.DelayText}（计划 {line.Date:MM/dd}）" : line.DelayText);
 
         OverdueTitle.Text = $"🚨 逾期未完成（{report.OverdueCount}）";
         OverdueList.Text = FormatLines(report.Overdue, line => $"计划 {line.Date:MM/dd} · 逾期 {line.OverdueDays} 天");

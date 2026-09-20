@@ -109,7 +109,8 @@ public sealed class ReportService : IDisposable
 
             var report = TaskReportBuilder.Build(_data, _syncRoot, periodStart, today, isMonthly);
             var text = TaskReportBuilder.RenderText(report);
-            var markdown = TaskReportBuilder.RenderMarkdown(report);
+            var wecomMarkdown = TaskReportBuilder.RenderMarkdown(report);
+            var larkMarkdown = TaskReportBuilder.RenderFeishuMarkdown(report);
 
             var channels = BuildChannels(config);
             if (channels.Count == 0)
@@ -125,7 +126,7 @@ public sealed class ReportService : IDisposable
             {
                 try
                 {
-                    await channel.SendAsync(text, markdown);
+                    await channel.SendAsync(text, wecomMarkdown, larkMarkdown);
                     anySent = true;
                 }
                 catch (Exception ex)
@@ -178,7 +179,8 @@ public sealed class ReportService : IDisposable
 
         var report = TaskReportBuilder.Build(_data, _syncRoot, periodStart, today, isMonthly);
         var text = TaskReportBuilder.RenderText(report);
-        var markdown = TaskReportBuilder.RenderMarkdown(report);
+        var wecomMarkdown = TaskReportBuilder.RenderMarkdown(report);
+        var larkMarkdown = TaskReportBuilder.RenderFeishuMarkdown(report);
 
         var channels = BuildChannels(config);
         if (channels.Count == 0)
@@ -192,7 +194,7 @@ public sealed class ReportService : IDisposable
         {
             try
             {
-                await channel.SendAsync(text, markdown);
+                await channel.SendAsync(text, wecomMarkdown, larkMarkdown);
                 sent.Add(channel.Name);
             }
             catch (Exception ex)
@@ -231,19 +233,25 @@ public sealed class ReportService : IDisposable
         if (config.ReportSendToFeishu && !string.IsNullOrWhiteSpace(config.FeishuWebhook))
         {
             var hook = config.FeishuWebhook.Trim();
-            channels.Add(new Channel("飞书", (_, markdown) => _sender.SendFeishuCardAsync(hook, "任务完成情况", markdown)));
+            // 飞书卡片走 lark_md：只喂它认的那份方言，否则 # / > / - 会原样显示（用户已截图反馈）。
+            channels.Add(new Channel("飞书", (_, _, larkMd) =>
+                _sender.SendFeishuCardAsync(hook, "任务完成情况", larkMd)));
         }
 
         if (config.ReportSendToWeCom && !string.IsNullOrWhiteSpace(config.WeComWebhook))
         {
             var hook = config.WeComWebhook.Trim();
-            channels.Add(new Channel("企业微信", (_, markdown) => _sender.SendWeComMarkdownAsync(hook, markdown)));
+            // 企微 markdown 支持块级语法，用排版更好的那份。
+            channels.Add(new Channel("企业微信", (_, wecomMarkdown, _) =>
+                _sender.SendWeComMarkdownAsync(hook, wecomMarkdown)));
         }
 
         if (!string.IsNullOrWhiteSpace(config.ReportCustomWebhook))
         {
             var hook = config.ReportCustomWebhook.Trim();
-            channels.Add(new Channel("自定义 webhook", (text, markdown) => _sender.SendCustomTextAsync(hook, text, markdown)));
+            // 自定义地址可能是飞书（会被自动识别成卡片）也可能是别的中转服务：两边都给。
+            channels.Add(new Channel("自定义 webhook", (text, _, larkMd) =>
+                _sender.SendCustomTextAsync(hook, text, larkMd)));
         }
 
         return channels;
@@ -360,5 +368,11 @@ public sealed class ReportService : IDisposable
         _sender.Dispose();
     }
 
-    private sealed record Channel(string Name, Func<string, string, Task> SendAsync);
+    /// <summary>
+    /// 一个推送渠道。参数依次为：纯文本正文、企微 markdown 正文、飞书 lark_md 正文。
+    ///
+    /// <para>两种 markdown 之所以要分开传，是因为它们**语法不同**（飞书 lark_md 不认 # / &gt; / -），
+    /// 详见 <see cref="ReportDialect"/>。渠道实现只挑自己那份，不要"顺手"用另一份。</para>
+    /// </summary>
+    private sealed record Channel(string Name, Func<string, string, string, Task> SendAsync);
 }
