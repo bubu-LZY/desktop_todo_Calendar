@@ -631,7 +631,49 @@ $api = (gh api repos/<owner>/<repo>/commits/main --jq .sha 2>&1 | Out-String).Tr
 **先判定"到底是谁推不动"再选路线**：`gh` 通但 `git` 不通 ⇒ 是 git 传输层 / 代理变量问题（走上面）；
 `gh` 也不通 ⇒ 才是真的网络断了，此时别硬推，先报告用户。
 
-⚠️ **每一类 push 都要各自做一遍双路回退，不要把结果存进变量跨命令复用** ——
+---
+
+#### 🔥🔥 最终定位：`-c http.sslBackend=openssl`（**先试这一条，能省掉上面全部折腾**）
+
+清空 `HTTP_PROXY`/`HTTPS_PROXY` 之后，`git push` **依然**报
+`CONNECT tunnel failed, response 502` —— 关键线索：**它仍在使用某个代理**，
+只是这个代理不来自环境变量。那是 **Windows 系统代理（WinINET 设置）**：
+git-for-windows 默认的 `schannel` 后端会把 libcurl 接到系统代理上，
+所以你在 shell 里怎么清环境变量都没用。
+
+同一条命令里加一个开关，**立刻就好**：
+
+```powershell
+git -c credential.helper= -c http.version=HTTP/1.1 -c http.sslBackend=openssl push $url main:main
+```
+
+实测（同一台机器、同一条命令、前后只差这一个参数）：
+
+| 配置 | 结果 |
+|---|---|
+| 清空环境变量 + HTTP/1.1 | `CONNECT tunnel failed, response 502` × 4（**仍在走系统代理**） |
+| 清空环境变量 + HTTP/1.1 + `http.sslBackend=openssl` | **第 1 次即成功** `d8cee9d..bd0587c main -> main` |
+
+一次切换同时解决两件事：**① 绕开 schannel 的 TLS 握手失败**（`failed to receive handshake`）；
+**② 让 libcurl 不再自动套用系统代理**。
+
+**判定网络本身是否通**（决定是否值得重试）：
+```powershell
+$env:HTTP_PROXY=""; $env:HTTPS_PROXY=""; $env:ALL_PROXY=""
+curl.exe -s -o NUL -w "direct -> %{http_code}`n" --max-time 10 "https://api.github.com"
+curl.exe -s -o NUL -w "proxy  -> %{http_code}`n" --max-time 10 -x "http://127.0.0.1:10808" "https://api.github.com"
+```
+> 实测遇到过：`curl` 直连与走代理**双双 200**，而 `git push` 连续 8 次 502 ——
+> **所以别用 curl 的结果推断 git 能不能推**，两者走的 TLS/代理路径不同。
+> curl 只用来确认"机器有网、代理端口活着"。
+
+**推荐顺序（每次推送都照这个来）**：
+1. `-c http.sslBackend=openssl` 直接推（多半一次成）；
+2. 不成再叠 HTTP/1.1 + 短重试；
+3. 再不成才去实测端口、切代理；
+4. 最后用 `gh api .../commits/main --jq .sha` 核对。
+
+**每一类 push 都要各自做一遍双路回退，不要把结果存进变量跨命令复用** ——
 实测踩过：在同一条命令里先推 `main`（直连第 2 次成功）再推 `tag`，结果 `main` 成功、
 **`tag` 五连败**，因为 `$LASTEXITCODE` 的语义在两种失败形态（`Empty reply from server` /
 `CONNECT tunnel failed, response 502`）之间反复，用来判断"是否还需要走代理"并不可靠。
@@ -1113,6 +1155,83 @@ public string DelayText => DueOffsetDays switch
 
 ---
 
+### 坑 AD：物化数据的封顶挂在「起点日期」上 → 用户看到"只能用 N 条"
+
+**现象**：用户报"周期任务最多只能加 731 个"。
+
+**根因**：周期任务是把未来的实例**提前物化**成普通任务（好处是日历/编辑/提醒/MCP 全复用现有逻辑）。
+物化必然要有封顶，当时的写法是 `模板日期 + 730 天` —— 于是**封顶是"一次性"的**：
+系列铺满 2 年就永久用完，再也不会产生新实例。
+
+**改法：把封顶从「起点日期」挪到「今天」，并做成滚动的**：
+```csharp
+var horizon = today.AddDays(MaxMaterializedDays);   // 不是 master.Date.AddDays(...)
+```
+在**每次启动 + 每次跨天**调一次补齐，只从"该系列已有的最后一天"往后续（天然幂等），
+并尊重用户显式设的结束日期（别被地平线顶穿）。
+
+**要点**：
+- **幂等是硬要求** —— 启动和跨天都会调，不幂等就会天天翻倍。补完后必须能断言"第二次返回空"。
+- **从最后一个实例续推，不要从源任务重算**，否则会产出重复日期的实例。
+- 补齐后要 `MarkDirty()`；而且注意**宿主订阅自动保存是在构造之后**，
+  构造期的脏标记会被静默丢掉 —— 需要在订阅完成后补一次显式落盘（本项目踩到过）。
+- 别为了"真正无限"去改成虚拟实例：那会把日历/编辑/提醒/MCP 全部打上补丁，代价远大于收益。
+  **滚动窗口已经给出用户要的效果（系列看起来是无限的）**，只是数据文件有界。
+
+---
+
+### 坑 AE：给标题加"彩色前缀"时，用 `Run` 内联，别并排第二个 `TextBlock`
+
+**需求形态**：任务标题前要有蓝色【周期】/ 红色【已逾期】，而标题本身是正常色 ——
+**两种颜色，所以拼不成一个字符串**（必须两个视觉元素）。
+
+**错误做法**：横排 `StackPanel` 里放两个 `TextBlock`（前缀 + 标题）。
+后果：`TextTrimming`/`TextWrapping` **只作用于标题那个块**，前缀照样占满宽度，
+标题被挤到没有宽度、直接消失或完全不省略。
+
+**正确做法**：一个 `TextBlock`，里面用内联 `Run` 分段着色：
+```xml
+<TextBlock Classes="taskTitle" TextTrimming="CharacterEllipsis">
+  <TextBlock.Inlines>
+    <Run Text="{Binding OverduePrefix}" Foreground="{DynamicResource ImportantTaskTextBrush}" />
+    <Run Text="{Binding RecurringPrefix}" Foreground="{DynamicResource RecurringBadgeBrush}" />
+    <Run Text="{Binding Title}" />
+  </TextBlock.Inlines>
+</TextBlock>
+```
+内联之后**省略号与换行按"前缀+标题"整行计算**，行为才对。
+Avalonia 与 WPF 都支持（`Run` 上的 `Foreground` 也都能绑 `DynamicResource`）。
+
+**判定"是不是周期任务"要同时看两个字段**：源任务 `Recurrence != None`，
+而实例的 `Recurrence` 是 `None`（规则只存在源任务上）、靠 `SeriesId` 指回去。
+只判其一，UI 上就会出现"有的周期任务有标识、有的没有"。把判定收敛成一个属性（如 `IsRecurring`），别在调用点各写一遍。
+
+---
+
+### 坑 AF：可滚动长列表只做了**单向**扩展 → 用户翻不回去
+
+**现象**：周视图左栏是"竖排日期"的长列表，用户说"看不到今天之前的日期"。
+
+**根因**：起始点固定（本周周日），而扩展逻辑只有 `Add`（往尾部追加）。
+**头部从来不扩展**，所以起点之前的内容永远不存在。
+
+**改法**：加一个对称的"向头部插入"，并**同时补偿滚动偏移**：
+```csharp
+// 插到头部：其后每行索引 +count，偏移必须 +count×行高，否则画面会跳一整屏
+for (var i = 0; i < inserted.Count; i++) VisibleDays.Insert(i, inserted[i]);
+WeekScrollHeadPrepended?.Invoke(count);
+```
+
+**两个方向都要补偿**，只补一个就会出现"往下滚很顺、往上滚会跳"：
+- 头部**裁掉** N 行 → 偏移 **减** N×行高；
+- 头部**插入** N 行 → 偏移 **加** N×行高。
+
+⚠️ 偏移赋值会被**当前** `Extent` 夹取，而插入/删除后 `Extent` 还没重算。
+"往上补偿"发生在贴近顶部时，加完仍在旧上限之内，所以同步赋值安全；
+如果反过来（贴近底部还要往大调），就必须等一帧布局后再赋值。
+
+---
+
 ## 关键约束清单
 
 ✅ **必须**：
@@ -1134,7 +1253,11 @@ public string DelayText => DueOffsetDays switch
 - 加新分支时回头检查**早退条件**（`if (没数据) return;` 很容易吞掉新逻辑）
 - **「已拖 / 还剩 / 逾期」这类相对时间必须挂在业务日期上**，且措辞只留一份定义 —— 见坑 AC
 - 推送前先看清并**清空代理环境变量**（`$env:HTTP_PROXY=""`），**优先试直连**
+- **推送优先带 `-c http.sslBackend=openssl`**（同时绕开 schannel 握手失败与系统代理）—— 见坑 Q
 - **每一类 push（`main` / `tag`）各自做一遍双路回退，推完各自查询确认**；tag 推不上 = 不触发 CI
+- 物化/缓存类数据的封顶要挂在**今天**上并定期补齐（滚动窗口），补齐必须**幂等** —— 见坑 AD
+- 给标题加**彩色前缀**用 `Run` 内联，别并排两个 `TextBlock` —— 见坑 AE
+- 可滚动长列表要做**双向**扩展，并**对称补偿**滚动偏移（裁头减、插头加）—— 见坑 AF
 
 ❌ **绝对不能**：
 - WPF / WinForms 工程直接往 macOS / Linux 发
@@ -1157,6 +1280,9 @@ public string DelayText => DueOffsetDays switch
 - 用创建时间冒充业务日期说"拖了几天"（两个指标，用户一眼能看出矛盾）—— 见坑 AC
 - **`git reset --hard origin/main`**（remote-tracking ref 可能是陈旧的 → 回退并成批删文件）；
   先用 API 的 SHA 核对，再 `git reset --hard <SHA>`
+- 把物化封顶写成"**起点日期** + N 天"（一次性用完，用户看到"只能加 N 条"）—— 见坑 AD
+- 用并排两个 `TextBlock` 拼"前缀 + 标题"（会挤掉标题的省略号/换行）—— 见坑 AE
+- 只给可滚动长列表做单向扩展（用户翻不回起点之前）—— 见坑 AF
 - 相信 `git fetch` 打印的 "main -> origin/main" 就当 ref 已更新（只信 `git rev-parse`）
 
 ---
