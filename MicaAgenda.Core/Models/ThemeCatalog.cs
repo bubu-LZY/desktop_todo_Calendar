@@ -88,6 +88,15 @@ public static class ThemeCatalog
     public static bool IsDark(CalendarBackgroundMode mode) => Get(mode).IsDark;
 
     /// <summary>
+    /// 该主题是否靠**纹理层**表达个性（<see cref="ThemeDefinition.TextureOpacity"/> &gt; 0）。
+    ///
+    /// <para>存在的意义：这类主题的观感**不能只看基色** —— 真实纸感的底色本来就是"极浅的暖白"，
+    /// 与「白雾玻璃」在 RGB 上必然接近。所以"主题之间必须拉开色距"的不变式对它们要换个判据
+    /// （改判"有没有纹理"，见 ThemeCatalogTests）。</para>
+    /// </summary>
+    public static bool IsTextured(CalendarBackgroundMode mode) => Get(mode).TextureOpacity > 0;
+
+    /// <summary>
     /// 可选主题清单（下拉列表按此顺序展示）。历史值 Glass / Transparent / Solid 不在其中 ——
     /// 它们加载时就会被 <c>MigrateLegacy</c> 迁到 FrostedWhite。
     /// </summary>
@@ -127,13 +136,14 @@ public static class ThemeCatalog
         new(CalendarBackgroundMode.Terracotta,     "陶土赭石",   true,  RgbaColor.Rgb(178, 78, 54),   0.50),  // 土红（深色暖调）
 
         // ===== 带纹理 =====
-        // 米色纹理：参考图是一张"米色再生纸"—— 浅暖米底 + 细密的暖色颗粒。
+        // 米色纹理：参考"米色再生纸"。
         //
-        // 基色刻意取**偏中性的暖灰米（greige）**，而不是更饱和的黄米：浅色暖调这个区间已经很挤
-        // （米杏奶油偏粉、纸感浅白偏黄、焦糖奶茶偏深棕），再塞一个暖黄进去，单测的
-        // 「主题间色距 ≥ 28」会立刻报红（实测第一版取 (222,205,185) 时与白雾玻璃只差 15.3）。
-        // 这个主题的辨识度本来就**不靠颜色**、靠那层颗粒，所以让基色保持中性、把个性交给纹理层。
-        new(CalendarBackgroundMode.BeigeTexture,   "米色纹理",   false, RgbaColor.Rgb(188, 180, 168), 0.66, 0.50)
+        // 基色按**实测标定**：用户给的参考图与他桌面壁纸的纸面都是 (242,237,234) ——
+        // 近白暖米，而不是灰米。这正是它和「白雾玻璃」在**颜色上**天然靠近的原因：
+        // 真实纸感本来就是"极浅的暖白"，靠加灰去拉开色距只会越做越不像纸。
+        // 所以它的辨识度交给**纹理层**（见 PaperTexture 与 TextureOpacity），
+        // 单测的色距不变式对这种主题按"不算基色、算纹理"处理（见 ThemeCatalogTests）。
+        new(CalendarBackgroundMode.BeigeTexture,   "米色纹理",   false, RgbaColor.Rgb(208, 196, 180), 0.70, 0.72)
     };
 
     private static readonly Dictionary<CalendarBackgroundMode, ThemeDefinition> ByMode =

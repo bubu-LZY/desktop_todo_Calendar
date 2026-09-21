@@ -161,12 +161,51 @@ public sealed class ThemeCatalogTests
                     var b = ThemeCatalog.Build(group[j].Mode, 1.0).Shell;
                     var distance = Distance(a, b);
 
-                    Assert.True(distance >= 28,
-                        $"{group[i].Name} 与 {group[j].Name} 的底色太接近（Δ={distance:F1}）");
+                    // 带纹理的主题走**另一条判据**（见下）。
+                    // 理由：真实纸感的底色本来就是"极浅的暖白"—— 用户给的参考图实测是
+                    // (242,237,234)，与「白雾玻璃」在 RGB 上必然只差十几。
+                    // 硬要它拉开 28 就只能加灰/加深，而那样就不再像纸了（第一版就是这么做的，
+                    // 结果用户看截图说"对不上"）。它的辨识度来自**那层颗粒**，
+                    // 而颗粒是叠在底色之上的另一层，这个"比底色"的测试看不到它。
+                    var textured = ThemeCatalog.IsTextured(group[i].Mode)
+                                   || ThemeCatalog.IsTextured(group[j].Mode);
+
+                    var threshold = textured ? TexturedThemeMinShellDistance : 28;
+                    Assert.True(distance >= threshold,
+                        $"{group[i].Name} 与 {group[j].Name} 的底色太接近（Δ={distance:F1}，" +
+                        $"阈值 {threshold}）");
                 }
             }
         }
+
+        // 豁免是有代价的，所以补两条"不许滥用豁免"的约束：
+        // ① 带纹理的主题必须**真的有纹理**（否则它就是个和别的主题重复的纯色主题）；
+        // ② 它相对同组其它主题仍须拉开一个不至于"看起来一样"的最小距离。
+        var texturedThemes = OpaqueThemes.Where(d => ThemeCatalog.IsTextured(d.Mode)).ToList();
+        Assert.NotEmpty(texturedThemes);
+
+        foreach (var def in texturedThemes)
+        {
+            Assert.True(ThemeCatalog.Get(def.Mode).TextureOpacity > 0,
+                $"{def.Name} 声明为纹理主题，但 TextureOpacity 为 0 —— 它其实只是个纯色主题");
+
+            var shell = ThemeCatalog.Build(def.Mode, 1.0).Shell;
+            foreach (var other in light.Where(d => d.Mode != def.Mode))
+            {
+                var distance = Distance(shell, ThemeCatalog.Build(other.Mode, 1.0).Shell);
+                Assert.True(distance >= TexturedThemeMinShellDistance,
+                    $"{def.Name} 与 {other.Name} 的底色几乎重合（Δ={distance:F1}）");
+            }
+        }
     }
+
+    /// <summary>
+    /// 带纹理的主题所需的"最小可区分底色距离"。
+    ///
+    /// <para>比纯色主题的 28 低，但不是没有底线：8 已经足以避免"两个主题是同一个颜色"，
+    /// 而真正的区分度由纹理层提供（并由上面那条"必须真的有纹理"的断言保证存在）。</para>
+    /// </summary>
+    private const double TexturedThemeMinShellDistance = 8;
 
     [Fact]
     public void EveryTheme_HasReadableTextOnItsOwnSurfaces()
@@ -264,4 +303,65 @@ public sealed class ThemeCatalogTests
         var result = ThemeCatalog.Composite(half, RgbaColor.White);
         Assert.InRange(result.R, 126, 130);
     }
+
+    [Fact]
+    public void PaperTexture_MatchesTheMeasuredReference()
+    {
+        // 参数是按参考图**实测标定**的（底色 (242,237,234)、颗粒振幅 sd≈0.7），
+        // 所以这里的断言就是那几条实测结论，防止以后凭感觉改回去。
+        var pixels = PaperTexture.Create();
+        Assert.Equal(PaperTexture.Size * PaperTexture.Size, pixels.Length);
+
+        var speckles = pixels.Where(p => p.A > 0).ToList();
+        var density = (double)speckles.Count / pixels.Length;
+        Assert.InRange(density, PaperTexture.MinDensity, PaperTexture.MaxDensity);
+
+        Assert.All(speckles, p =>
+        {
+            // 两层颗粒（主颗粒 + 更淡的纤维）各有自己的区间，取并集检查。
+            Assert.InRange(p.A, PaperTexture.MinFiberAlpha, PaperTexture.MaxAlpha);
+
+            // 颗粒必须是**暖色**（R>G>B）且比纸底明显更深 ——
+            // 做成比底色更亮就成了"撒了糖霜"，那是另一种材质。
+            // 这一条抓到过真 bug：三通道各取一路独立随机数时，会撞出 R=196,G=207 的偏绿点。
+            Assert.True(p.R > p.G && p.G > p.B, $"颗粒不是暖色：{p.R},{p.G},{p.B}");
+            Assert.True(p.B < 210, $"颗粒不够深，压在浅色纸上会看不见：B={p.B}");
+        });
+
+        // 确定性：两个宿主必须生成同一张图，否则同一个主题在两端的观感会不一样。
+        Assert.Equal(pixels, PaperTexture.Create());
+    }
+
+    [Fact]
+    public void BeigeTexture_GrainStaysSubtleEnoughToReadAsPaper()
+    {
+        const double defaultOpacity = 0.86;
+        var c = ThemeCatalog.Build(CalendarBackgroundMode.BeigeTexture, defaultOpacity);
+
+        Assert.True(ThemeCatalog.IsTextured(CalendarBackgroundMode.BeigeTexture));
+        Assert.True(c.TextureOpacity > 0, "纹理浓度必须随用户透明度一起算出来");
+
+        // 底色要贴近实测的纸面 (242,237,234)：近白暖米，R>G>B。
+        // 这里直接看 Shell 本身（未与壁纸合成）—— 那才是"这张纸"的颜色。
+        var shell = c.Shell;
+        Assert.True(shell.R > shell.G && shell.G > shell.B, $"纸底不是暖色：{shell.R},{shell.G},{shell.B}");
+        Assert.InRange(shell.R, 232, 252);
+        Assert.InRange(shell.B, 222, 245);
+
+        // 最深的颗粒叠上去之后，亮度落差必须落在**个位数**。
+        // 参考图实测只有 ±2~3 级；给到 30+ 就变成"砂纸"了（第一版就是这么过的）。
+        var deepest = _texturePixels.Value.OrderByDescending(p => p.A).First();
+        var alpha = (byte)Math.Round(deepest.A * c.TextureOpacity);
+        var over = ThemeCatalog.Composite(
+            new RgbaColor(alpha, deepest.R, deepest.G, deepest.B), shell);
+
+        var delta = Math.Max(
+            Math.Abs(over.R - shell.R),
+            Math.Max(Math.Abs(over.G - shell.G), Math.Abs(over.B - shell.B)));
+
+        Assert.InRange(delta, 1, 12);
+    }
+
+    /// <summary>纹理像素是常量图案，测试内缓存一份，避免每个断言都重算。</summary>
+    private static readonly Lazy<RgbaColor[]> _texturePixels = new(PaperTexture.Create);
 }
