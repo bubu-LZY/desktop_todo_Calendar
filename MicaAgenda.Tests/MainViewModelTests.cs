@@ -1145,10 +1145,12 @@ public sealed class MainViewModelTests
             CreatedAt = created
         };
 
-        // 未完成：从创建日算起的未完成天数，以及相对计划日期的逾期天数
-        Assert.Equal(5, task.GetPendingDays(new DateOnly(2026, 4, 6)));
+        // 未完成：先看相对计划日期的逾期天数，以及"到期距离"（界面上那句措辞的唯一来源）
         Assert.Equal(0, task.GetOverdueDays(new DateOnly(2026, 4, 6)));
+        Assert.Equal(-14, task.GetDueOffsetDays(new DateOnly(2026, 4, 6)));   // 还有 14 天到期
+        Assert.Equal(0, task.GetDueOffsetDays(new DateOnly(2026, 4, 20)));    // 今天到期
         Assert.Equal(10, task.GetOverdueDays(new DateOnly(2026, 4, 30)));
+        Assert.Equal(10, task.GetDueOffsetDays(new DateOnly(2026, 4, 30)));   // 已逾期 10 天
         Assert.True(task.IsOverdue(new DateOnly(2026, 4, 30)));
         Assert.Null(task.GetCompletionDuration());
 
@@ -1158,9 +1160,8 @@ public sealed class MainViewModelTests
         Assert.Equal(3, task.GetCompletedLateDays());
         Assert.Equal(TimeSpan.FromDays(22) + TimeSpan.FromHours(1), task.GetCompletionDuration());
 
-        // 完成后不再算逾期 / 未完成
+        // 完成后不再算逾期
         Assert.Equal(0, task.GetOverdueDays(new DateOnly(2026, 4, 30)));
-        Assert.Equal(0, task.GetPendingDays(new DateOnly(2026, 4, 30)));
     }
 
     // ===== 复习任务删除通知（双向删除的界面入口）=====

@@ -116,6 +116,7 @@ public partial class SettingsWindow : Window
         UpdateVersionText.Text = $"当前版本 v{UpdateService.Normalize(UpdateService.CurrentAppVersion())}";
         AutoCheckUpdateBox.IsChecked = _config.AutoCheckUpdate;
         SkipUpdateTodayBox.IsChecked = IsUpdateSkippedToday();
+        UpdateMirrorBox.Text = _config.UpdateMirrorPrefix;
 
         LoadReportValues();
         UpdateApiHint();
@@ -777,6 +778,9 @@ public partial class SettingsWindow : Window
         _config.UpdateSkipDate = SkipUpdateTodayBox.IsChecked == true
             ? DateTime.Today.ToString("yyyy-MM-dd")
             : string.Empty;
+        // 前缀按原样存：合法性交给 UpdateService.BuildDownloadUrl 判断（无效就忽略、退回直连），
+        // 这样用户填错了也不会连"检查更新"都用不了。
+        _config.UpdateMirrorPrefix = (UpdateMirrorBox.Text ?? string.Empty).Trim();
 
         await _configStore.SaveAsync(_config);
         ApplyRequested?.Invoke(_config);

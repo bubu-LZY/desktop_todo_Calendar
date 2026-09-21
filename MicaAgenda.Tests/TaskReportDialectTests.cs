@@ -75,8 +75,11 @@ public sealed class TaskReportDialectTests
         var tomorrow = new ReportTaskLine { Date = Today.AddDays(1), DueOffsetDays = -1 };
 
         Assert.Equal("今天到期", today.DelayText);
-        Assert.Equal("已拖 1 天", yesterday.DelayText);
-        Assert.Equal("已拖 3 天", threeDaysAgo.DelayText);
+        // 措辞由 "已拖 N 天" 统一成 "已逾期 N 天"：任务行的小徽标、悬浮提示、报告三处
+        // 现在读的是同一份定义（TimeText.DescribeDueOffset），"拖"是口语、"逾期"是和提醒
+        // 与设置界面一致的正式说法，混用会让人以为是两个不同的指标。
+        Assert.Equal("已逾期 1 天", yesterday.DelayText);
+        Assert.Equal("已逾期 3 天", threeDaysAgo.DelayText);
         Assert.Equal("还有 1 天到期", tomorrow.DelayText);
 
         // 口径必须与提醒那套（GetOverdueDays）同源，否则两个功能会各说各话。
@@ -96,7 +99,7 @@ public sealed class TaskReportDialectTests
         var dates = report.StillOpen.Select(line => line.Date).ToList();
         Assert.Equal(dates.OrderBy(d => d), dates);
         Assert.Equal("早就该做完的", report.StillOpen[0].Title);
-        Assert.Equal("已拖 5 天", report.StillOpen[0].DelayText);
+        Assert.Equal("已逾期 5 天", report.StillOpen[0].DelayText);
     }
 
     [Fact]

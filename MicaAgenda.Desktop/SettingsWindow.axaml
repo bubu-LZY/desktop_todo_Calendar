@@ -423,8 +423,12 @@
               <TextBlock x:Name="UpdateStatusText" Foreground="#157347" FontSize="11" Margin="10,0,0,0"
                          VerticalAlignment="Center" TextWrapping="Wrap" />
             </StackPanel>
-            <TextBlock Classes="hint" Margin="0,8,0,0"
-                       Text="更新包取自 GitHub Releases：检测到新版本会先问一句，确认后在后台下载；下载完成再提示重启，重启后自动完成安装。" />
+            <TextBlock Text="下载加速前缀（可选）" Classes="fieldLabel" Margin="0,12,0,4" />
+            <TextBox x:Name="UpdateMirrorBox" Classes="inputBox" />
+            <TextBlock Classes="hint" Margin="0,4,0,0" TextWrapping="Wrap"
+                       Text="GitHub 的发布文件在国外，直连快不快完全看链路。留空 = 直连；填一个镜像前缀即可走加速 —— 实际请求地址 = 前缀 + 原始地址，例如填 https://你的镜像/ 。只影响安装包下载，不影响版本检查。" />
+            <TextBlock Classes="hint" Margin="0,8,0,0" TextWrapping="Wrap"
+                       Text="下载与安装都是静默的：确认后后台把包下完、过程中不显示进度；完成后再问一次要不要重启安装，安装过程也不会弹任何提示框。" />
           </StackPanel>
         </Border>
 

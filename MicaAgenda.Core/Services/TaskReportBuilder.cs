@@ -11,22 +11,24 @@ public sealed class ReportTaskLine
     public DateOnly Date { get; set; }
     public TimeSpan? Duration { get; set; }
 
-    /// <summary>
-    /// 从**创建**那天算起的未完成天数。注意：这是"这个任务挂了多久没动"，
-    /// 与"拖了几天"不是一回事 —— 见 <see cref="DelayText"/> 里的说明。
-    /// </summary>
-    public int PendingDays { get; set; }
+    // 这里原本还有一个 PendingDays（从**创建**那天算起的未完成天数）。
+    // 它和"还有几天到期 / 逾期几天"是两个不同的量，混用会让报告自相矛盾
+    // （报告写着"其中逾期 0 项"，同一段却把未来到期的任务标成"已拖 2 天"）。
+    // 现在全项目只剩一个口径 —— DueOffsetDays + TimeText 里的统一措辞，
+    // 所以这个字段被删掉了，而不是留着等下次被误用。
 
     /// <summary>已逾期天数（任务日期早于今天且未完成），未逾期为 0。</summary>
     public int OverdueDays { get; set; }
 
     /// <summary>
-    /// 任务**到期日**相对今天的偏移：<c>&gt;0</c> 已过期几天、<c>&lt;0</c> 还有几天到期、<c>0</c> 今天到期。
+    /// 任务**到期日**相对今天的偏移：<c>&gt;0</c> 已逾期几天、<c>&lt;0</c> 还有几天到期、<c>0</c> 今天到期。
     ///
-    /// <para>这才是"拖了几天"的口径 —— 用户明确要求：<b>按任务自己的日期算，不是按创建时间算</b>。
-    /// 旧实现用 <see cref="PendingDays"/>（创建时间）来写"已拖 N 天"，
-    /// 于是"下周三才到期、今天刚建"的任务会被写成"当天新建"，而"两个月后到期、两天前建"的会被写成
-    /// "已拖 2 天" —— 报告自己都写着"其中逾期 0 项"，两句话直接打架。</para>
+    /// <para>这才是界面上"还有几天 / 今天 / 已逾期几天"该用的口径 —— 用户明确要求：
+    /// <b>按任务自己的日期算，不是按创建时间算</b>。</para>
+    ///
+    /// <para>旧实现用"从创建那天算起的未完成天数"来写这一行，于是"下周三才到期、今天刚建"的任务
+    /// 会被写成"当天新建"，而"两个月后到期、两天前建"的会被写成"已拖 2 天" ——
+    /// 报告自己都写着"其中逾期 0 项"，两句话直接打架。</para>
     /// </summary>
     public int DueOffsetDays { get; set; }
 
@@ -38,17 +40,16 @@ public sealed class ReportTaskLine
         : TimeText.FormatDuration(Duration.Value);
 
     /// <summary>
-    /// 「拖延 / 到期」措辞。**全项目唯一一份定义**，三处渲染（纯文本 / 企微 markdown / 飞书 lark_md）
-    /// 与两个宿主的统计窗口都读这里，避免同一个口径被复制成多份后各自漂移。
+    /// 「到期距离」措辞：<c>"还有 N 天到期"</c> / <c>"今天到期"</c> / <c>"已逾期 N 天"</c>。
     ///
-    /// <para>口径与提醒一致：跨过任务当日的 24:00 才算逾期，所以"今天到期"的任务不算拖。</para>
+    /// <para>口径是<b>任务自己的日期</b>（见 <see cref="DueOffsetDays"/>），
+    /// 措辞本身来自全项目唯一一份定义 <see cref="TimeText.DescribeDueOffset"/> ——
+    /// 任务行的小徽标、悬浮提示、三处报告渲染、两个宿主的统计窗口都读同一处，
+    /// 避免同一个口径被复制成多份后各自漂移。</para>
+    ///
+    /// <para>口径与提醒一致：跨过任务当日的 24:00 才算逾期，所以"今天到期"的任务不算逾期。</para>
     /// </summary>
-    public string DelayText => DueOffsetDays switch
-    {
-        > 0 => $"已拖 {DueOffsetDays} 天",
-        < 0 => $"还有 {-DueOffsetDays} 天到期",
-        _ => "今天到期"
-    };
+    public string DelayText => TimeText.DescribeDueOffset(DueOffsetDays);
 }
 
 /// <summary>
@@ -216,10 +217,9 @@ public static class TaskReportBuilder
         Title = task.Title,
         Date = task.Date,
         Duration = task.GetCompletionDuration(),
-        PendingDays = task.GetPendingDays(today),
         OverdueDays = task.GetOverdueDays(today),
-        // 「拖了几天」按任务自己的日期算；与 GetOverdueDays 同源，保证两处不会各说各话。
-        DueOffsetDays = today.DayNumber - task.Date.DayNumber,
+        // 到期距离按任务自己的日期算，直接读模型上那个统一的口径（不要在渲染层再算一遍）。
+        DueOffsetDays = task.GetDueOffsetDays(today),
         LateDays = task.GetCompletedLateDays(),
         CompletedAt = task.CompletedAt
     };

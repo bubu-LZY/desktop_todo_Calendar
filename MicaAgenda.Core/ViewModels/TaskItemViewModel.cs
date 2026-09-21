@@ -270,21 +270,20 @@ public sealed class TaskItemViewModel : ViewModelBase
     {
         get
         {
-            var today = Today;
             if (IsCompleted)
             {
                 var duration = _task.GetCompletionDuration();
                 return duration is null ? "已完成" : $"用时{FormatDuration(duration.Value)}";
             }
 
-            var overdue = _task.GetOverdueDays(today);
-            if (overdue > 0)
-            {
-                return $"逾期{overdue}天";
-            }
-
-            var pending = _task.GetPendingDays(today);
-            return pending > 0 ? $"{pending}天未完" : "今天";
+            // 未完成的一律显示「离到期还有多久 / 今天 / 已逾期几天」——
+            // 参照物是**任务自己的日期**。
+            //
+            // 旧实现在这里分了两条：先 `GetOverdueDays() > 0` 写"逾期 N 天"，
+            // 否则用 `GetPendingDays()`（**从创建时间**算）写"N 天未完"。
+            // 后者跟"还有几天到期"和"逾期几天"都不是一回事，用户看到"3天未完"直接问
+            // "这个提醒好奇怪呀" —— 一条明天到期的任务被标成 3 天未完，确实说不通。
+            return FormatDueOffset(_task.GetDueOffsetDays(Today));
         }
     }
 
@@ -341,14 +340,10 @@ public sealed class TaskItemViewModel : ViewModelBase
                 return sb.ToString();
             }
 
-            var pending = _task.GetPendingDays(today);
-            sb.Append(pending > 0 ? $"未完成 {pending} 天" : "当天创建，尚未完成");
-
-            var overdue = _task.GetOverdueDays(today);
-            if (overdue > 0)
-            {
-                sb.Append($" · 已逾期 {overdue} 天");
-            }
+            // 未完成：只回答一个问题 —— 离到期还有多久 / 今天 / 已逾期几天。
+            // 以前这里还会多带一句"未完成 N 天"（从创建时间算），既和徽标口径不同、
+            // 又让提示里出现两个互相打架的天数，已去掉。
+            sb.Append(DescribeDueOffset(_task.GetDueOffsetDays(today)));
 
             return sb.ToString();
         }
@@ -356,4 +351,12 @@ public sealed class TaskItemViewModel : ViewModelBase
 
     /// <summary>把时间跨度格式化成中文短串（"3分钟" / "2小时" / "3天7小时"）。</summary>
     private static string FormatDuration(TimeSpan value) => Helpers.TimeText.FormatDuration(value);
+
+    /// <summary>「还有几天 / 今天 / 已逾期几天」的紧凑措辞（徽标用）。唯一实现在 Helpers.TimeText。</summary>
+    private static string FormatDueOffset(int dueOffsetDays)
+        => Helpers.TimeText.FormatDueOffset(dueOffsetDays);
+
+    /// <summary>「还有几天到期 / 今天到期 / 已逾期几天」的成句措辞（悬浮提示用）。同一份规则。</summary>
+    private static string DescribeDueOffset(int dueOffsetDays)
+        => Helpers.TimeText.DescribeDueOffset(dueOffsetDays);
 }

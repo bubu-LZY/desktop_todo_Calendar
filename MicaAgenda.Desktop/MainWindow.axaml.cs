@@ -1520,7 +1520,7 @@ public partial class MainWindow : Window
             var question =
                 $"检测到新版本 {latestText}（当前 {service.CurrentVersionText}）。\n\n" +
                 $"要现在下载更新吗？安装包约 {ByteText.FormatSize(result.Asset.SizeBytes)}，" +
-                "会在后台下载并显示实时进度，中途可以取消。\n" +
+                "会在后台**安静地**下载完，界面上不会有任何进度提示，你可以继续用日历。\n" +
                 "下载完成后再问你一次要不要重启安装。";
 
             var (accepted, skipToday) = await AskUpdateAsync(question);
@@ -1534,17 +1534,17 @@ public partial class MainWindow : Window
                 return $"已跳过 {latestText}";
             }
 
-            // 后台下载：不挡界面、不占模态。用户可以在下载期间继续用日历。
-            // 带进度条 + 失败原地重试；用户点「取消」或关掉进度窗时返回 null。
-            var installerPath = await DownloadUpdateWithProgressAsync(service, result.Asset, latestText);
+            // 静默后台下载：不弹窗、不挡界面。用户可以在下载期间继续用日历。
+            var installerPath = await DownloadUpdateSilentlyAsync(service, result.Asset, latestText);
             if (installerPath is null)
             {
-                return "已取消更新下载";
+                return "已放弃本次更新下载";
             }
 
             var restart = await ConfirmAsync(
                 "下载完成",
-                $"{latestText} 已经下载完成。\n\n要现在重启并完成更新吗？程序会自动关闭、静默安装，装好后自己重新打开。");
+                $"{latestText} 已经下载完成。\n\n要现在重启并完成更新吗？" +
+                "程序会自动关闭、静默安装（安装过程也不会有任何提示框），装好后自己重新打开。");
             if (!restart)
             {
                 return "更新包已下载：" + installerPath;
@@ -1570,59 +1570,42 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// 带进度条、可失败重试的下载。返回下载好的安装包路径；用户取消 / 关掉进度窗时返回 null。
+    /// **静默**下载更新包，返回下载好的安装包路径；用户选择不再重试时返回 null。
     ///
-    /// 更新包 50MB 上下，干等没有任何反馈是用户明确抱怨过的点，所以这里补齐三件事：
-    /// 实时进度（百分比 + 已下载 / 总大小）、失败原地重试（不用再走一遍「检查更新」）、
-    /// 以及一个屏幕居中置顶的非模态浮窗（设置面板开着时也不会被压到后面点不动）。
+    /// <para><b>为什么不再弹进度浮窗</b>：用户明确要求"确认之后他就开始静默的下载，
+    /// 整体在后台进行，不要显示下载的进度"。所以下载期间界面上什么都没有，下完直接问要不要装。
+    /// 代价是下载过程中没有可视化反馈、也不能中途取消 —— 这是用户明确选的行为，
+    /// 不是漏做。想中断就直接退出程序。</para>
+    ///
+    /// <para>失败时会问一次要不要重试（不用重走「检查更新」）。重试复用已下好的部分：
+    /// 只有大小完全一致才算数，否则整包重下 —— 半截文件拼出来的安装包比慢得多更糟。</para>
     /// </summary>
-    private async Task<string?> DownloadUpdateWithProgressAsync(
+    private async Task<string?> DownloadUpdateSilentlyAsync(
         UpdateService service,
         UpdateAsset asset,
         string versionText)
     {
-        var window = new UpdateProgressWindow(versionText, asset.SizeBytes);
-        // 令牌先取出来：循环里每轮都要用，不必依赖窗口对象还活着
-        var token = window.Token;
-        window.Show();
+        var mirror = _config.UpdateMirrorPrefix;
 
-        try
+        while (true)
         {
-            while (true)
+            try
             {
-                try
-                {
-                    var path = await service.DownloadAsync(asset, window.Progress, token);
-                    window.ShowCompleted();
+                // progress 传 null：界面不显示进度。下载侧的"停滞看门狗"仍然在跑，
+                // 所以卡死会在 30 秒内被判失败，不会变成永远转不出来的等待。
+                return await service.DownloadAsync(asset, progress: null, mirrorPrefix: mirror);
+            }
+            catch (Exception ex)
+            {
+                AppLog.Error(ex, "MainWindow.UpdateDownload");
 
-                    // 让 100% 先画出来再关窗，否则进度条来不及出现就消失了
-                    await Task.Delay(250);
-                    return path;
-                }
-                catch (OperationCanceledException)
+                var retry = await ConfirmAsync(
+                    "下载失败",
+                    $"{versionText} 下载失败：{ex.Message}\n\n要重试一次吗？");
+                if (!retry)
                 {
-                    // 用户取消 / 关窗：不算失败，安静退出
                     return null;
                 }
-                catch (Exception ex)
-                {
-                    AppLog.Error(ex, "MainWindow.UpdateDownload");
-
-                    // 失败停在原地等用户选「重试」还是「关闭」，重试就是再下一遍，不重头检查版本
-                    window.ShowFailed(ex.Message);
-                    if (!await window.WaitForRetryAsync())
-                    {
-                        return null;
-                    }
-                }
-            }
-        }
-        finally
-        {
-            // 用户自己关掉的窗不要再关一遍
-            if (window.IsVisible)
-            {
-                window.Close();
             }
         }
     }

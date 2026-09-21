@@ -149,22 +149,24 @@ public sealed class CalendarTask
     // ===== 时间追踪：全部以「今天」为参照，所以做成方法而不是属性 =====
 
     /// <summary>
-    /// 未完成天数：从创建那天算到 today 的自然日数。已完成的任务没有"未完成天数"，返回 0。
-    /// 创建时间与 today 同一天时返回 0（当天建的当天还没做完，不算"拖了一天"）。
+    /// 任务日期相对 <paramref name="today"/> 的偏移：<c>&gt;0</c> 已逾期几天、
+    /// <c>&lt;0</c> 还有几天到期、<c>0</c> 今天到期。
+    ///
+    /// <para><b>这才是界面上"还有几天 / 今天 / 已逾期几天"该用的口径</b> ——
+    /// 参照物是<b>任务自己的日期</b>，不是创建时间。措辞统一由
+    /// <see cref="Helpers.TimeText.FormatDueOffset"/> / <c>DescribeDueOffset</c> 生成。</para>
+    ///
+    /// <para>与 <see cref="GetOverdueDays"/> 的区别只有一个：那个会把"今天到期"也算成 0，
+    /// 并且已完成的任务恒为 0；而这里不管完成与否，只回答"日期离今天多远"，
+    /// 由调用方决定要不要显示（已完成的任务显示的是用时，不是这个）。</para>
+    ///
+    /// <para>逾期的界线与提醒一致：<b>跨过任务当日的 24:00 才算逾期</b>，
+    /// 所以"今天到期但时刻已过"仍然是「今天」。</para>
     /// </summary>
-    public int GetPendingDays(DateOnly today)
-    {
-        if (IsCompleted)
-        {
-            return 0;
-        }
-
-        return Math.Max(0, today.DayNumber - CreatedDate.DayNumber);
-    }
+    public int GetDueOffsetDays(DateOnly today) => today.DayNumber - Date.DayNumber;
 
     /// <summary>
     /// 逾期天数：任务计划日期早于 today 且尚未完成时的落后天数，未逾期返回 0。
-    /// 与"未完成天数"是两回事：8 月 1 日建、9 月 20 日到期的任务，未完成 50 天但不逾期。
     /// </summary>
     public int GetOverdueDays(DateOnly today)
     {

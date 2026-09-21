@@ -113,6 +113,19 @@ public sealed class AppConfig
     public bool AutoCheckUpdate { get; set; } = true;
 
     /// <summary>
+    /// 更新包下载的**加速前缀**（可选，留空 = 直连 GitHub）。
+    ///
+    /// <para>存在的理由：GitHub 的发布文件在国外的 CDN 上，国内直连的速率完全取决于链路，
+    /// 这不是程序能改的。填一个自建 / 第三方镜像前缀后，实际请求会变成
+    /// <c>前缀 + 原始地址</c>（例如 <c>https://example.com/</c> + <c>https://github.com/…/x.exe</c>）。</para>
+    ///
+    /// <para>只影响**安装包下载**，不影响版本检查（检查走 API，体积可以忽略）。
+    /// 前缀必须以 http:// 或 https:// 开头，否则按无效处理、自动忽略 ——
+    /// 宁可不加速，也不要拼出一个必然失败的地址。</para>
+    /// </summary>
+    public string UpdateMirrorPrefix { get; set; } = string.Empty;
+
+    /// <summary>
     /// 「今日内不再提示更新」记住的那一天（本地日期 yyyy-MM-dd）。
     /// 为空或不是今天时照常提示；是今天就静默跳过自动检查的弹窗（手动点「检查更新」仍会提示）。
     /// </summary>

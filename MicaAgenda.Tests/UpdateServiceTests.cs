@@ -110,4 +110,95 @@ public sealed class UpdateServiceTests
 
         Assert.True(version.Major >= 1, $"版本号看起来不对：{version}");
     }
+
+    // ===== 分段下载 =====
+
+    [Fact]
+    public void PlanSegments_CoversTheWholeFileExactlyOnce()
+    {
+        // 分段下载最容易出的错是"拼起来不是原来那个文件"：
+        // 漏一段、重叠一段、或者最后一段没吃掉余数，都会做出一个坏安装包。
+        // 所以边界必须钉死：首段从 0 开始、段与段无缝相邻、总长正好等于文件大小。
+        foreach (var total in new long[]
+                 {
+                     0, 1, 1024,
+                     UpdateService.ParallelThresholdBytes,                 // 8MB
+                     UpdateService.ParallelThresholdBytes + 1,
+                     52_015_020,                                           // 真实安装包大小
+                     300L * 1024 * 1024                                    // 远超上限
+                 })
+        {
+            var segments = UpdateService.PlanSegments(total);
+
+            if (total <= 0)
+            {
+                Assert.Empty(segments);
+                continue;
+            }
+
+            Assert.InRange(segments.Count, 1, UpdateService.MaxSegments);
+            Assert.Equal(0, segments[0].Start);
+
+            long cursor = 0;
+            long sum = 0;
+            foreach (var segment in segments)
+            {
+                Assert.True(segment.Length > 0, $"出现了空分段（total={total}）");
+                Assert.Equal(cursor, segment.Start);      // 无缝：下一段的起点就是上一段的终点
+                cursor = segment.EndExclusive;
+                sum += segment.Length;
+            }
+
+            Assert.Equal(total, sum);
+        }
+    }
+
+    [Fact]
+    public void PlanSegments_SplitsTheRealInstallerIntoSeveralParts()
+    {
+        // 52MB 的安装包必须真的被切开 —— 否则这次改动等于没做。
+        var segments = UpdateService.PlanSegments(WinSetup.SizeBytes);
+
+        Assert.True(segments.Count > 1,
+            $"52MB 的安装包只切出 {segments.Count} 段，分段下载没有生效");
+    }
+
+    [Fact]
+    public void PlanSegments_DoesNotSplitTinyFiles()
+    {
+        // 小文件分段只会多几次握手，纯亏。
+        Assert.Single(UpdateService.PlanSegments(1_000_000));
+        Assert.Single(UpdateService.PlanSegments(UpdateService.ParallelThresholdBytes - 1));
+    }
+
+    // ===== 加速前缀 =====
+
+    [Theory]
+    [InlineData(null, "https://github.com/a/b.exe", "https://github.com/a/b.exe")]
+    [InlineData("", "https://github.com/a/b.exe", "https://github.com/a/b.exe")]
+    [InlineData("   ", "https://github.com/a/b.exe", "https://github.com/a/b.exe")]
+    // 带结尾斜杠
+    [InlineData("https://mirror.example/", "https://github.com/a/b.exe",
+        "https://mirror.example/https://github.com/a/b.exe")]
+    // 不带结尾斜杠：自动补一个，别拼出 "mirror.examplehttps://..."
+    [InlineData("https://mirror.example", "https://github.com/a/b.exe",
+        "https://mirror.example/https://github.com/a/b.exe")]
+    // http 也认
+    [InlineData("http://127.0.0.1:8080/", "https://github.com/a/b.exe",
+        "http://127.0.0.1:8080/https://github.com/a/b.exe")]
+    public void BuildDownloadUrl_PrependsTheMirrorPrefix(string? prefix, string original, string expected)
+        => Assert.Equal(expected, UpdateService.BuildDownloadUrl(original, prefix));
+
+    [Theory]
+    [InlineData("mirror.example")]          // 没有协议头
+    [InlineData("mirror.example/")]
+    [InlineData("/local/path")]
+    [InlineData("ftp://mirror.example/")]
+    public void BuildDownloadUrl_IgnoresAnUnusablePrefix(string prefix)
+    {
+        // 用户填错了前缀时，宁可**不加速**也不能拼出一个必然失败的地址 ——
+        // 那会让"下载更新"直接变成死路，比慢严重得多。
+        const string original = "https://github.com/a/b.exe";
+        Assert.Equal(original, UpdateService.BuildDownloadUrl(original, prefix));
+    }
 }
