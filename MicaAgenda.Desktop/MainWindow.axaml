@@ -930,11 +930,6 @@
            但纹理层因此能铺满整块外壳 —— 留在 Border.Padding 里的话，
            四周会留出一圈 8px 的"没纹理的相框"，一眼就看得出背景是拼接的。 -->
       <Panel>
-        <!-- ===== 纹理层（仅「米色纹理」这类主题启用）=====
-             必须是 Panel 的**第一个孩子**：同级里后声明的画在上面，放后面会盖住整个界面。
-             IsHitTestVisible=False 是关键 —— 这层铺满全窗，若参与命中测试，
-             拖动窗口、点格子这些操作会全部被它吃掉。 -->
-        <Rectangle x:Name="TextureLayer" IsHitTestVisible="False" IsVisible="False" />
         <Grid RowDefinitions="Auto,*" Margin="8">
         <!-- ===== 顶栏（自适应，最宽两行）：日期信息 + 背景/透明度 + 今天 / 视图 / 设置 / 锁定 =====
              窗口变窄时的降级顺序（由 UpdateResponsiveLayout 驱动，见宿主代码）：
@@ -1154,6 +1149,14 @@
                          HorizontalAlignment="Right" VerticalAlignment="Top"
                          Margin="0,8,8,0" ZIndex="100" IsVisible="False" />
         </Grid>
+        <!-- ===== 纹理层（仅「米色纹理」这类主题启用）=====
+             按 Panel 的**最后一个孩子**放：同级里后声明的画在上面，所以它盖在内容之上。
+             这一点是刻意的 —— 纹理铺在内容**下面**时，只有格子和面板之间的缝隙能看到它，
+             用户的反馈正是"感觉纹理还不够"：他想要的是**整张纸**，而不是"背景里有纹理"。
+             真实的纸张颗粒本来就浮在印刷内容之上，这也是它看起来像纸的原因。
+             IsHitTestVisible=False 是关键 —— 这层铺满全窗，若参与命中测试，
+             拖动窗口、点格子这些操作会全部被它吃掉。 -->
+        <Rectangle x:Name="TextureLayer" IsHitTestVisible="False" IsVisible="False" />
       </Panel>
     </Border>
 

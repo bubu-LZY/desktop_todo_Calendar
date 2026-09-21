@@ -29,35 +29,52 @@ public static class PaperTexture
     public const int Size = 128;
 
     /// <summary>
-    /// 颗粒覆盖率（约 7%）。太高会变成"砂纸"，太低则完全看不出纹理。
-    /// 单测按这个区间校验：实际覆盖率必须落在 <see cref="MinDensity"/> ~ <see cref="MaxDensity"/> 之间。
+    /// 细颗粒覆盖率（约 10%）。太高会变成"砂纸"，太低则完全看不出纹理。
+    /// 单测按 <see cref="MinDensity"/> ~ <see cref="MaxDensity"/> 校验**总**覆盖率（含粗颗粒与纤维）。
     /// </summary>
-    public const double Density = 0.07;
+    public const double Density = 0.10;
 
-    public const double MinDensity = 0.03;
-    public const double MaxDensity = 0.12;
+    public const double MinDensity = 0.06;
+    public const double MaxDensity = 0.24;
 
     /// <summary>颗粒不透明度的下限 —— 低于这个值在浅色底上等于没有，纯属白算。</summary>
     public const byte MinAlpha = 6;
 
     /// <summary>
-    /// 颗粒不透明度的上限。**这个值直接对应观感强弱**：颗粒色约 (210,193,170)、
-    /// 底色约 (242,237,234) 时，合成后的亮度落差 ≈ <c>(底色 - 颗粒) × alpha / 255</c>；
-    /// 按参考图量到的 ±2~3 级，alpha 均值落在 20 附近。
-    /// 调到 80 那种量级会变成一颗颗清晰的黑点，失去"纸感"。
+    /// 细颗粒不透明度的上限。
+    ///
+    /// <para>参考图实测的振幅只有 ±2~3 级，但那是**一张照片**：拍摄与压缩本身就把颗粒糊平了，
+    /// 而且照片有自己的物理尺度。屏幕上按同样的振幅铺，用户的原话是"感觉纹理还不够"。
+    /// 所以这里刻意做得比照片**明显更重**，目标是在 100% 缩放下就能一眼看出纸感，
+    /// 而不是要一张数据上和照片一致、看起来却什么都没有的图。</para>
     /// </summary>
-    public const byte MaxAlpha = 40;
+    public const byte MaxAlpha = 84;
 
     /// <summary>
     /// 次要的"纤维"层（<see cref="FiberChance"/> 那部分像素）的不透明度区间。
     /// 它刻意比主颗粒更淡，作用只是把颗粒之间的空隙填得**不那么均匀**，本身不该被看成杂点。
     /// </summary>
-    public const byte MinFiberAlpha = 3;
+    public const byte MinFiberAlpha = 5;
 
-    public const byte MaxFiberAlpha = 12;
+    public const byte MaxFiberAlpha = 26;
 
     /// <summary>纤维层占比（在主颗粒之外额外叠的那一层）。</summary>
-    private const double FiberChance = 0.025;
+    private const double FiberChance = 0.05;
+
+    /// <summary>
+    /// 粗颗粒（2×2 像素）的落点密度 —— 按 2 像素网格算，即约 4.5% 的格子会被填上。
+    ///
+    /// <para><b>为什么必须有这么一层</b>：只有 1×1 的细噪点时，纹理在 125%/150% 缩放的屏幕上
+    /// 会被放大插值糊成一片均匀的灰 —— 用户看到的就还是"没有纹理"。
+    /// 2×2 的颗粒在缩放后仍然是一个有边界的斑点，这才是"能看见"的那一层。
+    /// 它同时让质感更接近再生纸上的**纤维碎屑**，而不只是均匀噪点。</para>
+    /// </summary>
+    private const double CoarseDensity = 0.045;
+
+    /// <summary>粗颗粒的不透明度区间 —— 它要的就是"看得见"，所以整体比细颗粒更实。</summary>
+    public const byte MinCoarseAlpha = 30;
+
+    public const byte MaxCoarseAlpha = 96;
 
     /// <summary>
     /// 主颗粒的色域端点。取值受一条硬约束：**必须 R &gt; G &gt; B**（暖色 + 比底色深）。
@@ -74,6 +91,14 @@ public static class PaperTexture
     private const int DarkG = 180;
     private const int DarkB = 158;
 
+    /// <summary>粗颗粒专用色域：整体更深一档，压在纸上才看得出是"碎屑"而不是"被糊掉的噪点"。</summary>
+    private const int CoarseLightR = 200;
+    private const int CoarseLightG = 184;
+    private const int CoarseLightB = 161;
+    private const int CoarseDarkR = 172;
+    private const int CoarseDarkG = 155;
+    private const int CoarseDarkB = 131;
+
     /// <summary>
     /// 生成 <see cref="Size"/>×<see cref="Size"/> 的 ARGB 像素（行优先）。
     /// 底色位置一律返回**全透明** —— 底色由主题的 Shell 画刷负责，
@@ -84,6 +109,7 @@ public static class PaperTexture
         var pixels = new RgbaColor[Size * Size];
         var rng = new Lcg(20260921);
 
+        // ① 细颗粒 + 纤维：逐像素。
         for (var i = 0; i < pixels.Length; i++)
         {
             var roll = rng.NextUnit();
@@ -92,12 +118,8 @@ public static class PaperTexture
             {
                 // 主颗粒：一个亮度参数 t 同时决定 alpha 与三通道，保证 R>G>B。
                 var alpha = (byte)(MinAlpha + rng.NextInt(MaxAlpha - MinAlpha + 1));
-                var t = rng.NextUnit();
-                pixels[i] = new RgbaColor(
-                    alpha,
-                    (byte)Math.Round(LightR - (LightR - DarkR) * t),
-                    (byte)Math.Round(LightG - (LightG - DarkG) * t),
-                    (byte)Math.Round(LightB - (LightB - DarkB) * t));
+                pixels[i] = Grain(ref rng, alpha,
+                    LightR, LightG, LightB, DarkR, DarkG, DarkB, 0.0);
                 continue;
             }
 
@@ -112,7 +134,60 @@ public static class PaperTexture
             }
         }
 
+        // ② 粗颗粒：按 2 像素网格铺。
+        //    奇偶行错开半个格（x 起点轮流从 0 / 1 开始），否则会看到规则的方阵。
+        for (var y = 0; y < Size - 1; y += 2)
+        {
+            var xStart = (y / 2) % 2;
+
+            for (var x = xStart; x < Size - 1; x += 2)
+            {
+                if (rng.NextUnit() >= CoarseDensity)
+                {
+                    continue;
+                }
+
+                var alpha = (byte)(MinCoarseAlpha +
+                                   rng.NextInt(MaxCoarseAlpha - MinCoarseAlpha + 1));
+                // 粗颗粒只取色域偏深的那半段（t ≥ 0.4），保证它在纸上真的看得出来。
+                var grain = Grain(ref rng, alpha,
+                    CoarseLightR, CoarseLightG, CoarseLightB,
+                    CoarseDarkR, CoarseDarkG, CoarseDarkB, 0.4);
+
+                pixels[y * Size + x] = grain;
+                pixels[y * Size + x + 1] = grain;
+                pixels[(y + 1) * Size + x] = grain;
+                pixels[(y + 1) * Size + x + 1] = grain;
+            }
+        }
+
         return pixels;
+    }
+
+    /// <summary>
+    /// 按一个亮度参数推导出颗粒颜色，保证三通道始终 R &gt; G &gt; B。
+    ///
+    /// <para><b><paramref name="rng"/> 必须按引用传</b>：<see cref="Lcg"/> 是<b>结构体</b>，
+    /// 按值传的话每次调用都会拿到一份状态副本，内部推进不会回写 ——
+    /// 结果是每一颗颗粒都用同一个随机值，整张纸变成同一种颜色的重复图案。</para>
+    ///
+    /// <para><paramref name="minT"/> 是色域下界的起点：细颗粒取 0（全色域），
+    /// 粗颗粒取 0.4（只用偏深的那半段），这样小碎屑看得见、大斑点也不会深得发黑。</para>
+    /// </summary>
+    private static RgbaColor Grain(
+        ref Lcg rng,
+        byte alpha,
+        int lightR, int lightG, int lightB,
+        int darkR, int darkG, int darkB,
+        double minT)
+    {
+        var t = minT + rng.NextUnit() * (1 - minT);
+
+        return new RgbaColor(
+            alpha,
+            (byte)Math.Round(lightR - (lightR - darkR) * t),
+            (byte)Math.Round(lightG - (lightG - darkG) * t),
+            (byte)Math.Round(lightB - (lightB - darkB) * t));
     }
 
     /// <summary>

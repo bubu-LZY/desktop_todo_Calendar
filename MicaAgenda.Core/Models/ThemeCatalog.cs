@@ -18,13 +18,27 @@ public readonly record struct RgbaColor(byte A, byte R, byte G, byte B)
 /// <para>它同时乘上用户的透明度设置 —— 纹理属于背景的一部分，
 /// 背景变透明时纹理也要跟着淡掉，否则"拉低透明度"会留下满屏悬浮的噪点，比不透明还难看。</para>
 /// </param>
+/// <param name="MinShellOpacity">
+/// 底色浓度的**下限**（0 = 跟随滑块，最低全透）。
+///
+/// <para>只给"材质型"主题用：像「米色纹理」这种主题，它的身份就是**一整张纸**。
+/// 跟着滑块一路淡到全透，剩下的就是一个既没有颜色、也看不出纹理的空壳
+/// —— 用户反馈"它四周都是透明的，我想要米色纹理填充进去"说的就是这个。
+/// 给了下限之后，无论滑块在哪，整窗都还是那张纸，滑块只在下限之上调浓淡。</para>
+///
+/// <para><b>为什么用下限而不是别的做法</b>：另两种常见做法各有问题 ——
+/// ① "切到这个主题就自动把滑块拉高"会悄悄改掉用户的设置，下次切回去他也不知道为什么透明度变了；
+/// ② "把下限写进滑块本身"等于这个主题永远不能更透。
+/// 下限只约束**这一个主题**，且是显式的、可被测的。</para>
+/// </param>
 public sealed record ThemeDefinition(
     CalendarBackgroundMode Mode,
     string Name,
     bool IsDark,
     RgbaColor Base,
     double ShellMix,
-    double TextureOpacity = 0);
+    double TextureOpacity = 0,
+    double MinShellOpacity = 0);
 
 /// <summary>某个主题 + 某档不透明度下，整套界面用色。</summary>
 public sealed record ThemeColors(
@@ -143,7 +157,10 @@ public static class ThemeCatalog
         // 真实纸感本来就是"极浅的暖白"，靠加灰去拉开色距只会越做越不像纸。
         // 所以它的辨识度交给**纹理层**（见 PaperTexture 与 TextureOpacity），
         // 单测的色距不变式对这种主题按"不算基色、算纹理"处理（见 ThemeCatalogTests）。
-        new(CalendarBackgroundMode.BeigeTexture,   "米色纹理",   false, RgbaColor.Rgb(208, 196, 180), 0.70, 0.72)
+        //
+        // 最后那个 0.60 是**底色下限**：它是一张纸，纸不能因为滑块被拉到 0.22 就变成空气。
+        // 下限之下整窗仍保持约六成的米色（透出一点壁纸），滑块在 0.60~1.0 之间照旧可以调浓淡。
+        new(CalendarBackgroundMode.BeigeTexture,   "米色纹理",   false, RgbaColor.Rgb(208, 196, 180), 0.70, 0.72, 0.60)
     };
 
     private static readonly Dictionary<CalendarBackgroundMode, ThemeDefinition> ByMode =
@@ -181,19 +198,26 @@ public static class ThemeCatalog
     /// <c>Math.Min(alpha, 210)</c> / <c>Math.Min(alpha, 150)</c>，于是透明度滑杆拉到头
     /// 也只能到 82% 甚至 58% —— 用户反馈"透明度的强度不高"，是代码里限死的。
     /// 现在滑杆直接 1:1 映射到 alpha，强度完全交给用户。</para>
+    ///
+    /// <para><b>唯一的例外是"材质型"主题的底色下限</b>（<see cref="ThemeDefinition.MinShellOpacity"/>）：
+    /// 纸感这类**主题身份**不该被滑块抹掉。下限同时作用于底色与纹理浓度 ——
+    /// 两者必须用同一个有效浓度，否则会出现"底色很实、纹理却淡得看不见"这种自相矛盾的效果。</para>
     /// </summary>
     public static ThemeColors Build(CalendarBackgroundMode mode, double opacity)
     {
         var def = Get(mode);
-        var alpha = (byte)Math.Clamp(Math.Round(opacity * 255), 0, 255);
+
+        // 有效浓度 = 用户滑块与主题下限取大值。无背景这类下限为 0 的主题完全不受影响。
+        var effective = Math.Max(Math.Clamp(opacity, 0, 1), Math.Clamp(def.MinShellOpacity, 0, 1));
+        var alpha = (byte)Math.Clamp(Math.Round(effective * 255), 0, 255);
 
         var colors = IsTransparent(mode)
             ? BuildTransparent(def, alpha)
             : def.IsDark ? BuildDark(def, alpha) : BuildLight(def, alpha);
 
-        // 纹理浓度乘上用户透明度，且**在这里统一算**（不在三个分支里各写一遍）：
+        // 纹理浓度乘上**有效**浓度，且在这里统一算（不在三个分支里各写一遍）：
         // 纹理是背景的一部分，背景被调透明时它必须跟着淡掉。
-        return colors with { TextureOpacity = def.TextureOpacity * Math.Clamp(opacity, 0, 1) };
+        return colors with { TextureOpacity = def.TextureOpacity * effective };
     }
 
     // ===== 派生工具 =====

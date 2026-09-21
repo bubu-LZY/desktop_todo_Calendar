@@ -262,9 +262,52 @@ public sealed class ThemeCatalogTests
             var full = ThemeCatalog.Build(def.Mode, 1.0);
             Assert.Equal(255, full.Shell.A);
 
-            // 不透明的主题在 0 不透明度下应当几乎全透。
+            // 有底色下限的"材质型"主题**刻意**不适用下面这条 —— 它不该在 0 处消失，
+            // 由 TexturedTheme_KeepsItsPaperFill... 单独覆盖。
+            if (def.MinShellOpacity > 0)
+            {
+                continue;
+            }
+
+            // 其余不透明主题在 0 不透明度下应当几乎全透。
             var zero = ThemeCatalog.Build(def.Mode, 0.0);
             Assert.True(zero.Shell.A <= 8, $"{def.Name} 在 0 不透明度下仍有 {zero.Shell.A} 的不透明度");
+        }
+    }
+
+    [Fact]
+    public void TexturedTheme_KeepsItsPaperFillWhereverTheSliderIs()
+    {
+        // 用户原话："它四周都是透明的，但是我想要那种浅一点的米色纹理填充进去。"
+        //
+        // 根因：底色浓度原本 = 滑块值。他停在 0.22，于是整窗只剩 22% 的米色、
+        // 纹理浓度又被乘到 0.72×0.22 ≈ 0.16 —— 看上去既没有颜色也没有纹理。
+        // 现在这类主题声明了 MinShellOpacity，滑块只在下限**之上**调浓淡。
+        var textured = ThemeCatalog.All.Where(d => d.MinShellOpacity > 0).ToList();
+        Assert.NotEmpty(textured);
+
+        foreach (var def in textured)
+        {
+            var floor = (byte)Math.Round(def.MinShellOpacity * 255);
+            var textureFloor = def.TextureOpacity * def.MinShellOpacity;
+
+            foreach (var opacity in new[] { 0.0, 0.22, 0.5, def.MinShellOpacity, 1.0 })
+            {
+                var c = ThemeCatalog.Build(def.Mode, opacity);
+
+                Assert.True(c.Shell.A >= floor - 1,
+                    $"{def.Name} 在滑块 {opacity:0.##} 时底色只剩 {c.Shell.A}（下限 {floor}）—— 纸感会被抹掉");
+
+                // 纹理浓度必须跟着**同一个**有效浓度走：两边各算各的会出现
+                // "底色很实、纹理却淡得看不见"这种自相矛盾的效果。
+                Assert.True(c.TextureOpacity >= textureFloor - 0.01,
+                    $"{def.Name} 在滑块 {opacity:0.##} 时纹理浓度只有 {c.TextureOpacity:0.###}（下限 {textureFloor:0.###}）");
+            }
+
+            // 下限之上仍须能调浓淡 —— 否则下限就成了"唯一值"，滑块形同虚设。
+            Assert.True(ThemeCatalog.Build(def.Mode, 1.0).Shell.A
+                        > ThemeCatalog.Build(def.Mode, 0.0).Shell.A,
+                $"{def.Name} 在下限之上无法再调浓淡");
         }
     }
 
@@ -277,7 +320,12 @@ public sealed class ThemeCatalogTests
             var mid = ThemeCatalog.Build(def.Mode, 0.5).Shell.A;
             var high = ThemeCatalog.Build(def.Mode, 0.9).Shell.A;
 
-            Assert.True(low < mid && mid < high, $"{def.Name} 的不透明度随滑杆不单调：{low}/{mid}/{high}");
+            // 用"不递减"而不是"严格递增"：材质型主题在**下限以下**是一段平台
+            // （0.2 和 0.5 都取下限），但整体必须随滑块向上，绝不允许反向。
+            Assert.True(low <= mid && mid <= high,
+                $"{def.Name} 的不透明度随滑杆不单调：{low}/{mid}/{high}");
+            Assert.True(low < high,
+                $"{def.Name} 的不透明度在整段区间上完全没有变化：{low}/{high}");
         }
     }
 
@@ -307,8 +355,7 @@ public sealed class ThemeCatalogTests
     [Fact]
     public void PaperTexture_MatchesTheMeasuredReference()
     {
-        // 参数是按参考图**实测标定**的（底色 (242,237,234)、颗粒振幅 sd≈0.7），
-        // 所以这里的断言就是那几条实测结论，防止以后凭感觉改回去。
+        // 参数是按参考图**实测标定**后、再按用户反馈加重的（见 MaxAlpha 的注释）。
         var pixels = PaperTexture.Create();
         Assert.Equal(PaperTexture.Size * PaperTexture.Size, pixels.Length);
 
@@ -318,8 +365,8 @@ public sealed class ThemeCatalogTests
 
         Assert.All(speckles, p =>
         {
-            // 两层颗粒（主颗粒 + 更淡的纤维）各有自己的区间，取并集检查。
-            Assert.InRange(p.A, PaperTexture.MinFiberAlpha, PaperTexture.MaxAlpha);
+            // 三层颗粒（细颗粒 / 纤维 / 2×2 粗颗粒）各有自己的区间，取并集检查。
+            Assert.InRange(p.A, PaperTexture.MinFiberAlpha, PaperTexture.MaxCoarseAlpha);
 
             // 颗粒必须是**暖色**（R>G>B）且比纸底明显更深 ——
             // 做成比底色更亮就成了"撒了糖霜"，那是另一种材质。
@@ -328,12 +375,17 @@ public sealed class ThemeCatalogTests
             Assert.True(p.B < 210, $"颗粒不够深，压在浅色纸上会看不见：B={p.B}");
         });
 
+        // 粗颗粒是"能看见"的那一层：必须有，且必须是**成块**的（2×2）。
+        // 只有 1×1 细噪点时，125%/150% 缩放下会被插值糊成一片均匀的灰。
+        var coarse = speckles.Count(p => p.A >= PaperTexture.MinCoarseAlpha);
+        Assert.True(coarse >= 200, $"粗颗粒太少（{coarse} 个像素），纹理在缩放屏幕上会被糊掉");
+
         // 确定性：两个宿主必须生成同一张图，否则同一个主题在两端的观感会不一样。
         Assert.Equal(pixels, PaperTexture.Create());
     }
 
     [Fact]
-    public void BeigeTexture_GrainStaysSubtleEnoughToReadAsPaper()
+    public void BeigeTexture_GrainIsVisibleWithoutBecomingSandpaper()
     {
         const double defaultOpacity = 0.86;
         var c = ThemeCatalog.Build(CalendarBackgroundMode.BeigeTexture, defaultOpacity);
@@ -348,8 +400,12 @@ public sealed class ThemeCatalogTests
         Assert.InRange(shell.R, 232, 252);
         Assert.InRange(shell.B, 222, 245);
 
-        // 最深的颗粒叠上去之后，亮度落差必须落在**个位数**。
-        // 参考图实测只有 ±2~3 级；给到 30+ 就变成"砂纸"了（第一版就是这么过的）。
+        // ===== 这条判据被**刻意改过**，理由留在这里 =====
+        // 上一版按参考照片实测标定，要求最深颗粒合成后亮度落差只有 1~12 级
+        // （照片实测 ±2~3）。用户装上后的反馈是"感觉纹理还不够"。
+        // 原因很清楚：照片本身经过拍摄与压缩，振幅天然偏小；而且照片有自己的物理尺度，
+        // 屏幕上按同一振幅铺就是看不见。所以判据改成——
+        // **必须看得见**（≥4 级），同时不许变成砂纸（≤30 级）。
         var deepest = _texturePixels.Value.OrderByDescending(p => p.A).First();
         var alpha = (byte)Math.Round(deepest.A * c.TextureOpacity);
         var over = ThemeCatalog.Composite(
@@ -359,7 +415,7 @@ public sealed class ThemeCatalogTests
             Math.Abs(over.R - shell.R),
             Math.Max(Math.Abs(over.G - shell.G), Math.Abs(over.B - shell.B)));
 
-        Assert.InRange(delta, 1, 12);
+        Assert.InRange(delta, 4, 30);
     }
 
     /// <summary>纹理像素是常量图案，测试内缓存一份，避免每个断言都重算。</summary>

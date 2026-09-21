@@ -15,7 +15,7 @@
 
 - MCP Server（Model Context Protocol）集成
 - HTTP REST API
-- 8 种背景主题
+- 15 种背景主题（含 4 种暖色调与 1 种带纸感颗粒的「米色纹理」）
 - 中国节假日联网刷新与本地缓存
 - 桌面嵌入 / 置底
 - 定时提醒（每日汇总含逾期欠账 + 任务到点提醒 + 跨日前逾期预警）、自动备份
@@ -84,11 +84,11 @@ https://bubu-lzy.github.io/desktop_todo_Calendar/
 
 | 平台 | 文件 |
 |---|---|
-| Windows | `desktop_todo_Calendar-Setup-5.2.10.exe` |
-| macOS (Apple Silicon) | `desktop_todo_Calendar-5.2.10-arm64.dmg` / `.zip` |
-| macOS (Intel) | `desktop_todo_Calendar-5.2.10-x64.dmg` / `.zip` |
-| Linux | `desktop_todo_Calendar-5.2.10-x64.AppImage`、`desktop_todo_Calendar_5.2.10_amd64.deb` |
-| 源码 | `desktop_todo_Calendar-Source-5.2.10.zip` |
+| Windows | `desktop_todo_Calendar-Setup-5.2.11.exe` |
+| macOS (Apple Silicon) | `desktop_todo_Calendar-5.2.11-arm64.dmg` / `.zip` |
+| macOS (Intel) | `desktop_todo_Calendar-5.2.11-x64.dmg` / `.zip` |
+| Linux | `desktop_todo_Calendar-5.2.11-x64.AppImage`、`desktop_todo_Calendar_5.2.11_amd64.deb` |
+| 源码 | `desktop_todo_Calendar-Source-5.2.11.zip` |
 
 Windows 安装包打包的是跨平台宿主 `MicaAgenda.Desktop.exe`（Avalonia），不是仅 Windows 的 WPF 宿主。
 

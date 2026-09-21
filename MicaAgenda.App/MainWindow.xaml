@@ -1619,14 +1619,6 @@
                 <RowDefinition Height="*" />
             </Grid.RowDefinitions>
 
-            <!-- 纹理层（仅「米色纹理」这类主题启用）：铺在底色之上、内容之下。
-                 Margin=-8 是为了抵消外壳的 Padding=8 —— 不抵消的话四周会留出一圈
-                 "没纹理的相框"，一眼就看得出背景是拼接的。
-                 IsHitTestVisible=False 是关键：这层铺满全窗，若参与命中测试，
-                 拖动窗口、点格子这些操作会全部被它吃掉。 -->
-            <Rectangle x:Name="TextureLayer" Grid.Row="0" Grid.RowSpan="2" Margin="-8"
-                       IsHitTestVisible="False" Visibility="Collapsed" />
-
         <DockPanel x:Name="ToolbarPanel"
                    Grid.Row="0"
                    Margin="0,0,0,3"
@@ -1893,6 +1885,17 @@
                     <TextBlock x:Name="DragGhostText" Foreground="White" FontSize="12" />
                 </Border>
             </Canvas>
+
+            <!-- 纹理层（仅「米色纹理」这类主题启用）：铺在**内容之上**。
+                 Margin=-8 是为了抵消外壳的 Padding=8 —— 不抵消的话四周会留出一圈
+                 "没纹理的相框"，一眼就看得出背景是拼接的。
+                 放最后（而不是最前）是刻意的：铺在内容下面时，只有格子和面板之间的缝隙
+                 看得到它，用户反馈"感觉纹理还不够"要的正是**整张纸**的效果。
+                 ZIndex 默认 0，所以缩放热区（1000）与拖拽幽灵（2000）仍在它之上。
+                 IsHitTestVisible=False 是关键：这层铺满全窗，若参与命中测试，
+                 拖动窗口、点格子这些操作会全部被它吃掉。 -->
+            <Rectangle x:Name="TextureLayer" Grid.Row="0" Grid.RowSpan="2" Margin="-8"
+                       IsHitTestVisible="False" Visibility="Collapsed" />
         </Grid>
     </Border>
 </Window>
