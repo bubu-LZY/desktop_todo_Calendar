@@ -68,7 +68,20 @@ public sealed class UpdateService : IDisposable
 
     public UpdateService(Func<Version>? currentVersionProvider = null)
     {
-        _http = new HttpClient
+        var handler = new SocketsHttpHandler
+        {
+            // 连接建立（DNS + TCP + TLS 握手）的独立上限。
+            //
+            // HttpClient.Timeout 下面设成了"无限"（为了不掐断大文件下载），但"连都连不上"
+            // 不能被无限拖住 —— api.github.com 在国内被 DNS 污染时，解析要么返回坏 IP、
+            // 要么挂起，而 CancellationToken 对 DNS 解析阶段的打断在 Windows 上不可靠，
+            // 光靠 CheckAsync 里的 CancelAfter(20s) 兜不住，用户看到的就是"一直检查更新"。
+            // ConnectTimeout 只覆盖"建立连接"这一小段，不影响"连上之后慢慢收数据" ——
+            // 那一段仍由停滞看门狗（30 秒没字节）保护，大文件下载不受影响。
+            ConnectTimeout = TimeSpan.FromSeconds(15)
+        };
+
+        _http = new HttpClient(handler)
         {
             // ⚠️ 这里**不能**设具体值。
             //
@@ -189,18 +202,28 @@ public sealed class UpdateService : IDisposable
         }
     }
 
-    /// <summary>查询 GitHub 上的最新正式版，并和当前版本比一比。</summary>
-    public async Task<UpdateCheckResult> CheckAsync(CancellationToken cancellationToken = default)
+    /// <summary>
+    /// 查询 GitHub 上的最新正式版，并和当前版本比一比。
+    ///
+    /// <paramref name="mirrorPrefix"/> 非空时，检查也走加速前缀（<c>前缀 + api.github.com/…</c>）。
+    /// 之前只有"下载"走前缀、检查直连 —— 而 api.github.com 在国内被 DNS 污染 / 连接重置，
+    /// 检查这步就先卡死了，根本走不到下载，用户填的加速前缀等于白填、表现为"一直检查更新"。
+    /// </summary>
+    public async Task<UpdateCheckResult> CheckAsync(
+        string? mirrorPrefix = null,
+        CancellationToken cancellationToken = default)
     {
         // HttpClient 的整体超时现在是"无限"（为了不掐断大文件下载），所以查询这一小段
         // 必须自己带上限：拉一下 release 元数据，20 秒足够，卡住就是网络有问题。
+        // （DNS 解析阶段这个 token 可能打断不了 —— 那一段由构造函数的 ConnectTimeout 兜住。）
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(CheckTimeout);
         var token = timeout.Token;
 
         try
         {
-            using var response = await _http.GetAsync(LatestReleaseApi, token);
+            var apiUrl = BuildDownloadUrl(LatestReleaseApi, mirrorPrefix);
+            using var response = await _http.GetAsync(apiUrl, token);
             if (!response.IsSuccessStatusCode)
             {
                 return new UpdateCheckResult(

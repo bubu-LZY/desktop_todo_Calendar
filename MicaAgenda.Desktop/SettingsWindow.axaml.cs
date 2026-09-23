@@ -47,8 +47,12 @@ public partial class SettingsWindow : Window
     /// <summary>请求主窗体立即执行一次 my-mindmap 同步，返回结果文本。</summary>
     public Func<string?, string?, Task<string>>? MindMapSyncRequested { get; set; }
 
-    /// <summary>请求主窗体走一遍「检查更新 → 询问 → 后台下载 → 提示重启」流程，返回结果文本。</summary>
-    public Func<Task<string>>? UpdateCheckRequested { get; set; }
+    /// <summary>
+    /// 请求主窗体走一遍「检查更新 → 询问 → 后台下载 → 提示重启」流程，返回结果文本。
+    /// <paramref name="progress"/> 用于把「当前阶段」（正在检查 / 正在后台下载…）实时回传给设置面板，
+    /// 否则静默下载期间状态文字会一直停在"正在检查…"，用户误以为卡住了。
+    /// </summary>
+    public Func<IProgress<string>, Task<string>>? UpdateCheckRequested { get; set; }
 
     // Avalonia XAML 编译器要求根类型存在公共无参构造函数（仅供编译期/设计期）；
     // 运行时一律使用下面的有参构造注入依赖。
@@ -961,7 +965,10 @@ public partial class SettingsWindow : Window
         try
         {
             // 手动点击不受「今日内不再提示」影响：用户主动问的，就必须如实回答。
-            UpdateStatusText.Text = await UpdateCheckRequested();
+            // progress 把主窗体更新流程的"阶段"（正在检查 / 正在后台下载…）实时同步到状态栏，
+            // 否则静默下载期间状态栏一直停在"正在检查…"，用户会误以为卡住。
+            var progress = new Progress<string>(msg => UpdateStatusText.Text = msg);
+            UpdateStatusText.Text = await UpdateCheckRequested(progress);
             // 手动检查返回的「已是最新」也要有回执；发现新版本时主窗体负责后续的下载与重启提示。
             _config.UpdateSkipDate = SkipUpdateTodayBox.IsChecked == true
                 ? DateTime.Today.ToString("yyyy-MM-dd")

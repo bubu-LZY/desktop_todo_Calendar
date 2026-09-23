@@ -1030,7 +1030,7 @@ public partial class MainWindow : Window
                 _ = SaveAsync();
             },
             HolidayRefreshRequested = () => _ = RefreshHolidaysAsync(),
-            UpdateCheckRequested = () => RunUpdateFlowAsync(manual: true),
+            UpdateCheckRequested = progress => RunUpdateFlowAsync(manual: true, status: progress),
             ApplyRequested = OnConfigApplied
         };
 
@@ -1475,8 +1475,12 @@ public partial class MainWindow : Window
     ///
     /// <paramref name="manual"/> = true 表示用户主动点了「检查更新」：任何结果都要有回执；
     /// false 表示启动时的自动检查：已是最新 / 检查失败 / 用户选了「今日内不再提示」都安静收场。
+    /// <paramref name="status"/> 把「当前阶段」回传给设置面板的状态栏：静默下载没有任何进度提示，
+    /// 若不实时更新阶段，状态栏会一直停在"正在检查…"，用户看着就像卡死了。
     /// </summary>
-    private async System.Threading.Tasks.Task<string> RunUpdateFlowAsync(bool manual)
+    private async System.Threading.Tasks.Task<string> RunUpdateFlowAsync(
+        bool manual,
+        IProgress<string>? status = null)
     {
         if (_updateFlowRunning)
         {
@@ -1503,7 +1507,8 @@ public partial class MainWindow : Window
                 return "今日内不再提示更新";
             }
 
-            var result = await service.CheckAsync();
+            status?.Report("正在检查更新…");
+            var result = await service.CheckAsync(_config.UpdateMirrorPrefix);
             if (!result.Succeeded || !result.UpdateAvailable || result.Asset is null)
             {
                 if (manual)
@@ -1535,11 +1540,16 @@ public partial class MainWindow : Window
             }
 
             // 静默后台下载：不弹窗、不挡界面。用户可以在下载期间继续用日历。
+            // 下载前先把状态栏切成"正在后台下载…"，否则它会一直停在"正在检查…"，
+            // 用户看不出程序其实已经在下、会误以为卡死。
+            status?.Report("正在后台下载更新…");
             var installerPath = await DownloadUpdateSilentlyAsync(service, result.Asset, latestText);
             if (installerPath is null)
             {
                 return "已放弃本次更新下载";
             }
+
+            status?.Report("下载完成，等待确认…");
 
             var restart = await ConfirmAsync(
                 "下载完成",
