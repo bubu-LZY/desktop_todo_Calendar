@@ -1164,6 +1164,42 @@ public sealed class MainViewModelTests
         Assert.Equal(0, task.GetOverdueDays(new DateOnly(2026, 4, 30)));
     }
 
+    [Fact]
+    public void CompletedLate_DoesNotCountTasksCreatedAfterTheirDueDate()
+    {
+        // 用户反馈："刚刚创建的任务马上打勾，提示'用时不到1分钟，然后超时一天完成'"。
+        // 根因之一：任务被记到了昨天（到期日），今天才创建并完成 —— 完成日确实比到期日晚一天，
+        // 但它从未在截止前存在过，"超时完成"是说不通的。这种"补记"不能算超时。
+        var retroactive = new CalendarTask
+        {
+            Date = new DateOnly(2026, 9, 22),
+            Title = "补记的任务",
+            CreatedAt = new DateTimeOffset(2026, 9, 23, 22, 0, 0, TimeSpan.Zero)
+        };
+        retroactive.MarkCompleted(new DateTimeOffset(2026, 9, 23, 22, 5, 0, TimeSpan.Zero));
+
+        Assert.False(retroactive.IsCompletedLate());
+        Assert.Equal(0, retroactive.GetCompletedLateDays());
+        // 用时依然要照常算 —— 补记的任务也想知道"从创建到完成花了多久"。
+        Assert.Equal(TimeSpan.FromMinutes(5), retroactive.GetCompletionDuration());
+    }
+
+    [Fact]
+    public void CompletedLate_StillCountsTasksCreatedBeforeTheirDueDate()
+    {
+        // 正常的"拖到截止后"仍然要算超时：9/20 就建了、9/22 到期、9/23 才完成 = 超时 1 天。
+        var task = new CalendarTask
+        {
+            Date = new DateOnly(2026, 9, 22),
+            Title = "真正拖了的任务",
+            CreatedAt = new DateTimeOffset(2026, 9, 20, 9, 0, 0, TimeSpan.Zero)
+        };
+        task.MarkCompleted(new DateTimeOffset(2026, 9, 23, 10, 0, 0, TimeSpan.Zero));
+
+        Assert.True(task.IsCompletedLate());
+        Assert.Equal(1, task.GetCompletedLateDays());
+    }
+
     // ===== 复习任务删除通知（双向删除的界面入口）=====
 
     [Fact]

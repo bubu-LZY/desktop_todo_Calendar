@@ -197,10 +197,21 @@ public sealed class CalendarTask
     /// <summary>
     /// 完成时刻是否晚于计划日期当天，即"超时完成"。
     /// 例如计划 9/1、实际 9/3 完成 => true。当天完成 => false。
+    ///
+    /// <para><b>到期日之后才补建的任务不算"超时"</b>：一条 9/23 才创建、却记在 9/22 的任务，
+    /// 9/23 打勾完成，从"完成日 &gt; 到期日"看是晚了一天，但它根本就没经历过 9/22 的截止——
+    /// 不存在"没赶上"这回事。用户反馈"刚创建就完成却提示超时一天"，就是这里没排除这种情况。
+    /// 补一条 <c>CreatedDate &gt; Date → 不算超时</c> 即可。</para>
     /// </summary>
     public bool IsCompletedLate()
     {
         if (!IsCompleted || CompletedAt is null)
+        {
+            return false;
+        }
+
+        // 到期日之后才创建：谈不上"超时完成"（它从未在截止前存在过）。
+        if (CreatedDate > Date)
         {
             return false;
         }

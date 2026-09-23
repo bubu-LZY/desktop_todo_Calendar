@@ -55,6 +55,7 @@ public sealed class MainViewModel : ViewModelBase
     private bool _isAddingTodayTask;
     private string _todayTaskDraft = string.Empty;
     private TimeSpan? _todayTaskTime = CalendarTask.DefaultTime.ToTimeSpan();
+    private bool _todayTaskTimePopupOpen;
 
     /// <summary>本周三个分组共用的 VM 实例池（按任务 Id），保证跨组移动时实例不销毁。</summary>
     private readonly Dictionary<Guid, TaskItemViewModel> _weekVmPool = new();
@@ -490,11 +491,26 @@ public sealed class MainViewModel : ViewModelBase
     /// </summary>
     public string TodayTaskTimeText => TodayTaskTimeOnly.ToString("HH:mm", CultureInfo.InvariantCulture);
 
+    /// <summary>
+    /// 右侧快速添加表单里「时间」小按钮的弹层是否打开。
+    ///
+    /// <para>放在 VM 而不是用 XAML 的 <c>#TimeToggle</c> 名字引用：这个模板在宿主里被实例化了
+    /// 多份（右侧面板 + 窄窗视图 + 各视图布局），<c>x:Name</c> 在 DataTemplate 里跨实例解析不可靠，
+    /// 弹层会打不开（用户反馈"点时间变成蓝色、但没法设置具体时间"）。
+    /// 用 VM 属性让 ToggleButton 的 IsChecked 与 Popup 的 IsOpen 都绑它，天然同步、与实例数无关。</para>
+    /// </summary>
+    public bool TodayTaskTimePopupOpen
+    {
+        get => _todayTaskTimePopupOpen;
+        set => SetProperty(ref _todayTaskTimePopupOpen, value);
+    }
+
     /// <summary>展开今日任务的快速输入框。</summary>
     public void BeginAddTodayTask()
     {
         TodayTaskDraft = string.Empty;
         ResetLeadLabel();
+        TodayTaskTimePopupOpen = false;
         IsAddingTodayTask = true;
     }
 
@@ -503,6 +519,7 @@ public sealed class MainViewModel : ViewModelBase
     {
         TodayTaskDraft = string.Empty;
         ResetLeadLabel();
+        TodayTaskTimePopupOpen = false;
         IsAddingTodayTask = false;
     }
 
@@ -543,6 +560,7 @@ public sealed class MainViewModel : ViewModelBase
     {
         TodayTaskDraft = string.Empty;
         ResetLeadLabel();
+        TodayTaskTimePopupOpen = false;
 
         // 面板日期也要复位 —— 否则在某个日期格子里加完一条后，下一次快速添加会静默落到
         // 同一个旧日期，用户以为加到了今天。

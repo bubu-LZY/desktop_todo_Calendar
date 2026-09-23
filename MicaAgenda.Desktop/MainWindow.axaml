@@ -308,6 +308,47 @@
                       VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
           <ItemsControl ItemsSource="{Binding Tasks}" ItemTemplate="{StaticResource TaskTemplate}" />
         </ScrollViewer>
+        <!-- 格子里点「+」后弹出的快速添加表单。
+             周视图格子只有 132px 宽、还很矮，塞不下「标题 + 时间 + 提醒 + 按钮」，
+             同样用一个跟着格子走的悬浮层（Popup）展开。
+             之前这里**漏掉了这个 Popup**：点「+」只把 VM 的 IsAddingTask 置真、却没有任何东西
+             渲染出来 —— 用户看到的就是"点加号没反应"。补上后与月视图格子行为一致。 -->
+        <Popup Grid.Row="0" Grid.RowSpan="2"
+               IsOpen="{Binding IsAddingTask}" PlacementTarget="{Binding $parent[Border]}"
+               Placement="BottomEdgeAlignedLeft" HorizontalOffset="-2" VerticalOffset="4"
+               IsLightDismissEnabled="False">
+          <Border Classes="panel" CornerRadius="8" Padding="8,7" BorderThickness="1" Width="220"
+                  Tag="CellAddForm">
+            <StackPanel Spacing="5">
+              <DockPanel LastChildFill="False">
+                <TextBlock DockPanel.Dock="Left" Text="{Binding Header}" FontSize="11" FontWeight="SemiBold"
+                           Foreground="{DynamicResource PrimaryTextBrush}" VerticalAlignment="Center" />
+                <ctl:TimeField DockPanel.Dock="Right" Tag="CellTimeBox"
+                               HorizontalAlignment="Right" VerticalAlignment="Center"
+                               Time="{Binding DraftTime, Mode=TwoWay}"
+                               ToolTip.Tip="任务时刻，默认 09:00（滚轮 / ↑↓ 微调，Shift 分钟步进 1）" />
+              </DockPanel>
+              <TextBox Tag="CellDraftBox" Text="{Binding DraftTitle}"
+                       Padding="4,3" FontSize="11.5" MinHeight="22"
+                       PlaceholderText="任务内容，回车添加"
+                       KeyDown="InlineTaskTextBox_KeyDown" />
+              <Grid ColumnDefinitions="Auto,*">
+                <TextBlock Grid.Column="0" Text="提醒时间" FontSize="10.5" Margin="0,0,5,0"
+                           Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center" />
+                <ctl:ReminderLeadPicker Grid.Column="1" Tag="CellLeadBox"
+                                        HorizontalAlignment="Left"
+                                        SelectedLabels="{Binding ReminderLeadLabels}"
+                                        FirstLeadSelected="CellLeadPicker_FirstSelected" />
+              </Grid>
+              <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="4">
+                <Button Content="取消" FontSize="10.5" Padding="8,2" MinHeight="0"
+                        Click="CellCancelAdd_Click" />
+                <Button Content="确定" FontSize="10.5" Padding="10,2" MinHeight="0"
+                        Click="CellCommitAdd_Click" />
+              </StackPanel>
+            </StackPanel>
+          </Border>
+        </Popup>
       </Grid>
     </Border>
   </DataTemplate>
@@ -529,39 +570,36 @@
                        Padding="4,3" FontSize="11.5" MinHeight="22"
                        PlaceholderText="输入任务，回车添加"
                        KeyDown="TodayTaskTextBox_KeyDown" LostFocus="TodayTaskTextBox_LostFocus" />
-              <!-- 任务时间：小按钮直接显示当前时刻，点开浮层修改（滚轮 / ↑↓ 微调）
-                   用 x:Name + #TimeToggle 引用而不是 $parent：Popup 是 ToggleButton 的逻辑子元素、
-                   不在其视觉祖先链上，$parent[ToggleButton] 解析不到（弹层永远打不开）。
-                   CompileBindings=False，所以 #Name 运行时引用可用。
-                   IsCheckedChanged 通知宿主"时间弹层开/关"，用来抑制「失焦提交」——
-                   否则点按钮瞬间输入框失焦、焦点还没进弹层，表单就被误提交收起。 -->
+              <!-- 任务时间：小按钮直接显示当前时刻，点开浮层修改（滚轮 / ↑↓ 微调）。
+                   Popup 必须和按钮**同级**（都直接放在这个 Grid 里），并都绑 VM 的
+                   TodayTaskTimePopupOpen：之前 Popup 嵌在 ToggleButton 内部，
+                   #TimeToggle 名字引用在 DataTemplate 的多实例下解析不到 → 弹层打不开，
+                   点按钮只会变蓝。改成同级 + VM 属性后不再依赖任何元素名字。 -->
               <ToggleButton x:Name="TimeToggle" Grid.Column="1" Classes="chip" Content="{Binding TodayTaskTimeText}"
                             Height="22" Padding="6,0" FontSize="10" CornerRadius="6" Margin="3,0,0,0"
                             VerticalAlignment="Center"
-                            IsCheckedChanged="TodayTimeToggle_IsCheckedChanged"
-                            ToolTip.Tip="任务时刻，默认 09:00（点击修改）">
-                <Popup IsOpen="{Binding #TimeToggle.IsChecked, Mode=TwoWay}"
-                       Placement="Bottom" PlacementTarget="{Binding #TimeToggle}"
-                       VerticalOffset="3" IsLightDismissEnabled="True">
-                  <!-- 弹层里也带 AddTaskForm 标记：焦点判定把弹层内当表单内，不会误提交 -->
-                  <Border Classes="panel" CornerRadius="8" Padding="8" BorderThickness="1" Tag="AddTaskForm">
-                    <StackPanel Spacing="4">
-                      <ctl:TimeField Tag="TodayTimeBox" Time="{Binding TodayTaskTime, Mode=TwoWay}"
-                                     HorizontalAlignment="Left" />
-                      <TextBlock Text="滚轮 / ↑↓ 微调，Shift 分钟步进 1；改完点外面收起"
-                                 FontSize="9.5" TextWrapping="Wrap" MaxWidth="180"
-                                 Foreground="{DynamicResource MutedTextBrush}" />
-                    </StackPanel>
-                  </Border>
-                </Popup>
-              </ToggleButton>
-              <!-- 提醒时间：多选下拉的紧凑模式（弹层里带档位说明） -->
+                            IsChecked="{Binding TodayTaskTimePopupOpen, Mode=TwoWay}"
+                            ToolTip.Tip="任务时刻，默认 09:00（点击修改）" />
               <ctl:ReminderLeadPicker Grid.Column="2" Tag="TaskLeadBox" Compact="True"
                                       Margin="3,0,0,0"
                                       VerticalAlignment="Center"
                                       ToolTip.Tip="提醒按「任务时间」往前推，可多选；一个都不勾＝不提醒"
                                       SelectedLabels="{Binding TodayTaskLeadLabels}"
                                       FirstLeadSelected="TodayLeadPicker_FirstSelected" />
+              <Popup Grid.Column="1" IsOpen="{Binding TodayTaskTimePopupOpen, Mode=TwoWay}"
+                     PlacementTarget="{Binding #TimeToggle}"
+                     Placement="Bottom" VerticalOffset="3" IsLightDismissEnabled="True">
+                <!-- 弹层里也带 AddTaskForm 标记：焦点判定把弹层内当表单内，不会误提交 -->
+                <Border Classes="panel" CornerRadius="8" Padding="8" BorderThickness="1" Tag="AddTaskForm">
+                  <StackPanel Spacing="4">
+                    <ctl:TimeField Tag="TodayTimeBox" Time="{Binding TodayTaskTime, Mode=TwoWay}"
+                                   HorizontalAlignment="Left" />
+                    <TextBlock Text="滚轮 / ↑↓ 微调，Shift 分钟步进 1；改完点外面收起"
+                               FontSize="9.5" TextWrapping="Wrap" MaxWidth="180"
+                               Foreground="{DynamicResource MutedTextBrush}" />
+                  </StackPanel>
+                </Border>
+              </Popup>
             </Grid>
             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="4">
               <Button Content="取消" FontSize="10.5" Padding="8,2" MinHeight="0" Click="CancelTodayTask_Click" />

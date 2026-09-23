@@ -3697,7 +3697,8 @@ public partial class MainWindow : Window
         // 时间选择弹层打开中：焦点可能正在弹层里（弹层是独立顶层窗口，不在主窗口视觉树里，
         // 光靠 GetVisualAncestors 找不到），也可能处于"点了按钮但焦点还没落进弹层"的瞬间。
         // 只要弹层开着，就视为"仍在表单交互中"，绝不能提交。
-        if (_timePopupOpen)
+        // 开关状态现在由 VM 的 TodayTaskTimePopupOpen 维护（ToggleButton 与 Popup 都绑它）。
+        if (_viewModel?.TodayTaskTimePopupOpen == true)
         {
             return true;
         }
@@ -3708,25 +3709,6 @@ public partial class MainWindow : Window
         }
 
         return focused.GetVisualAncestors().Any(ancestor => ancestor is Control { Tag: "AddTaskForm" });
-    }
-
-    /// <summary>时间选择弹层是否打开中（由 ToggleButton 的 IsCheckedChanged 维护）。</summary>
-    private bool _timePopupOpen;
-
-    /// <summary>
-    /// 时间小按钮的开关状态变化（弹层开/关）。
-    ///
-    /// 弹层打开时置标记，挡住「输入框失焦 → 误提交表单」的时序：
-    /// 点按钮瞬间输入框先失焦、焦点还没落进 Popup，Background 优先级里
-    /// <see cref="CommitTodayAddIfFocusLeftForm"/> 会误判焦点已离开表单而提交收起。
-    /// 用这个标记让判定在弹层打开期间始终返回"还在表单内"。
-    /// </summary>
-    private void TodayTimeToggle_IsCheckedChanged(object? sender, RoutedEventArgs e)
-    {
-        if (sender is ToggleButton toggle)
-        {
-            _timePopupOpen = toggle.IsChecked == true;
-        }
     }
 
     private void CommitTodayTask_Click(object? sender, RoutedEventArgs e) => CommitTodayAdd();
